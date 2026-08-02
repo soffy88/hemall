@@ -7,90 +7,104 @@
 # TLS 证书由 Cloudflare 自动管理，无需证书配置。
 
 :80 {
-    # 后端 API 路径反代到 Hemall API
-    # 注：用唯一容器名 hemal-api-1/hemal-web-1，而非服务名 api/web——
-    # 本 Caddy 同时加入共享网络 helios-net，该网络上存在其他项目的
-    # 同名网络别名（如 mneme-api-1），Docker DNS 会解析到错误容器。
-    handle /store/* {
-        reverse_proxy hemal-api-1:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto {scheme}
-            header_up X-Forwarded-Port {server_port}
-        }
-    }
-    handle /recommend/* {
-        reverse_proxy hemal-api-1:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto {scheme}
-            header_up X-Forwarded-Port {server_port}
-        }
-    }
-    handle /health/* {
-        reverse_proxy hemal-api-1:8000 {
-            header_up Host {host}
-            header_up X-Forwarded-Proto {scheme}
-        }
-    }
-    handle /admin/* {
-        reverse_proxy hemal-api-1:8000 {
-            header_up Host {host}
-            header_up X-Forwarded-Proto {scheme}
-        }
-    }
-    handle /docs* {
-        reverse_proxy hemal-api-1:8000 {
-            header_up Host {host}
-            header_up X-Forwarded-Proto {scheme}
-        }
-    }
-    handle /openapi.json {
-        reverse_proxy hemal-api-1:8000 {
-            header_up Host {host}
-            header_up X-Forwarded-Proto {scheme}
-        }
-    }
-    handle /metrics* {
-        reverse_proxy hemal-api-1:8000 {
-            header_up Host {host}
-            header_up X-Forwarded-Proto {scheme}
-        }
-    }
+	# 后端 API 路径反代到 Hemall API
+	# 注：用唯一容器名 hemal-api-1/hemal-web-1，而非服务名 api/web——
+	# 本 Caddy 同时加入共享网络 helios-net，该网络上存在其他项目的
+	# 同名网络别名（如 mneme-api-1），Docker DNS 会解析到错误容器。
+	handle /store/* {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Port {server_port}
+		}
+	}
+	handle /recommend/* {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Port {server_port}
+		}
+	}
+	handle /health/* {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle /admin/* {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle /docs* {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle /openapi.json {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle /metrics* {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
 
-    # 其余路径：反代到 Next.js 商城前端 (含根路径 /，容器内自行重定向到 /shop)
-    handle {
-        reverse_proxy hemal-web-1:3000 {
-            header_up Host {host}
-            header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto {scheme}
-            header_up X-Forwarded-Port {server_port}
-        }
-    }
+	# 3O omodul 域面 (前端 api-client 的 omodul()/request() 直连路径，含补天计划
+	# 的 /growth/douyin_callback webhook 与 /supply-chain/* /marketing/* Admin Ops)。
+	# 无前端页面碰撞：Next.js 顶层路由仅 /admin /login /shop /。
+	@omodul path_regexp api ^/(aftersales|auth|batch|cart|catalog|checkout|community|customers|domain|fulfillment|growth|inventory|marketing|membership|settings|settlement|supply-chain)(/.*)?$
+	handle @omodul {
+		reverse_proxy hemal-api-1:8000 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Port {server_port}
+		}
+	}
 
-    # 安全响应头
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        X-XSS-Protection "1; mode=block"
-        Referrer-Policy "strict-origin-when-cross-origin"
-    }
+	# 其余路径：反代到 Next.js 商城前端 (含根路径 /，容器内自行重定向到 /shop)
+	handle {
+		reverse_proxy hemal-web-1:3000 {
+			header_up Host {host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Port {server_port}
+		}
+	}
 
-    # 压缩
-    encode gzip zstd
+	# 安全响应头
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
 
-    # 请求体大小限制 (50MB)
-    request_body {
-        max_size 50MB
-    }
+	# 压缩
+	encode gzip zstd
 
-    # 访问日志
-    log {
-        output stdout
-        format console
-        level INFO
-    }
+	# 请求体大小限制 (50MB)
+	request_body {
+		max_size 50MB
+	}
+
+	# 访问日志
+	log {
+		output stdout
+		format console
+		level INFO
+	}
 }
