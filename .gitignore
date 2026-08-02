@@ -32,3 +32,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Runtime trails (omodul output, 部署时由容器卷承载)
+var/

@@ -43,8 +43,9 @@ daemon = False
 pidfile = "/tmp/gunicorn.pid"
 
 # 用户和组（生产环境建议使用非 root 用户）
-# user = "hemall"
-# group = "hemall"
+# 容器内以 root 启动 gunicorn master，worker 自动降权为 hemall
+user = "hemall"
+group = "hemall"
 
 # 绑定地址
 bind = "0.0.0.0:8000"

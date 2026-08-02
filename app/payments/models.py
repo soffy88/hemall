@@ -156,6 +156,11 @@ class PaymentSession(BaseModel):
 
 
 PAYMENT_SESSION_DDL = """
+-- 注意：obase.commerce_batch_schema 已创建同名的 payment_session 表
+-- (cart_id/provider_name/amount_cents 结构)。本 DDL 需与它共存：
+-- 1) 表不存在时创建 app 版完整结构；
+-- 2) 表已存在 (obase 版) 时用 ALTER 补齐 app 需要的列；
+-- 3) 索引一律 IF NOT EXISTS，列由上方 ALTER 保证存在。
 CREATE TABLE IF NOT EXISTS payment_session (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id TEXT NOT NULL,
@@ -171,6 +176,17 @@ CREATE TABLE IF NOT EXISTS payment_session (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ
 );
+
+-- 与 obase 版共存：补齐 app 版需要的列（表已存在时 CREATE TABLE IF NOT EXISTS 不会补列）
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS order_id TEXT;
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS amount BIGINT;
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'CNY';
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS provider TEXT;
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS provider_trade_no TEXT;
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS payer_info TEXT;
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS refund_amount BIGINT;
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE payment_session ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_payment_order ON payment_session(order_id);
 CREATE INDEX IF NOT EXISTS idx_payment_status ON payment_session(status);

@@ -121,6 +121,8 @@ main() {
         values_file="values.staging.yaml"
     elif [ "$environment" == "production" ]; then
         values_file="values.production.yaml"
+    elif [ "$environment" == "mall-sxueji" ]; then
+        values_file="values.mall-sxueji.yaml"
     fi
     
     # 部署到 Kubernetes

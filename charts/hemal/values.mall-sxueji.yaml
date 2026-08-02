@@ -1,0 +1,121 @@
+# Hemall Production Values for mall.sxueji.com
+# ===========================================
+
+# API 配置
+api:
+  replicas: 3
+  image:
+    repository: registry.sxueji.com/hemall/backend
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  healthCheck: /health/ready
+  livenessThreshold: 60
+  env:
+    LOG_LEVEL: INFO
+    DATABASE_POOL_SIZE: 30
+    REDIS_CONNECTION_POOL_SIZE: 30
+    GUNICORN_WORKERS: 4
+    GUNICORN_TIMEOUT: 30
+    CORS_ORIGINS: "https://mall.sxueji.com,https://www.mall.sxueji.com"
+
+# Ingress 配置
+ingress:
+  enabled: true
+  className: nginx
+  host: mall.sxueji.com
+  tlsSecret: hemall-tls-mall-sxueji
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Server: hemall";
+      more_set_headers "X-Powered-By: FastAPI";
+
+# 数据库配置
+postgresql:
+  enabled: false
+  external:
+    host: postgresql-primary.database.svc.cluster.local
+    port: 5432
+    database: hemall_production
+    username: hemall
+    passwordSecretKey: postgres-password
+  connectionPool:
+    maxSize: 30
+    maxOverflow: 50
+
+# Redis 配置
+redis:
+  enabled: false
+  external:
+    host: redis-master.cache.svc.cluster.local
+    port: 6379
+    passwordSecretKey: redis-password
+  connectionPool:
+    maxSize: 30
+
+# Elasticsearch 配置
+elasticsearch:
+  enabled: false
+  external:
+    host: elasticsearch-master.logging.svc.cluster.local
+    port: 9200
+  indices:
+    numberOfShards: 5
+    numberOfReplicas: 1
+
+# 自动伸缩配置
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# 监控配置
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+  prometheusRule:
+    enabled: true
+
+# 安全配置
+security:
+  networkPolicies:
+    enabled: true
+  podSecurityStandards:
+    enabled: true
+
+# 外部服务配置
+externalServices:
+  # 支付网关
+  wechatPay:
+    enabled: true
+    merchantId: "your-wechat-merchant-id"
+    apiKeySecretKey: "wechat-pay-api-key"
+  
+  alipay:
+    enabled: true
+    appId: "your-alipay-app-id"
+    privateKeySecretKey: "alipay-private-key"
+  
+  # 推送服务
+  firebase:
+    enabled: true
+    credentialsSecretKey: "firebase-credentials"
+  
+  apns:
+    enabled: true
+    keyId: "your-apns-key-id"
+    teamId: "your-apns-team-id"
+    keySecretKey: "apns-key"

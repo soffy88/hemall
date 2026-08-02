@@ -47,6 +47,16 @@ def _pool(request: Request) -> Any:
     return pool
 
 
+def _cfg(request: Request, config_cls: type, **kwargs: Any) -> Any:
+    """创建 omodul config，统一注入 redis_url。
+
+    omodul 各 Config 的 redis_url 默认是 redis://localhost:6379/0（容器内
+    localhost 是自身而非 redis 服务），这里统一从应用配置注入正确地址。
+    """
+    settings = request.app.state.config
+    return config_cls(redis_url=settings.redis_url, **kwargs)
+
+
 def _sign_receipt(
     order_id: str, secret: str, algorithm: str, ttl_minutes: int = 43200
 ) -> str:
@@ -89,7 +99,7 @@ class CreateCartRequest(BaseModel):
 async def create_cart(body: CreateCartRequest, request: Request):
     from omodul.create_cart import CreateCartConfig, CreateCartInput, create_cart
 
-    cfg = CreateCartConfig()
+    cfg = _cfg(request, CreateCartConfig)
     inp = CreateCartInput(region_code=body.region_code, currency=body.currency)
     result = await create_cart(
         cfg, inp, _output_dir(request, "create_cart"), pool=_pool(request)
@@ -117,7 +127,7 @@ async def add_line_item(body: AddLineItemRequest, request: Request):
         add_line_item_to_cart,
     )
 
-    cfg = AddLineItemConfig()
+    cfg = _cfg(request, AddLineItemConfig)
     inp = AddLineItemInput(
         cart_id=body.cart_id, batch_id=body.batch_id, quantity=body.quantity
     )
@@ -146,7 +156,7 @@ async def update_line_item(body: UpdateLineItemRequest, request: Request):
         update_line_item_in_cart,
     )
 
-    cfg = UpdateLineItemConfig()
+    cfg = _cfg(request, UpdateLineItemConfig)
     inp = UpdateLineItemInput(
         cart_id=body.cart_id, line_item_id=body.line_item_id, quantity=body.quantity
     )
@@ -174,7 +184,7 @@ async def delete_line_item(body: DeleteLineItemRequest, request: Request):
         delete_line_item_from_cart,
     )
 
-    cfg = DeleteLineItemConfig()
+    cfg = _cfg(request, DeleteLineItemConfig)
     inp = DeleteLineItemInput(cart_id=body.cart_id, line_item_id=body.line_item_id)
     result = await delete_line_item_from_cart(
         cfg,
@@ -221,7 +231,7 @@ async def set_billing_address(body: SetCartAddressRequest, request: Request):
         set_cart_billing_address,
     )
 
-    cfg = SetCartBillingAddressConfig()
+    cfg = _cfg(request, SetCartBillingAddressConfig)
     inp = SetCartBillingAddressInput(
         cart_id=body.cart_id,
         recipient_name=body.address.recipient_name,
@@ -248,7 +258,7 @@ async def set_shipping_address(body: SetCartAddressRequest, request: Request):
         set_cart_shipping_address,
     )
 
-    cfg = SetCartShippingAddressConfig()
+    cfg = _cfg(request, SetCartShippingAddressConfig)
     inp = SetCartShippingAddressInput(
         cart_id=body.cart_id,
         recipient_name=body.address.recipient_name,
@@ -280,7 +290,7 @@ async def set_cart_customer(body: SetCartCustomerRequest, request: Request):
         set_cart_customer,
     )
 
-    cfg = SetCartCustomerConfig()
+    cfg = _cfg(request, SetCartCustomerConfig)
     inp = SetCartCustomerInput(cart_id=body.cart_id, customer_id=body.customer_id)
     result = await set_cart_customer(
         cfg, inp, _output_dir(request, "set_cart_customer"), pool=_pool(request)
@@ -317,7 +327,7 @@ async def checkout(body: CheckoutRequest, request: Request):
         )
 
         r = await set_cart_billing_address(
-            SetCartBillingAddressConfig(),
+            _cfg(request, SetCartBillingAddressConfig),
             SetCartBillingAddressInput(
                 cart_id=body.cart_id,
                 recipient_name=body.billing_address.recipient_name,
@@ -342,7 +352,7 @@ async def checkout(body: CheckoutRequest, request: Request):
         )
 
         r = await set_cart_shipping_address(
-            SetCartShippingAddressConfig(),
+            _cfg(request, SetCartShippingAddressConfig),
             SetCartShippingAddressInput(
                 cart_id=body.cart_id,
                 recipient_name=body.shipping_address.recipient_name,
@@ -368,7 +378,7 @@ async def checkout(body: CheckoutRequest, request: Request):
         )
 
         r = await set_cart_customer(
-            SetCartCustomerConfig(),
+            _cfg(request, SetCartCustomerConfig),
             SetCartCustomerInput(cart_id=body.cart_id, customer_id=body.customer_id),
             _step_dir(out_root, "set_cart_customer"),
             pool=pool,
@@ -384,7 +394,7 @@ async def checkout(body: CheckoutRequest, request: Request):
     )
 
     r = await create_payment_sessions(
-        CreatePaymentSessionsConfig(),
+        _cfg(request, CreatePaymentSessionsConfig),
         CreatePaymentSessionsInput(
             cart_id=body.cart_id,
             provider_names=[cfg_store.default_payment_provider],
@@ -411,7 +421,7 @@ async def checkout(body: CheckoutRequest, request: Request):
     )
 
     r = await set_payment_session(
-        SetPaymentSessionConfig(),
+        _cfg(request, SetPaymentSessionConfig),
         SetPaymentSessionInput(
             cart_id=body.cart_id,
             provider_name=provider_name,
@@ -430,7 +440,7 @@ async def checkout(body: CheckoutRequest, request: Request):
     )
 
     r = await authorize_payment_for_cart(
-        AuthorizePaymentForCartConfig(),
+        _cfg(request, AuthorizePaymentForCartConfig),
         AuthorizePaymentForCartInput(cart_id=body.cart_id),
         _step_dir(out_root, "authorize_payment_for_cart"),
         pool=pool,
@@ -487,7 +497,7 @@ async def apply_discount(body: ApplyDiscountRequest, request: Request):
         apply_discount_to_cart,
     )
 
-    cfg = ApplyDiscountToCartConfig()
+    cfg = _cfg(request, ApplyDiscountToCartConfig)
     inp = ApplyDiscountToCartInput(cart_id=body.cart_id, code=body.code)
     result = await apply_discount_to_cart(
         cfg, inp, _output_dir(request, "apply_discount_to_cart"), pool=_pool(request)
@@ -514,7 +524,7 @@ async def remove_discount(body: RemoveDiscountRequest, request: Request):
         remove_discount_from_cart,
     )
 
-    cfg = RemoveDiscountFromCartConfig()
+    cfg = _cfg(request, RemoveDiscountFromCartConfig)
     inp = RemoveDiscountFromCartInput(
         cart_id=body.cart_id, discount_id=body.discount_id
     )
@@ -539,7 +549,7 @@ async def apply_gift_card(body: ApplyGiftCardRequest, request: Request):
         apply_gift_card_to_cart,
     )
 
-    cfg = ApplyGiftCardToCartConfig()
+    cfg = _cfg(request, ApplyGiftCardToCartConfig)
     inp = ApplyGiftCardToCartInput(cart_id=body.cart_id, code=body.code)
     result = await apply_gift_card_to_cart(
         cfg, inp, _output_dir(request, "apply_gift_card_to_cart"), pool=_pool(request)
@@ -566,7 +576,7 @@ async def remove_gift_card(body: RemoveGiftCardRequest, request: Request):
         remove_gift_card_from_cart,
     )
 
-    cfg = RemoveGiftCardFromCartConfig()
+    cfg = _cfg(request, RemoveGiftCardFromCartConfig)
     inp = RemoveGiftCardFromCartInput(
         cart_id=body.cart_id, gift_card_id=body.gift_card_id
     )
@@ -595,7 +605,7 @@ async def add_shipping_method(body: AddShippingMethodRequest, request: Request):
         add_shipping_method_to_cart,
     )
 
-    cfg = AddShippingMethodToCartConfig()
+    cfg = _cfg(request, AddShippingMethodToCartConfig)
     inp = AddShippingMethodToCartInput(
         cart_id=body.cart_id, method_name=body.method_name, price_cents=body.price_cents
     )
@@ -627,7 +637,7 @@ async def set_cart_region_route(body: SetCartRegionRequest, request: Request):
         set_cart_region,
     )
 
-    cfg = SetCartRegionConfig()
+    cfg = _cfg(request, SetCartRegionConfig)
     inp = SetCartRegionInput(
         cart_id=body.cart_id, region_code=body.region_code, currency=body.currency
     )
@@ -726,7 +736,7 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
 
     cfg = request.app.state.config
     result = await create_customer(
-        CreateCustomerConfig(),
+        _cfg(request, CreateCustomerConfig),
         CreateCustomerInput(email=body.email, phone=body.phone, name=body.name),
         _output_dir(request, "create_customer"),
         pool=_pool(request),
@@ -811,7 +821,7 @@ async def update_my_profile(
     )
 
     result = await update_customer(
-        UpdateCustomerConfig(),
+        _cfg(request, UpdateCustomerConfig),
         UpdateCustomerInput(
             customer_id=principal["customer_id"],
             email=body.email,
@@ -866,7 +876,7 @@ async def add_my_address(
     )
 
     result = await add_customer_address(
-        AddCustomerAddressConfig(),
+        _cfg(request, AddCustomerAddressConfig),
         AddCustomerAddressInput(
             customer_id=principal["customer_id"], **body.model_dump()
         ),
@@ -918,7 +928,7 @@ async def update_my_address(
         raise HTTPException(404, "address not found")
 
     result = await update_customer_address(
-        UpdateCustomerAddressConfig(),
+        _cfg(request, UpdateCustomerAddressConfig),
         UpdateCustomerAddressInput(address_id=address_id, **body.model_dump()),
         _output_dir(request, "update_customer_address"),
         pool=_pool(request),
@@ -944,7 +954,7 @@ async def delete_my_address(
         raise HTTPException(404, "address not found")
 
     result = await delete_customer_address(
-        DeleteCustomerAddressConfig(),
+        _cfg(request, DeleteCustomerAddressConfig),
         DeleteCustomerAddressInput(address_id=address_id),
         _output_dir(request, "delete_customer_address"),
         pool=_pool(request),

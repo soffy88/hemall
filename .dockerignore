@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+web/node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+Dockerfile.prod
+docker-compose*.yml
+.dockerignore
+
+# Data & output
+var/omodul_output/
+var/shots/
+logs/
+caddy_data/
+caddy_config/
+prometheus_data/
+grafana_data/
+postgres_data/
+redis_data/
+
+# Test & coverage
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docs
+docs/
+*.md
+
+# Misc
+*.log
+*.pid
+*.tgz
+*.tmp
+.DS_Store
+.vscode/
+.idea/

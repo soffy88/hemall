@@ -1,38 +1,73 @@
 # 生产环境 Dockerfile
-# 使用多阶段构建优化镜像大小和安全性
+# 多阶段构建，非 root 运行
+#
+# 注意：3O 平台包 (obase/oprim/oskill/omodul/oservi) 位于构建上下文之外，
+# 通过 BuildKit additional build context "platform3o" 引入：
+#   docker build --build-context platform3o=../platform/3O -f Dockerfile.prod .
+# docker compose 中通过 build.additional_contexts 配置。
 
-# 构建阶段
-FROM python:3.12-slim as builder
+# ── 构建阶段 ────────────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
 
-# 设置工作目录
-WORKDIR /app
+WORKDIR /build
 
 # 安装构建依赖
-RUN apt-get update && apt-get install -y \
+# 注1：容器 IPv6 网络不可用，强制 IPv4 避免 apt-get 卡死
+# 注2：deb.debian.org 在容器内下载 .deb 会卡住，切换到阿里云镜像源
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    apt-get update -o Acquire::ForceIPv4=true && \
+    apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true \
     gcc \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# 安装 uv (快速 Python 包管理，支持 [tool.uv.sources])
+# 注：ghcr.io/astral-sh/uv 在此服务器不可用，使用构建上下文中预置的 uv 二进制
+COPY deploy-tools/uv /bin/uv
+
+# 复制 3O 平台包 (来自 additional build context)
+# 目标位置 /platform/3O/<pkg> 使 pyproject.toml 中相对路径 sources 生效
+COPY --from=platform3o /obase /platform/3O/obase
+COPY --from=platform3o /oprim /platform/3O/oprim
+COPY --from=platform3o /oskill /platform/3O/oskill
+COPY --from=platform3o /omodul /platform/3O/omodul
+COPY --from=platform3o /oservi /platform/3O/oservi
+
 # 复制项目文件
-COPY . .
+COPY pyproject.toml .
+COPY app/ ./app/
 
-# 创建虚拟环境并安装依赖
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir -e ".[production]"
+# 创建虚拟环境并安装依赖 (uv 解析 [tool.uv.sources] 中的相对路径)
+# UV_HTTP_TIMEOUT 防止网络慢时超时；uv 默认走 IPv4 优先
+ENV UV_HTTP_TIMEOUT=600
+RUN uv venv /opt/venv && \
+    uv pip install --python /opt/venv/bin/python --no-cache-dir \
+        -e ".[observability,phase2]" \
+        gunicorn
 
-# 生产阶段
+# ── 生产阶段 ────────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
 # 创建非 root 用户
 RUN groupadd -r hemall && useradd -r -g hemall hemall
 
 # 安装运行时依赖
-RUN apt-get update && apt-get install -y \
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    apt-get update -o Acquire::ForceIPv4=true && \
+    apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true \
     libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # 从构建阶段复制虚拟环境
 COPY --from=builder /opt/venv /opt/venv
+
+# 复制 3O 平台包（venv 中以 editable 模式安装，运行时指向此路径）
+COPY --from=platform3o /obase /platform/3O/obase
+COPY --from=platform3o /oprim /platform/3O/oprim
+COPY --from=platform3o /oskill /platform/3O/oskill
+COPY --from=platform3o /omodul /platform/3O/omodul
+COPY --from=platform3o /oservi /platform/3O/oservi
 
 # 设置环境变量
 ENV PATH="/opt/venv/bin:$PATH"
@@ -44,18 +79,23 @@ WORKDIR /app
 # 复制应用代码
 COPY . .
 
+# entrypoint: root 启动修复数据卷属主后降权为 hemall 运行
+COPY deploy-tools/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 # 修改文件所有权
 RUN chown -R hemall:hemall /app
 
-# 切换到非 root 用户
-USER hemall
+# 注：不设 USER hemall —— entrypoint 需以 root 运行以修复挂载数据卷属主，
+# 随后 gunicorn 通过 user/group 配置将 worker 降权为 hemall。
 
 # 暴露端口
 EXPOSE 8000
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health/live || exit 1
 
-# 启动命令
+# 启动命令 (entrypoint 会 chown 数据卷后以 hemall 运行)
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["gunicorn", "-c", "gunicorn.conf.py", "app.main:app"]
