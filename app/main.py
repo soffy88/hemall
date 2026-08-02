@@ -66,7 +66,13 @@ from .ai_assistant.service import AIAssistantService
 
 from .cache.service import CacheManager
 
-from .routers import build_router
+from .routers import build_router, public_zero_login_paths
+
+# 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)
+from .security.webhook import WebhookSignatureMiddleware
+
+# 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (IP + Device_ID)
+from .middleware.ratelimit import TokenBucketRateLimitMiddleware
 
 # Phase 0 Week 2: 限流
 from slowapi import _rate_limit_exceeded_handler
@@ -429,8 +435,29 @@ def create_app() -> FastAPI:
     app.add_middleware(MetricsMiddleware)
     app.add_middleware(LoggingMiddleware)
 
-    # Phase 0 Week 2: 审计日志中间件 (记录写操作到数据库)
+# Phase 0 Week 2: 审计日志中间件 (记录写操作到数据库)
     app.add_middleware(AuditMiddleware)
+
+    # 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (最后添加 = 最外层网关)。
+    # 精确路径来自 ext registry 公开端点推导 + 手写公开端点；/store/* 前缀
+    # 覆盖整个零登录商城前端 (加车/结算/下单/查库存)。
+    app.add_middleware(
+        TokenBucketRateLimitMiddleware,
+        public_paths=public_zero_login_paths(),
+        path_prefixes={"/store/"},
+    )
+
+    # 补天计划 Task 1.1: Webhook 验签装甲 (最外层)——抖音/支付回调在 ASGI 层
+    # 强制 HMAC-SHA256 验签，非法请求 403 丢弃，绝不触碰 omodul 层。
+    app.add_middleware(
+        WebhookSignatureMiddleware,
+        secret=settings.webhook_secret,
+        protected_paths={
+            "/payments/wechat/notify",
+            "/payments/alipay/notify",
+            "/growth/douyin_callback",
+        },
+    )
 
     # Phase 0 Week 2: 限流
     app.state.limiter = limiter

@@ -871,4 +871,33 @@ export const api = {
 
   adminListHemallConversionLogs: () =>
     request<Array<{ id: string; order_id: string; douyin_uid: string; contract_id: string | null; dividend_amount_cents: number; settlement_status: string; created_at: string }>>('/admin/growth/conversion-logs', {}, true),
+
+  // ── 补天计划 Task 2.1/3.1: 位置 Feed + 零号探针 ──────────────────────
+
+  // 位置 Feed 流 (公开，零登录)：按当前坐标找最近 active 微仓，只返回有货且
+  // 在安全货架期内的批次——"人找货"到"地理位置找货"。
+  getNearbyFeed: (lat: number, lon: number, limit?: number) =>
+    request<{
+      nearest_location: { id: string; distance_km: number } | null;
+      safety_margin_hours: number;
+      batches: Array<{
+        batch_id: string;
+        variant_id: string;
+        title: string;
+        sku_code: string;
+        retail_price_cents: number;
+        stock_qty: number;
+        expiration_time: string | null;
+        video_url: string | null;
+        location_name: string;
+      }>;
+    }>(
+      `/store/nearby-feed?lat=${lat}&lon=${lon}${limit ? `&limit=${limit}` : ''}`,
+      { method: 'GET' },
+      false,
+    ),
+
+  // 零号探针触发器 (Admin Ops)：运营在批次上架时手动激活试探单做市。
+  triggerInitialProbe: (data: { batch_id: string; initial_price: number }) =>
+    omodul('marketing', 'trigger_initial_probe_workflow', data, true),
 };

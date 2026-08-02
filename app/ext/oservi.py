@@ -77,6 +77,11 @@ from .omodul.mark_batch_for_disposal import (
     MarkBatchForDisposalInput,
     mark_batch_for_disposal,
 )
+from .omodul.scrap_batch_inventory import (
+    ScrapBatchInventoryConfig,
+    ScrapBatchInventoryInput,
+    scrap_batch_inventory,
+)
 from .oprim import (
     db_query_many,
     db_query_one,
@@ -84,6 +89,7 @@ from .oprim import (
     ext_notify_send,
     ext_pay_transfer,
     ext_weather_forecast,
+    spider_fetch_competitor_prices,
     vlm_assess_damage,
 )
 from .oskill import (
@@ -96,6 +102,7 @@ from .oskill import (
     compute_market_maker_price,
     compute_mercenary_bounty_rate,
     evaluate_claim_credibility,
+    normalize_sku_price,
 )
 
 logger = logging.getLogger("hemall.ext.oservi")
@@ -1225,4 +1232,198 @@ def build_affiliate_settlement_engine(
         trigger={"on_cron": "0 2 * * *"},
         config={"interval_seconds": 86400},
         name="ext-affiliate-settlement",
+    )
+
+
+def build_inventory_decay_engine(
+    pool: Any, *, settings: Settings
+) -> CronSchedulerEngine:
+    """Theta 衰减引信引擎 (on_interval，每 1 小时)。
+
+    补天计划 Task 2.2：对过期时间强制轮询——一旦 NOW() > expiration_time，
+    强制注入 omodul.scrap_batch_inventory 报损清零 (status + 库存同时归零)，
+    防止腐坏商品流入前端。
+
+    跟 inventory_reaper_engine (半夜 2:00 正式销毁仪式) 是两条互补防线：reaper
+    走 mark_batch_for_disposal (只改 status，库存数字保留审计)，decay 引擎走
+    scrap_batch_inventory (报损清零)，任何一条先命中后另一条的 SQL 都捞不到
+    该批次 (status 已非 active)，天然幂等不重复处理。1 小时粒度保证过期后
+    最多滞留一个 tick；真正把腐坏商品挡在顾客面前的第一道防线是
+    get_nearby_feed 的安全货架期过滤 (oskill.is_shelf_life_safe，防御纵深，
+    不依赖引擎及时性)。
+
+    Args:
+        pool: obase.persistence.PgPool。
+        settings: Settings (output_root / notification provider)。
+    """
+
+    async def decay_tick(**_: Any) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        expired = await db_query_many(
+            pool,
+            sql=(
+                "SELECT id, stock_qty, reserved_qty, location_id "
+                'FROM "inventory_batch" '
+                "WHERE status = 'active' AND expiration_time IS NOT NULL "
+                "AND expiration_time <= $1 AND stock_qty - reserved_qty > 0"
+            ),
+            params=(now,),
+        )
+
+        scrapped: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for batch in expired:
+            batch_id = str(batch["id"])
+            try:
+                result = await scrap_batch_inventory(
+                    ScrapBatchInventoryConfig(),
+                    ScrapBatchInventoryInput(batch_id=batch_id, reason="expired"),
+                    _output_dir(settings, "inventory_decay_engine", "scrap_batch_inventory"),
+                    pool=pool,
+                )
+                if result["status"] == "completed":
+                    scrapped.append(
+                        {
+                            "batch_id": batch_id,
+                            "scrapped_qty": result["scrapped_qty"],
+                            "location_id": str(batch["location_id"]),
+                        }
+                    )
+                else:
+                    errors.append({"batch_id": batch_id, "error": result["error"]})
+            except Exception as exc:  # noqa: BLE001 - 单个批次报损失败不中断整个 tick
+                errors.append({"batch_id": batch_id, "error": str(exc)})
+
+        return {"checked": len(expired), "scrapped": scrapped, "errors": errors}
+
+    decay_tick.__name__ = "decay_tick"
+
+    return CronSchedulerEngine(
+        tasks=[decay_tick],
+        trigger={"on_interval": 3600},
+        config={"interval_seconds": 3600},
+        name="ext-inventory-decay",
+    )
+
+
+def build_competitor_spider_engine(
+    pool: Any,
+    *,
+    spider_provider: str = "manual",
+    radius_km: int = 5,
+    max_calls_per_tick: int = 200,
+) -> CronSchedulerEngine:
+    """竞对价格爬虫入库引擎 (on_cron，每日凌晨 3:00)。
+
+    补天计划 Task 3.2：读取所有 active 的 SKU (product_variant JOIN product)，
+    对每个 active 微仓坐标调用 oprim.spider_fetch_competitor_prices，把抓到的
+    商超 O2O 价格经 oskill.normalize_sku_price 归一化 (分/克) 后写入
+    price_benchmark (source_type='spider')，让做市预言机开始自动吐出数据——
+    submit_supplier_reverse_auction_workflow 的基准线 / 众包 OCR 核销从此有
+    了自动来源。
+
+    诚实的空白：ManualSpiderProvider 默认返回空结果 (不伪造假数据)，所以真实
+    部署里这个引擎装上爬虫 provider 前每 tick 都是"扫了 N 个 SKU、抓了 0 条"，
+    如实记录不假装成功。radius_km 默认 5 公里跟 SPEC 的周边 O2O 比价语义一致。
+
+    SKU↔抓取条目匹配：抓取返回 {"item", "price", "unit", "store"}，item 是
+    商品名自由文本，跟 SKU 没有稳定键——按 SKU 标题做大小写不敏感子串匹配，
+    匹配不上就存 variant_id=NULL + raw_item_name 原文留痕 (跟 price_benchmark
+    表设计一致)，不假装存在一个不存在的商品关联。
+
+    Args:
+        pool: obase.persistence.PgPool。
+        spider_provider: 爬虫 provider 名，默认 "manual"。
+        radius_km: 抓取半径 (公里)。
+        max_calls_per_tick: 单 tick 抓取调用上限，防止 SKU×节点组合爆炸
+            (真实爬虫有成本和速率限制，这里先做硬上限)。
+    """
+
+    async def spider_tick(**_: Any) -> dict[str, Any]:
+        variants = await db_query_many(
+            pool,
+            sql=(
+                "SELECT v.id, v.sku_code, p.title "
+                'FROM "product_variant" v '
+                'JOIN "product" p ON p.id = v.product_id '
+                "WHERE v.status = 'active' AND p.status = 'active'"
+            ),
+        )
+        locations = await db_query_many(
+            pool,
+            sql=(
+                'SELECT id, lat, lng FROM "stock_location" '
+                "WHERE status = 'active' AND lat IS NOT NULL AND lng IS NOT NULL"
+            ),
+        )
+        if not variants or not locations:
+            return {"scanned_variants": len(variants), "written": 0, "calls": 0}
+
+        from obase.uuid7 import uuid7
+
+        written = 0
+        calls = 0
+        for loc in locations:
+            for variant in variants:
+                if calls >= max_calls_per_tick:
+                    break
+                calls += 1
+                try:
+                    items = await spider_fetch_competitor_prices(
+                        spider_provider,
+                        lat=float(loc["lat"]),
+                        lon=float(loc["lon"]),
+                        radius_km=radius_km,
+                        keywords=[variant["title"], variant["sku_code"]],
+                    )
+                except Exception as exc:  # noqa: BLE001 - 单次抓取失败不中断整批
+                    logger.warning(
+                        "spider fetch failed: variant=%s loc=%s: %s",
+                        variant["id"], loc["id"], exc,
+                    )
+                    continue
+
+                for item in items:
+                    raw_price = float(item.get("price", 0) or 0)
+                    if raw_price <= 0:
+                        continue
+                    raw_unit = str(item.get("unit", "") or "")
+                    title = str(item.get("item", "") or "")
+                    match = (
+                        title.strip().lower() == variant["title"].strip().lower()
+                        or variant["title"].strip().lower() in title.strip().lower()
+                    )
+                    normalized = normalize_sku_price(
+                        int(round(raw_price * 100)), raw_unit=raw_unit
+                    )
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            'INSERT INTO "price_benchmark" '
+                            "(id, variant_id, raw_item_name, source_type, competitor_name, "
+                            " raw_price_cents, raw_unit, normalized_price_per_unit) "
+                            "VALUES ($1, $2, $3, 'spider', $4, $5, $6, $7)",
+                            uuid7(),
+                            variant["id"] if match else None,
+                            title[:128],
+                            str(item.get("store", "") or "")[:64],
+                            int(round(raw_price * 100)),
+                            raw_unit[:20],
+                            normalized,
+                        )
+                    written += 1
+
+        return {
+            "scanned_variants": len(variants),
+            "scanned_locations": len(locations),
+            "calls": calls,
+            "written": written,
+        }
+
+    spider_tick.__name__ = "spider_tick"
+
+    return CronSchedulerEngine(
+        tasks=[spider_tick],
+        trigger={"on_cron": "0 3 * * *"},
+        config={"interval_seconds": 86400},
+        name="ext-competitor-spider",
     )

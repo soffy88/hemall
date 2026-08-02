@@ -50,6 +50,7 @@ DOMAINS: dict[str, list[str]] = {
     "supply-chain": [
         "create_inventory_batch",
         "mark_batch_for_disposal",
+        "scrap_batch_inventory",
         "batch_settlement",
         "claim_origin_workflow",
         "execute_slashing_workflow",
@@ -85,6 +86,10 @@ DOMAINS: dict[str, list[str]] = {
     "marketing": [
         "generate_crushing_offer_workflow",
         "execute_channel_broadcast_workflow",
+        # trigger_initial_probe_workflow: 试探单属于定价/营销动作 (admin 读
+        # 端点 /admin/marketing/probe-logs 就在 marketing 域)，运营手动激活
+        # 零号探针，必须 admin token。
+        "trigger_initial_probe_workflow",
     ],
     "growth": [
         "process_cloud_franchise_claim_workflow",
@@ -98,6 +103,7 @@ DOMAINS: dict[str, list[str]] = {
 ADMIN_OPS: set[str] = {
     "create_inventory_batch",
     "mark_batch_for_disposal",
+    "scrap_batch_inventory",
     "batch_settlement",
     "execute_slashing_workflow",
     "confirm_batch_pick",
@@ -110,6 +116,9 @@ ADMIN_OPS: set[str] = {
     # 发版 (那是运营/引擎的动作，不是顾客自助操作)，跟 report_phantom_stock_
     # workflow 这类"内部人操作"归一类。
     "execute_channel_broadcast_workflow",
+    # trigger_initial_probe_workflow: 插入试探单 + 改顾客可见价，等于给一个
+    # 批次定价——顾客不该能自己触发，必须运营后台核实后调。
+    "trigger_initial_probe_workflow",
     # bind_digital_lord_contract_workflow: "500 单点火达标"的判定不在这个
     # omodul 内部 (调用方自行核实)，能触发这个端点等于能白嫖一个节点的永久
     # 领主税——必须是运营后台核实过阈值后才能调，不能顾客自己点。

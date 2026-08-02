@@ -302,6 +302,54 @@ async def ext_trigger_smart_escrow(
     return await p.escrow(account=account, amount=amount, release_date=release_date)
 
 
+async def ext_payment_gateway_prepay(
+    provider: str,
+    *,
+    out_trade_no: str,
+    total_fee_cents: int,
+    description: str,
+    notify_url: str,
+) -> dict[str, Any]:
+    """收款网关统一下单 (补天计划 Task 1.3)：微信 native / Stripe PaymentIntent。
+
+    真实密钥接入前是 ManualPaymentGateway 的内存态占位；接入后替换 provider
+    实现即可，签名不变 (out_trade_no 是幂等键，金额一律用分)。
+    """
+    from obase.provider_registry import ProviderRegistry
+
+    p = ProviderRegistry.get().generic("payment_gateway", provider)
+    return await p.prepay(
+        out_trade_no=out_trade_no,
+        total_fee_cents=total_fee_cents,
+        description=description,
+        notify_url=notify_url,
+    )
+
+
+async def ext_payment_gateway_refund(
+    provider: str,
+    *,
+    out_trade_no: str,
+    out_refund_no: str,
+    refund_fee_cents: int,
+    reason: str = "",
+) -> dict[str, Any]:
+    """收款网关退款 (补天计划 Task 1.3)。
+
+    退款金额 (分) 与原支付金额一一对应，out_refund_no 是幂等键——真实网关
+    重复提交同一退款单号返回同一笔退款，不会重复退款。
+    """
+    from obase.provider_registry import ProviderRegistry
+
+    p = ProviderRegistry.get().generic("payment_gateway", provider)
+    return await p.refund(
+        out_trade_no=out_trade_no,
+        out_refund_no=out_refund_no,
+        refund_fee_cents=refund_fee_cents,
+        reason=reason,
+    )
+
+
 async def ext_llm_generate_text(
     provider: str, *, system_prompt: str, user_prompt: str
 ) -> str:

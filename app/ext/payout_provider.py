@@ -59,3 +59,113 @@ class ManualPayoutProvider:
         }
         self._escrows[escrow_id] = record
         return record
+
+
+class ManualPaymentGateway:
+    """补天计划 Task 1.3 — 收款网关骨架：统一下单 (Prepay) 与退款 (Refund)。
+
+    架构师指令：把收款通道的入参/出参结构先实装出来，确保随时可接入真实密钥。
+    跟 ManualPayoutProvider (付钱方向) 不同，这是收钱方向 (顾客→平台) 的网关
+    占位实现：内存态，统一下单直接生成一个模拟 prepay 单，退款直接成功。
+
+    真实接入点 (实现替换本类同名方法即可，签名不变)：
+        - 微信支付: 统一下单 v3 API (POST /v3/pay/transactions/native)，
+          prepay() 返回的 code_url 就是 native 支付的二维码链接；回调验签走
+          app/security/webhook.py 的 HMAC 装甲 (真实环境替换为微信平台证书验签)。
+        - Stripe: PaymentIntent (mode=payment)，prepay() 返回 payment_intent_id
+          + client_secret，前端用 Stripe.js 完成 3DS 确认。
+        - 密钥来源约定 (bootstrap 注册时注入，避免散落在代码里)：
+          HEMALL_WECHAT_MCH_ID / HEMALL_WECHAT_API_V3_KEY / HEMALL_STRIPE_SECRET_KEY
+
+    prepay() 输入 (跟微信支付 v3 的字段一一对应，用分作金额单位)：
+        out_trade_no: 商户订单号 (幂等键，微信侧重复提交返回同一单)。
+        total_fee_cents: 订单金额 (分)。
+        description: 商品描述。
+        notify_url: 回调地址 (平台侧 /payments/wechat/notify)。
+
+    refund() 输入：
+        out_trade_no: 原支付商户订单号。
+        out_refund_no: 商户退款单号 (幂等键)。
+        refund_fee_cents: 退款金额 (分)。
+        reason: 退款原因。
+    """
+
+    def __init__(self, *, merchant_id: str = "", api_key: str = "") -> None:
+        # 真实接入时从环境注入；内存态实现不需要密钥也能跑通全链路。
+        self._merchant_id = merchant_id
+        self._api_key = api_key
+        self._prepays: dict[str, dict[str, Any]] = {}
+        self._refunds: dict[str, dict[str, Any]] = {}
+
+    async def prepay(
+        self,
+        *,
+        out_trade_no: str,
+        total_fee_cents: int,
+        description: str,
+        notify_url: str,
+    ) -> dict[str, Any]:
+        """统一下单。返回结构同时覆盖微信 native 支付与 Stripe PaymentIntent 两种形态。"""
+        if total_fee_cents <= 0:
+            raise ValueError("prepay: total_fee_cents must be positive")
+        if out_trade_no in self._prepays:
+            return self._prepays[out_trade_no]
+
+        record = {
+            "out_trade_no": out_trade_no,
+            "total_fee_cents": total_fee_cents,
+            "description": description,
+            "notify_url": notify_url,
+            "status": "pending",
+            # 微信 native: 二维码链接 (真实实现来自统一下单 v3 响应 code_url)。
+            "code_url": f"weixin://wxpay/bizpayurl?pr=MOCK_{out_trade_no[-12:]}",
+            "prepay_id": f"wx_mock_prepay_{out_trade_no[-12:]}",
+            # Stripe: PaymentIntent 形态 (真实实现来自 PaymentIntent.create)。
+            "payment_intent_id": None,
+            "client_secret": None,
+        }
+        self._prepays[out_trade_no] = record
+        return record
+
+    async def stripe_prepay(
+        self,
+        *,
+        out_trade_no: str,
+        total_fee_cents: int,
+        description: str,
+    ) -> dict[str, Any]:
+        """Stripe 专属统一下单形态 (PaymentIntent)。"""
+        record = {
+            "out_trade_no": out_trade_no,
+            "total_fee_cents": total_fee_cents,
+            "description": description,
+            "status": "requires_payment_method",
+            "payment_intent_id": f"pi_mock_{out_trade_no[-12:]}",
+            "client_secret": f"pi_mock_secret_{out_trade_no[-12:]}_secret",
+            "code_url": None,
+            "prepay_id": None,
+        }
+        self._prepays[out_trade_no] = record
+        return record
+
+    async def refund(
+        self,
+        *,
+        out_trade_no: str,
+        out_refund_no: str,
+        refund_fee_cents: int,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """退款。真实实现调微信 v3 退款 API / Stripe Refund.create。"""
+        if refund_fee_cents <= 0:
+            raise ValueError("refund: refund_fee_cents must be positive")
+        record = {
+            "out_refund_no": out_refund_no,
+            "out_trade_no": out_trade_no,
+            "refund_fee_cents": refund_fee_cents,
+            "reason": reason,
+            "status": "success",  # 真实实现为 PROCESSING/SUCCESS/CLOSED
+            "refund_id": f"wx_mock_refund_{out_refund_no[-12:]}",
+        }
+        self._refunds[out_refund_no] = record
+        return record

@@ -23,7 +23,7 @@ from .config import Settings
 from .ext.cv_provider import ManualCVProvider
 from .ext.douyin_provider import ManualDouyinProvider
 from .ext.llm_provider import ManualLLMProvider
-from .ext.payout_provider import ManualPayoutProvider
+from .ext.payout_provider import ManualPaymentGateway, ManualPayoutProvider
 from .ext.schema import ensure_ext_schema
 from .ext.spider_provider import ManualSpiderProvider
 from .ext.vlm_provider import ManualVLMProvider
@@ -57,6 +57,11 @@ def register_providers(settings: Settings) -> None:
         replace=True,
     )
     reg.register_generic("payout", "manual", ManualPayoutProvider(), replace=True)
+    # 补天计划 Task 1.3: 收款网关 (统一下单/退款) 占位 provider，接入真实
+    # 微信支付/Stripe 密钥时替换同名注册即可，oprim.ext_payment_gateway_* 不变。
+    reg.register_generic(
+        "payment_gateway", "manual", ManualPaymentGateway(), replace=True
+    )
     reg.register_generic("weather", "manual", ManualWeatherProvider(), replace=True)
     reg.register_generic("vlm", "manual", ManualVLMProvider(), replace=True)
     reg.register_generic("cv", "manual", ManualCVProvider(), replace=True)
@@ -73,30 +78,45 @@ def register_providers(settings: Settings) -> None:
 
 
 async def init_db(settings: Settings) -> PgPool:
-    """创建命名连接池并幂等建齐商务表。DB 不可达时向上抛, 由调用方决定降级。"""
+    """创建命名连接池并幂等建齐商务表。DB 不可达时向上抛, 由调用方决定降级。
+
+    并发保护: 生产环境 gunicorn 多 worker 同时启动时, 每个 worker 都会执行
+    schema 初始化。PostgreSQL 的 CREATE TABLE IF NOT EXISTS 在并发场景下存在
+    竞态窗口(两事务同时判定"表不存在"并创建, 后到者因同名复合类型冲突报错),
+    故用 advisory lock 将 schema 初始化串行化——先到者建表, 后到者等锁释放后
+    跳过已存在的表。
+    """
     pool = await PgPool.create(
         name=settings.pg_pool_name,
         dsn=settings.pg_dsn,
         min_size=settings.pg_pool_min,
         max_size=settings.pg_pool_max,
     )
-    await ensure_commerce_batch_schema(pool)
-    await _ensure_hemall_local_schema(pool)
-    await ensure_ext_schema(pool)
 
-    # Phase 0 Week 2: 安全 + 支付表结构
-    from .security.audit import AUDIT_LOG_DDL
-    from .payments.models import PAYMENT_SESSION_DDL
+    # 固定锁 ID (hemall_prod 库私有, 无跨项目冲突)
+    SCHEMA_LOCK_ID = 824701
+    async with pool.acquire() as lock_conn:
+        await lock_conn.execute("SELECT pg_advisory_lock($1)", SCHEMA_LOCK_ID)
+        try:
+            await ensure_commerce_batch_schema(pool)
+            await _ensure_hemall_local_schema(pool)
+            await ensure_ext_schema(pool)
 
-    await _ensure_security_payment_schema(pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL)
+            # Phase 0 Week 2: 安全 + 支付表结构
+            from .security.audit import AUDIT_LOG_DDL
+            from .payments.models import PAYMENT_SESSION_DDL
 
-    # Phase 1: 库存管理表结构
-    from .inventory.models import STOCK_MOVEMENT_DDL
-    await _ensure_inventory_schema(pool, STOCK_MOVEMENT_DDL)
+            await _ensure_security_payment_schema(pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL)
 
-    # Phase 1: 订单生命周期表结构
-    from .orders.models import ORDER_LIFECYCLE_DDL
-    await _ensure_order_lifecycle_schema(pool, ORDER_LIFECYCLE_DDL)
+            # Phase 1: 库存管理表结构
+            from .inventory.models import STOCK_MOVEMENT_DDL
+            await _ensure_inventory_schema(pool, STOCK_MOVEMENT_DDL)
+
+            # Phase 1: 订单生命周期表结构
+            from .orders.models import ORDER_LIFECYCLE_DDL
+            await _ensure_order_lifecycle_schema(pool, ORDER_LIFECYCLE_DDL)
+        finally:
+            await lock_conn.execute("SELECT pg_advisory_unlock($1)", SCHEMA_LOCK_ID)
     
     # Phase 0: 更新 DB 连接池指标
     async def update_metrics():

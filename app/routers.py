@@ -9,6 +9,7 @@ omodul_endpoint 工厂; 本文件只做"登记 + 个别端点的旁路接线"。
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,6 +22,7 @@ from . import queries
 from .auth import router as auth_router
 from .events import fire_event
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
+from .ext.oskill import find_nearest_location
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .storefront import router as storefront_router
@@ -442,6 +444,155 @@ async def ext_lookup_supplier(wallet_account: str, request: Request):
     if supplier is None:
         raise HTTPException(404, "supplier not found")
     return supplier
+
+
+# ── 补天计划 Task 2.1: 地理位置找货 Feed (Voronoi 网格前台化) ────────────────
+
+#: get_nearby_feed 的安全货架期余量 (小时)。比过期提前 2 小时就不上架——即使
+#: inventory_decay_engine 还没到下一个 tick，临期商品也不会流到顾客面前。
+_NEARBY_FEED_SAFETY_MARGIN_HOURS = 2.0
+
+
+@ext_bespoke_router.get("/store/nearby-feed")
+async def get_nearby_feed(
+    request: Request,
+    lat: float,
+    lon: float,
+    limit: int = Query(50, ge=1, le=100),
+):
+    """位置 Feed 流："人找货"到"地理位置找货"的彻底反转 (补天计划 Task 2.1)。
+
+    根据传入坐标，通过底层距离算法 (oskill.find_nearest_location，纯 Python
+    haversine，不依赖 PostGIS) 找出最近的 active 微仓，只返回该节点内
+    ``stock_qty > 0`` 且 ``expiration_time`` 安全的批次列表 (安全货架期余量
+    2 小时，过期/临期批次在 SQL 层直接过滤掉，是比 decay 引擎更靠前的一道
+    防线)。
+
+    公开端点 (零登录扫码即买)，纳入限流防刷保护 (见 public_zero_login_paths)。
+
+    Args (query params):
+        lat/lon: 顾客当前位置 (十进制坐标)。
+        limit: 返回批次上限 (默认 50，最多 100)。
+    """
+    pool = _pool(request)
+
+    async with pool.acquire() as conn:
+        locations = await conn.fetch(
+            'SELECT id, lat, lng FROM "stock_location" '
+            "WHERE status = 'active' AND lat IS NOT NULL AND lng IS NOT NULL"
+        )
+    if not locations:
+        return {"nearest_location": None, "batches": []}
+
+    loc_list = [
+        (str(row["id"]), float(row["lat"]), float(row["lng"])) for row in locations
+    ]
+    nearest_id, distance_km = find_nearest_location(loc_list, lat=lat, lon=lon)
+
+    safety_cutoff = datetime.now(UTC) + timedelta(hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS)
+    async with pool.acquire() as conn:
+        batches = await conn.fetch(
+            "SELECT b.id, b.variant_id, b.retail_price_cents, b.stock_qty, "
+            "b.expiration_time, b.video_url, v.sku_code, p.title, s.name AS location_name "
+            'FROM "inventory_batch" b '
+            'JOIN "product_variant" v ON v.id = b.variant_id '
+            'JOIN "product" p ON p.id = v.product_id '
+            'JOIN "stock_location" s ON s.id = b.location_id '
+            "WHERE b.location_id = $1 AND b.status = 'active' "
+            "AND b.stock_qty - b.reserved_qty > 0 "
+            "AND (b.expiration_time IS NULL OR b.expiration_time > $2) "
+            "ORDER BY b.expiration_time NULLS LAST "
+            "LIMIT $3",
+            nearest_id,
+            safety_cutoff,
+            limit,
+        )
+
+    return {
+        "nearest_location": {"id": nearest_id, "distance_km": round(distance_km, 3)},
+        "safety_margin_hours": _NEARBY_FEED_SAFETY_MARGIN_HOURS,
+        "batches": [
+            {
+                "batch_id": str(row["id"]),
+                "variant_id": str(row["variant_id"]),
+                "title": row["title"],
+                "sku_code": row["sku_code"],
+                "retail_price_cents": row["retail_price_cents"],
+                "stock_qty": row["stock_qty"],
+                "expiration_time": (
+                    row["expiration_time"].isoformat()
+                    if row["expiration_time"]
+                    else None
+                ),
+                "video_url": row["video_url"],
+                "location_name": row["location_name"],
+            }
+            for row in batches
+        ],
+    }
+
+
+# ── 补天计划 Task 1.1: 抖音转化回调 (HMAC-SHA256 验签入口) ─────────────────
+
+
+class _DouyinCallbackRequest(BaseModel):
+    order_id: str
+    douyin_uid: str | None = None
+
+
+@ext_bespoke_router.post("/growth/douyin_callback")
+async def ext_douyin_callback(
+    body: _DouyinCallbackRequest, request: Request
+) -> JSONResponse:
+    """抖音开放平台转化回调入口 (补天计划 Task 1.1)。
+
+    签名校验由 WebhookSignatureMiddleware 在 ASGI 层强制完成 (非法请求 403
+    丢弃，根本到不了这里)；能走到这个 handler 的都是验签通过的请求，handler
+    直接把归因参数透传给 record_douyin_conversion_workflow 落账——不需要再
+    挂 admin token (HMAC 就是这道端点的鉴权)。
+
+    公开端点 (仅对携带合法 X-Hemall-Signature 的请求开放)，纳入限流防刷。
+    """
+    from .ext.omodul.record_douyin_conversion_workflow import (
+        RecordDouyinConversionWorkflowConfig,
+        RecordDouyinConversionWorkflowInput,
+        record_douyin_conversion_workflow,
+    )
+
+    result = await record_douyin_conversion_workflow(
+        RecordDouyinConversionWorkflowConfig(),
+        RecordDouyinConversionWorkflowInput(
+            order_id=body.order_id, douyin_uid=body.douyin_uid
+        ),
+        _ext_bespoke_output_dir(request, "record_douyin_conversion_workflow"),
+        pool=_pool(request),
+    )
+    status_code = 200 if result.get("status") == "completed" else 422
+    return JSONResponse(status_code=status_code, content=jsonable_encoder(result))
+
+
+#: 补天计划 Task 1.2: ext 手写公开端点 (供限流中间件推导路径集合)。
+_EXT_BESPOKE_PUBLIC_PATHS = {
+    "/marketing/reward_crowdsourced_benchmark_workflow",
+    "/aftersales/submit_rma_claim",
+    "/supply-chain/suppliers/lookup",
+    "/store/nearby-feed",
+    "/growth/douyin_callback",
+}
+
+
+def public_zero_login_paths() -> set[str]:
+    """补天计划 Task 1.2: 零登录自助公开端点的完整精确路径集合。
+
+    来源：ext registry 里 require_auth=False 的 omodul 端点 (顾客/供应商/
+    邻居自助) + ext 手写公开端点。storefront 共享商城公开面 (整个 /store/*
+    前缀) 由调用方在 main.py 用 path_prefixes 传入，这里是精确路径集合。
+    """
+    paths = set(_EXT_BESPOKE_PUBLIC_PATHS)
+    paths.update(spec.path for spec in ext_endpoint_specs() if not spec.require_auth)
+    # 共享 registry 的公开端点 (create_customer/create_user 等自助注册) 同样防刷。
+    paths.update(spec.path for spec in all_endpoint_specs() if not spec.require_auth)
+    return paths
 
 
 def build_router() -> APIRouter:

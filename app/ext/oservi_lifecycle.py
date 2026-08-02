@@ -32,8 +32,10 @@ from .oservi import (
     build_affiliate_settlement_engine,
     build_autonomous_triage_engine,
     build_batch_broadcast_engine,
+    build_competitor_spider_engine,
     build_delivery_wave_engine,
     build_demand_aggregator_engine,
+    build_inventory_decay_engine,
     build_inventory_reaper_engine,
     build_market_maker_engine,
     build_market_maker_probe_engine,
@@ -76,6 +78,8 @@ class ExtOservi:
     market_maker_probe: CronSchedulerEngine
     mercenary_routing: CronSchedulerEngine
     affiliate_settlement: CronSchedulerEngine
+    inventory_decay: CronSchedulerEngine
+    competitor_spider: CronSchedulerEngine
     _tasks: list[asyncio.Task] = field(default_factory=list)
 
     def _cron_engines(self) -> tuple[CronSchedulerEngine, ...]:
@@ -90,6 +94,8 @@ class ExtOservi:
             self.market_maker_probe,
             self.mercenary_routing,
             self.affiliate_settlement,
+            self.inventory_decay,
+            self.competitor_spider,
         )
 
     def start_cron_engines(self) -> None:
@@ -141,6 +147,8 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     market_maker_probe = build_market_maker_probe_engine(pool)
     mercenary_routing = build_mercenary_routing_engine(pool)
     affiliate_settlement = build_affiliate_settlement_engine(pool)
+    inventory_decay = build_inventory_decay_engine(pool, settings=settings)
+    competitor_spider = build_competitor_spider_engine(pool)
 
     return ExtOservi(
         demand_aggregator=demand_aggregator,
@@ -157,4 +165,6 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         market_maker_probe=market_maker_probe,
         mercenary_routing=mercenary_routing,
         affiliate_settlement=affiliate_settlement,
+        inventory_decay=inventory_decay,
+        competitor_spider=competitor_spider,
     )

@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # 伪名化盐: 服务层把 user_id 转成稳定不可逆引用再传给 omodul (§5.5.1 禁真实 PII)
     anon_salt: str = "hemall-anon-salt"
 
+    # ── 补天计划 Task 1.1: Webhook 验签密钥 (抖音/支付回调 HMAC-SHA256) ──
+    # 生产环境必须用 HEMALL_WEBHOOK_SECRET 覆盖，与抖音/支付网关侧配置一致。
+    webhook_secret: str = "dev-webhook-secret-change-me"
+
     # ── omodul 输出 (decision_trail / report 落盘) ─────────────────────
     output_root: Path = Path("./var/omodul_output")
 

@@ -900,3 +900,59 @@ def check_spatial_conflict(
         _haversine_km(claim, loc) <= _LORD_CLAIM_CONFLICT_RADIUS_KM
         for loc in existing_locations
     )
+
+
+def find_nearest_location(
+    locations: list[tuple[str, float, float]], *, lat: float, lon: float
+) -> tuple[str, float]:
+    """纯内存：返回距离查询点最近的 location_id 及其距离 (公里)。
+
+    补天计划 Task 2.1 (get_nearby_feed) 的定位基座——"人找货"到"地理位置找货"
+    的第一步就是找到离查询者最近的 active 微仓。直接 haversine 取最近，不做
+    Voronoi 胞体判定：单点查询场景下"距离最近"就是正确的归属语义，Voronoi
+    (recompute_voronoi_grid) 服务的是"节点间接壤邻居"关系，两者用途不同。
+
+    Args:
+        locations: [(location_id, lat, lon), ...]，至少 1 个点。
+        lat/lon: 查询者坐标 (十进制)。
+
+    Returns:
+        (location_id, distance_km)。
+
+    Raises:
+        ValueError: locations 为空。
+    """
+    if not locations:
+        raise ValueError("find_nearest_location: locations must not be empty")
+
+    nearest_id = locations[0][0]
+    nearest_dist = _haversine_km(
+        (lat, lon), (float(locations[0][1]), float(locations[0][2]))
+    )
+    for loc_id, loc_lat, loc_lon in locations[1:]:
+        dist = _haversine_km((lat, lon), (float(loc_lat), float(loc_lon)))
+        if dist < nearest_dist:
+            nearest_id = loc_id
+            nearest_dist = dist
+    return nearest_id, nearest_dist
+
+
+def is_shelf_life_safe(expiration_time: Any, *, now: Any, margin_hours: float) -> bool:
+    """纯内存：判断批次是否处于"安全货架期"内 (距过期还有至少 margin_hours)。
+
+    补天计划 Task 2.1 的过期安全阀——get_nearby_feed 只把 "expiration_time
+    安全" 的批次暴露给前端；即使 inventory_decay_engine 还没到下一个 tick，
+    过期/临期批次也不可能流到顾客面前 (防御纵深，不依赖后台引擎的及时性)。
+
+    Args:
+        expiration_time: 批次过期时间 (tz-aware datetime)。
+        now: 当前时间 (tz-aware datetime)。
+        margin_hours: 安全余量 (小时)。
+
+    Returns:
+        True 表示还在安全期；expiration_time 为 None (没有过期时间的批次
+        视作长期商品，永远安全) 返回 True。
+    """
+    if expiration_time is None:
+        return True
+    return expiration_time > now + timedelta(hours=margin_hours)
