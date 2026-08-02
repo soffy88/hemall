@@ -1,0 +1,16 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785591582.4794266,
+    "event": "shared_batch_created",
+    "batch_id": "019fbd8d-4f0b-78a5-bebd-de44ec31d944"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785591582.4815264,
+    "event": "local_columns_patched",
+    "batch_id": "019fbd8d-4f0b-78a5-bebd-de44ec31d944",
+    "expiration_time": null,
+    "supplier_id": null
+  }
+]

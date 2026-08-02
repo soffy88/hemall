@@ -1,0 +1,11 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785498615.5599601,
+    "event": "shipping_method_added",
+    "method_name": "快速配送",
+    "price_cents": 1500,
+    "effective_shipping": 1500,
+    "grand_total": 6000
+  }
+]

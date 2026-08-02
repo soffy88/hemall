@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785518488.7779744,
+    "event": "error",
+    "detail": "insert or update on table \"inventory_batches\" violates foreign key constraint \"inventory_batches_variant_id_fkey\"\nDETAIL:  Key (variant_id)=(nonexistent) is not present in table \"variants\"."
+  }
+]

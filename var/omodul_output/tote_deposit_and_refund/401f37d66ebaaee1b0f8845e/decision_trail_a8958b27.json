@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785546331.3194425,
+    "event": "error",
+    "detail": "tote 'tote_019fb94f904eee58f84e63' already has an active deposit"
+  }
+]

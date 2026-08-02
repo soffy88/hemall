@@ -1,0 +1,13 @@
+apiVersion: v2
+name: hemall
+description: Production-grade headless commerce backend (3O paradigm)
+type: application
+version: 0.3.0
+appVersion: "0.3.0"
+keywords:
+- ecommerce
+- headless
+- commerce
+- api
+sources:
+- https://github.com/hemall/hemal

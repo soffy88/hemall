@@ -1,0 +1,15 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785497189.6301906,
+    "event": "validated",
+    "code": "GC1785497189559"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785497189.6350713,
+    "event": "issued",
+    "gift_card_id": "019fb7ec-fcfe-70fa-b151-278a43f659b8",
+    "amount_cents": 10000
+  }
+]

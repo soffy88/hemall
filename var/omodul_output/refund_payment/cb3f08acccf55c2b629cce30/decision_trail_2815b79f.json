@@ -1,0 +1,9 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785496112.486896,
+    "event": "payment_refunded",
+    "provider_name": "manual",
+    "amount_cents": 1000
+  }
+]

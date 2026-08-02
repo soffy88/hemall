@@ -1,0 +1,17 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785495835.3342803,
+    "event": "product_updated",
+    "product_id": "019fb7d8-52ad-7e4b-8b14-e765a774d60a",
+    "fields": [
+      "status"
+    ]
+  },
+  {
+    "step_no": 2,
+    "ts": 1785495835.3342917,
+    "event": "search_reindexed",
+    "product_id": "019fb7d8-52ad-7e4b-8b14-e765a774d60a"
+  }
+]

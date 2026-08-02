@@ -1,0 +1,14 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785520432.5994189,
+    "event": "validated",
+    "email": "demo@clearnode.local"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785520432.831498,
+    "event": "persisted",
+    "user_id": "019fb94f-a5d7-77f3-b9e8-14ea49dc5c9e"
+  }
+]

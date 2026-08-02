@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785624701.915765,
+    "event": "error",
+    "detail": "invalid input for query argument $1: 'nonexistent-batch-id' (invalid UUID 'nonexistent-batch-id': length must be between 32..36 characters, got 20)"
+  }
+]

@@ -1,0 +1,15 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785498591.5101373,
+    "event": "validated",
+    "code": "BROWSERTEST1"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785498591.5122745,
+    "event": "issued",
+    "gift_card_id": "019fb802-6116-7e70-a94a-87db97430167",
+    "amount_cents": 5000
+  }
+]

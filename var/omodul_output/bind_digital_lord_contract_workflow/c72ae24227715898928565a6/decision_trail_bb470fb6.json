@@ -1,0 +1,16 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785571211.6118817,
+    "event": "node_ignited",
+    "location_id": "loc_019fbc5662cba1c829a4c9"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785571211.6120234,
+    "event": "lord_contract_bound",
+    "contract_id": "lord_019fbc56795ad1df477e7c",
+    "douyin_uid": "curl_dy_1",
+    "location_id": "loc_019fbc5662cba1c829a4c9"
+  }
+]

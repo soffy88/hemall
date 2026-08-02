@@ -1,0 +1,15 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785498614.2951748,
+    "event": "lock_acquired",
+    "code": "BROWSERTEST1"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785498614.2971413,
+    "event": "gift_card_applied",
+    "cart_gift_card_id": "019fb802-ba18-7d08-ac0e-58d4f525575b",
+    "applied_cents": 4500
+  }
+]

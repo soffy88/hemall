@@ -1,0 +1,15 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785498397.3212595,
+    "event": "lock_acquired",
+    "code": "GCPUB1"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785498397.3237062,
+    "event": "gift_card_applied",
+    "cart_gift_card_id": "019fb7ff-6a8b-7196-a4c4-fc593d337325",
+    "applied_cents": 2000
+  }
+]

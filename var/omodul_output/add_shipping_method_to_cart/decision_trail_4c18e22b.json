@@ -1,0 +1,11 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785587947.2081506,
+    "event": "shipping_method_added",
+    "method_name": "pickup",
+    "price_cents": 500,
+    "effective_shipping": 500,
+    "grand_total": 500
+  }
+]

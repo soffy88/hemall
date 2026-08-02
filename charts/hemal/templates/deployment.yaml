@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-api
+  labels:
+    app: hemall-api
+    version: {{ .Chart.AppVersion }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: hemall-api
+  template:
+    metadata:
+      labels:
+        app: hemall-api
+        version: {{ .Chart.AppVersion }}
+    spec:
+      # 安全上下文
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 3000
+        fsGroup: 2000
+      containers:
+      - name: api
+        image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+        imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        # 生产环境资源配置
+        resources:
+          requests:
+            cpu: {{ .Values.api.resources.requests.cpu }}
+            memory: {{ .Values.api.resources.requests.memory }}
+          limits:
+            cpu: {{ .Values.api.resources.limits.cpu }}
+            memory: {{ .Values.api.resources.limits.memory }}
+        # 环境变量配置
+        env:
+        - name: LOG_LEVEL
+          value: {{ .Values.api.env.LOG_LEVEL | default "INFO" | quote }}
+        - name: DATABASE_POOL_SIZE
+          value: {{ .Values.api.env.DATABASE_POOL_SIZE | default "20" | quote }}
+        - name: REDIS_CONNECTION_POOL_SIZE
+          value: {{ .Values.api.env.REDIS_CONNECTION_POOL_SIZE | default "20" | quote }}
+        - name: GUNICORN_WORKERS
+          value: {{ .Values.api.env.GUNICORN_WORKERS | default "4" | quote }}
+        - name: GUNICORN_TIMEOUT
+          value: {{ .Values.api.env.GUNICORN_TIMEOUT | default "30" | quote }}
+        # 从 Secret 注入敏感配置
+        envFrom:
+        - secretRef:
+            name: {{ .Release.Name }}-secrets
+        # 健康检查
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.api.healthCheck }}
+            port: 8000
+          initialDelaySeconds: {{ .Values.api.livenessThreshold }}
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.api.healthCheck }}
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        # 安全上下文
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        # 启动命令
+        command: ["gunicorn"]
+        args: 
+        - "-c"
+        - "gunicorn.conf.py"
+        - "app.main:app"
+      # 优雅终止
+      terminationGracePeriodSeconds: 30

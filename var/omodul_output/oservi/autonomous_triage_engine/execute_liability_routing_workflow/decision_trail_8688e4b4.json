@@ -1,0 +1,15 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785585884.2957144,
+    "event": "rejected_no_material_damage",
+    "severity": 0.0
+  },
+  {
+    "step_no": 2,
+    "ts": 1785585884.299419,
+    "event": "claim_recorded",
+    "claim_id": "019fbd36-5c87-71b6-833c-aa5e3b013c2f",
+    "decision": "rejected"
+  }
+]

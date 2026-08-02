@@ -1,0 +1,9 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785504088.333648,
+    "event": "draft_order_created",
+    "order_id": "019fb856-410a-76a7-a222-a6d42bc80426",
+    "lines": 1
+  }
+]

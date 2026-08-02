@@ -1,0 +1,14 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785517798.4659503,
+    "event": "validated",
+    "email": "admin-b0a1ea4c@hemall.test"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785517798.6515646,
+    "event": "persisted",
+    "user_id": "019fb927-7441-77ec-90a5-e6c44f8f10b8"
+  }
+]

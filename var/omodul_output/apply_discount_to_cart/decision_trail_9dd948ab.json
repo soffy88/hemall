@@ -1,0 +1,23 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785498666.2754972,
+    "event": "lock_acquired",
+    "code": "SAVE10"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785498666.2779326,
+    "event": "discount_applied",
+    "cart_discount_id": "019fb803-8525-7310-8c0b-3265ce52ac0d",
+    "rule_type": "percentage",
+    "applied_amount_cents": 500
+  },
+  {
+    "step_no": 3,
+    "ts": 1785498666.2788055,
+    "event": "cart_totals_recomputed",
+    "discount_cents": 500,
+    "grand_total": 4500
+  }
+]

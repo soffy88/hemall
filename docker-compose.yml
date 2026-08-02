@@ -1,0 +1,127 @@
+# Hemall Docker Compose - Phase 0 开发环境
+# 包含：PostgreSQL, Redis, Jaeger (追踪), Prometheus (指标), Grafana (可视化)
+
+services:
+  # ── 应用服务 ──────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    ports:
+      - "8000:8000"
+    environment:
+      # 数据库
+      HEMALL_PG_DSN: postgresql://postgres:postgres@db:5432/hemall
+      HEMALL_PG_POOL_NAME: hemall
+      HEMALL_PG_POOL_MIN: 2
+      HEMALL_PG_POOL_MAX: 10
+      # Redis
+      HEMALL_REDIS_URL: redis://redis:6379/0
+      # JWT
+      HEMALL_JWT_SECRET: dev-secret-change-in-production
+      HEMALL_JWT_ALGORITHM: HS256
+      HEMALL_JWT_EXPIRES_MINUTES: 720
+      HEMALL_ANON_SALT: hemall-dev-salt
+      # 输出目录
+      HEMALL_OUTPUT_ROOT: /app/var/omodul_output
+      # Provider 配置
+      HEMALL_DEFAULT_PAYMENT_PROVIDER: manual
+      HEMALL_DEFAULT_FULFILLMENT_PROVIDER: manual
+      HEMALL_DEFAULT_SEARCH_PROVIDER: log
+      HEMALL_DEFAULT_NOTIFICATION_PROVIDER: log
+      HEMALL_DEFAULT_TAX_PROVIDER: flat_rate
+      HEMALL_FLAT_TAX_RATE_PERCENT: 10.0
+      # CORS
+      HEMALL_CORS_ORIGINS: '["http://localhost:3000","http://localhost:8000"]'
+      # OpenTelemetry
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_TRACES_EXPORTER: otlp
+    volumes:
+      - ./var:/app/var
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hemall
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Jaeger (链路追踪) ─────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
+
+  # ── Prometheus (指标采集) ─────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # ── Grafana (可视化) ──────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+# ── 数据卷 ──────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:

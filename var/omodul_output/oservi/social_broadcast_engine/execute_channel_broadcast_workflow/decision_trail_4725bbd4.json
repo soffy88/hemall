@@ -1,0 +1,27 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785570541.993493,
+    "event": "batch_loaded",
+    "batch_id": "batch_019fbc4c14be0a5f82d7d7",
+    "stock_qty": 10
+  },
+  {
+    "step_no": 2,
+    "ts": 1785570541.9935136,
+    "event": "copywriting_generated",
+    "length": 60
+  },
+  {
+    "step_no": 3,
+    "ts": 1785570541.997226,
+    "event": "log_recorded_pending",
+    "log_id": "log_019fbc4c41a940372efc8e"
+  },
+  {
+    "step_no": 4,
+    "ts": 1785570542.0025783,
+    "event": "wechat_publish_success",
+    "feed_id": "feed_4ea9dda778874c94"
+  }
+]

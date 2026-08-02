@@ -1,0 +1,10 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785588025.9429789,
+    "event": "payment_authorized",
+    "session_id": "019fbd57-0a4f-7f56-a760-501582f42cd6",
+    "provider_name": "manual",
+    "amount_due_cents": 2000
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785496049.9129934,
+    "event": "persisted",
+    "product_id": "019fb7db-98f8-7379-aff5-8baf27a9ee4f"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785496049.913001,
+    "event": "search_indexed",
+    "product_id": "019fb7db-98f8-7379-aff5-8baf27a9ee4f"
+  }
+]

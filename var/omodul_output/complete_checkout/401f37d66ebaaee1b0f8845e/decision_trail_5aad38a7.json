@@ -1,0 +1,40 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785546259.8374383,
+    "event": "cart_line_items_loaded",
+    "count": 1
+  },
+  {
+    "step_no": 2,
+    "ts": 1785546259.84013,
+    "event": "batch_locked",
+    "batch_id": "batch_019fbad9b0dd615291652c",
+    "qty": 2
+  },
+  {
+    "step_no": 3,
+    "ts": 1785546259.8401315,
+    "event": "price_snapshot_verified"
+  },
+  {
+    "step_no": 4,
+    "ts": 1785546259.840802,
+    "event": "payment_authorized",
+    "intent_id": "manual_f54efe880ab24512",
+    "amount": 7800
+  },
+  {
+    "step_no": 5,
+    "ts": 1785546259.8412428,
+    "event": "payment_captured",
+    "intent_id": "manual_f54efe880ab24512"
+  },
+  {
+    "step_no": 6,
+    "ts": 1785546259.8458018,
+    "event": "order_created",
+    "order_id": "order_019fbad9bd81a901fb9bb9",
+    "grand_total": 7800
+  }
+]

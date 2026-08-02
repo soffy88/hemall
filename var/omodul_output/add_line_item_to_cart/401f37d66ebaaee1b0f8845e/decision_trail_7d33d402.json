@@ -1,0 +1,18 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785546328.1183252,
+    "event": "batch_verified",
+    "batch_id": "batch_019fbadac1e6636132df44",
+    "available": 20
+  },
+  {
+    "step_no": 2,
+    "ts": 1785546328.1191368,
+    "event": "line_item_added",
+    "line_item_id": "cli_019fbadac836c0ed599455",
+    "batch_id": "batch_019fbadac1e6636132df44",
+    "qty": 2,
+    "unit_price": 3900
+  }
+]

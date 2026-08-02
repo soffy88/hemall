@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785569512.6765244,
+    "event": "error",
+    "detail": "unrecognized_receipt: OCR returned no items"
+  }
+]

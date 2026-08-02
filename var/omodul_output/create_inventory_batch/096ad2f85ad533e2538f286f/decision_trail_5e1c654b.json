@@ -1,0 +1,10 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785518696.7481246,
+    "event": "batch_created",
+    "batch_id": "batch_019fb9352928651d97a863",
+    "stock_qty": 10,
+    "retail_price": 3900
+  }
+]

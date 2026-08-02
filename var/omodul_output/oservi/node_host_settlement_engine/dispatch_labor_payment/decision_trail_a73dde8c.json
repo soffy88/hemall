@@ -1,0 +1,22 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785567827.219979,
+    "event": "pending_wages_loaded",
+    "entry_count": 1,
+    "total_amount": 4500
+  },
+  {
+    "step_no": 2,
+    "ts": 1785567827.2199976,
+    "event": "wage_transferred",
+    "transfer_id": "payout_3d41177044774f47",
+    "amount": 4500
+  },
+  {
+    "step_no": 3,
+    "ts": 1785567827.2231953,
+    "event": "ledger_marked_paid",
+    "entry_count": 1
+  }
+]

@@ -1,0 +1,15 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785496112.475537,
+    "event": "label_created",
+    "provider_name": "manual",
+    "tracking_number": "manual_c9c1d726d86b4bae"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785496112.4761264,
+    "event": "fulfillment_shipped",
+    "fulfillment_id": "019fb7dc-600e-745e-9a88-d2b496e47353"
+  }
+]

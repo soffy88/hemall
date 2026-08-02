@@ -1,0 +1,9 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785627277.2735527,
+    "event": "supplier_registered",
+    "supplier_id": "019fbfad-f7cd-7a36-b6db-52f8b2319413",
+    "wallet_account": "wallet_check_1785627276795"
+  }
+]

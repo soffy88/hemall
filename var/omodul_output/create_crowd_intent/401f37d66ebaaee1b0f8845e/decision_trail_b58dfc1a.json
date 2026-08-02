@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785518488.7866576,
+    "event": "error",
+    "detail": "insert or update on table \"crowd_intents\" violates foreign key constraint \"crowd_intents_variant_id_fkey\"\nDETAIL:  Key (variant_id)=(nonexistent) is not present in table \"variants\"."
+  }
+]

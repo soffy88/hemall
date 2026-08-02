@@ -1,0 +1,68 @@
+[project]
+name = "hemall"
+version = "0.1.0"
+description = "hemall headless commerce backend — 3O paradigm project service layer (§8), assembling the platform/3O element libraries into a runnable FastAPI commerce engine."
+requires-python = ">=3.12"
+dependencies = [
+    # 3O element libraries (installed editable from ../platform/3O via [tool.uv.sources])
+    "obase",
+    "oprim",
+    "oskill",
+    "omodul",
+    "oservi",
+    # Project service layer stack
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    # app.ext.oskill 直接用 scipy.spatial.Voronoi (recompute_voronoi_grid)；
+    # 之前只是通过 oskill 包transitively 可用，这里显式声明，不依赖隐式传递依赖。
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=4.0",
+    "httpx>=0.27",
+]
+
+# Phase 0: 可观测性与运维依赖
+observability = [
+    "structlog>=24.0",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+    "opentelemetry-instrumentation-httpx>=0.41b0",
+    "opentelemetry-exporter-otlp>=1.20",
+    "prometheus-client>=0.19",
+    "slowapi>=0.1.9",
+    "cryptography>=42.0",
+]
+
+# Phase 2: 高级商业能力
+phase2 = [
+    "elasticsearch>=8.12",
+    "redis>=5.0",
+    "firebase-admin>=6.0",
+    "apns2>=0.7",
+]
+
+[tool.uv.sources]
+obase = { path = "../platform/3O/obase", editable = true }
+oprim = { path = "../platform/3O/oprim", editable = true }
+oskill = { path = "../platform/3O/oskill", editable = true }
+omodul = { path = "../platform/3O/omodul", editable = true }
+oservi = { path = "../platform/3O/oservi", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

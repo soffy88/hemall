@@ -1,0 +1,14 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785495835.3625002,
+    "event": "validated",
+    "batch_no": "OT-B1"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785495835.375199,
+    "event": "persisted",
+    "batch_id": "019fb7d8-52e2-75f4-b984-0d03d12463f1"
+  }
+]

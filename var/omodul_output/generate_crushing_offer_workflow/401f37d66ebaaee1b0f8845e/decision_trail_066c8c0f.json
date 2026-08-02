@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785550207.4336572,
+    "event": "error",
+    "detail": "receipt_items must not be empty"
+  }
+]

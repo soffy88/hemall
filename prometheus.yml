@@ -1,0 +1,19 @@
+# Prometheus 配置 - Phase 0
+# 采集 hemall-backend 的指标
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Hemall 应用指标
+  - job_name: 'hemall-backend'
+    static_configs:
+      - targets: ['app:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus 自监控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

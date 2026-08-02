@@ -1,0 +1,16 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785641049.933238,
+    "event": "batch_disposed",
+    "batch_id": "019fbfae-d3c8-7cdb-85fc-386765ff71c2",
+    "disposed_qty": 10,
+    "reason": "expired"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785641049.9332478,
+    "event": "dispose_task_dispatched",
+    "location_id": "019fbfae-d3bf-708b-ad66-c080718cd3ec"
+  }
+]

@@ -1,0 +1,11 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785496102.0148847,
+    "event": "order_updated",
+    "order_id": "019fb7db-7bfa-7f4a-b108-5b0fbf5c49fe",
+    "fields": [
+      "status"
+    ]
+  }
+]

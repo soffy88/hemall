@@ -1,0 +1,9 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785496042.470132,
+    "event": "session_created",
+    "provider_name": "manual",
+    "status": "authorized"
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785626889.3011556,
+    "event": "validated",
+    "batch_no": "rma-check-batch-1785626889266"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785626889.3052993,
+    "event": "persisted",
+    "batch_id": "019fbfa8-0c55-72c3-96bb-7c4a1a2976fc"
+  }
+]

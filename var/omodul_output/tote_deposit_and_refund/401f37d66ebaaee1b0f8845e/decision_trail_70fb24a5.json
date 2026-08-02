@@ -1,0 +1,16 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785546261.440743,
+    "event": "deposit_captured",
+    "intent_id": "manual_78e3d0fadb0a4d5e",
+    "amount": 1000
+  },
+  {
+    "step_no": 2,
+    "ts": 1785546261.4433377,
+    "event": "tote_handed_out",
+    "tote_id": "tote_019fb94f904eee58f84e63",
+    "deposit_id": "tdep_019fbad9c3c0713c9d3b91"
+  }
+]

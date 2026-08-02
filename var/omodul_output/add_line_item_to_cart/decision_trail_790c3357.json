@@ -1,0 +1,22 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785498397.0763755,
+    "event": "lock_acquired",
+    "batch_id": "019fb7d8-52e2-75f4-b984-0d03d12463f1"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785498397.0812702,
+    "event": "line_item_upserted",
+    "line_item_id": "019fb7ff-6998-79c4-97d3-ef88c1343775",
+    "quantity": 2
+  },
+  {
+    "step_no": 3,
+    "ts": 1785498397.0816195,
+    "event": "cart_totals_recomputed",
+    "subtotal": 10000,
+    "grand_total": 10000
+  }
+]

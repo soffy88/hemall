@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785569259.324926,
+    "event": "error",
+    "detail": "batch 'nonexistent' not found"
+  }
+]

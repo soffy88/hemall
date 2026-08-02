@@ -1,0 +1,14 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785587946.1000588,
+    "event": "validated",
+    "batch_no": "pwtest-batch-1785587946068"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785587946.102705,
+    "event": "persisted",
+    "batch_id": "019fbd55-d274-72fc-af87-09d4ca7acece"
+  }
+]

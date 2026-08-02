@@ -1,0 +1,16 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785571359.3045588,
+    "event": "spatial_conflict_checked",
+    "conflict": false,
+    "existing_node_count": 1680
+  },
+  {
+    "step_no": 2,
+    "ts": 1785571359.3051872,
+    "event": "claim_approved",
+    "location_id": "loc_019fbc58ba48b3a34dd967",
+    "douyin_uid": "browser_dy_v6"
+  }
+]

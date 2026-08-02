@@ -1,0 +1,8 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785546222.197376,
+    "event": "error",
+    "detail": "cart 'cart_1785546217793' has no line items"
+  }
+]

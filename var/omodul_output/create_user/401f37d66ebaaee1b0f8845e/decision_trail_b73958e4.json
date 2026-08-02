@@ -1,0 +1,14 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785493609.0490594,
+    "event": "validated",
+    "email": "admin@test.com"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785493609.2403605,
+    "event": "persisted",
+    "user_id": "019fb7b6-5a59-726e-a3a0-5a3ff140cd86"
+  }
+]

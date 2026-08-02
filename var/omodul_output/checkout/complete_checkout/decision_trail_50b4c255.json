@@ -1,0 +1,33 @@
+[
+  {
+    "step_no": 1,
+    "ts": 1785626929.8932366,
+    "event": "lock_acquired",
+    "cart_id": "019fbfa8-a9ec-7bfd-a148-5f0dd125b591"
+  },
+  {
+    "step_no": 2,
+    "ts": 1785626929.8945975,
+    "event": "revalidated_totals",
+    "amount_due_cents": 2000
+  },
+  {
+    "step_no": 3,
+    "ts": 1785626929.8961203,
+    "event": "inventory_converted_to_sale",
+    "lines": 1
+  },
+  {
+    "step_no": 4,
+    "ts": 1785626929.8961372,
+    "event": "payment_captured",
+    "provider_name": "manual",
+    "intent_id": "manual_b258d3a48c2542cd"
+  },
+  {
+    "step_no": 5,
+    "ts": 1785626929.898896,
+    "event": "order_created",
+    "order_id": "019fbfa8-aae8-7d69-a93f-d798703e7d44"
+  }
+]
