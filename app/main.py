@@ -449,14 +449,19 @@ def create_app() -> FastAPI:
 
     # 补天计划 Task 1.1: Webhook 验签装甲 (最外层)——抖音/支付回调在 ASGI 层
     # 强制 HMAC-SHA256 验签，非法请求 403 丢弃，绝不触碰 omodul 层。
+    # 路径→校验器按路径注册：真实微信模式 (HEMALL_PAYMENT_GATEWAY_PROVIDER
+    # =wechat) 下 /payments/wechat/notify 改由平台证书验签 (WechatPayNative
+    # Gateway.verify_callback 在 handler 内完成)，不再套本域 HMAC 契约。
+    protected_webhook_paths = {
+        "/payments/alipay/notify",
+        "/growth/douyin_callback",
+    }
+    if settings.payment_gateway_provider != "wechat":
+        protected_webhook_paths.add("/payments/wechat/notify")
     app.add_middleware(
         WebhookSignatureMiddleware,
         secret=settings.webhook_secret,
-        protected_paths={
-            "/payments/wechat/notify",
-            "/payments/alipay/notify",
-            "/growth/douyin_callback",
-        },
+        protected_paths=protected_webhook_paths,
     )
 
     # Phase 0 Week 2: 限流

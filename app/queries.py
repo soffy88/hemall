@@ -457,6 +457,7 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.billing_address, o.shipping_address,
                    o.created_at, o.updated_at,
+                   o.promised_delivery_at, o.sla_compensated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
             FROM customer_order o
             LEFT JOIN LATERAL (

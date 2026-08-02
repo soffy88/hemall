@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +29,11 @@ from oservi.engines.cron_scheduler_engine import CronSchedulerEngine
 from oservi.engines.event_webhook_dispatcher import EventWebhookDispatcherEngine
 
 from ..config import Settings
+from ..middleware.metrics import (
+    DB_DEADLOCK_ERRORS_TOTAL,
+    ENGINE_FAILURE_TOTAL,
+    ENGINE_TICK_LAST_SECONDS,
+)
 from .oservi import (
     build_affiliate_settlement_engine,
     build_autonomous_triage_engine,
@@ -41,6 +47,8 @@ from .oservi import (
     build_market_maker_probe_engine,
     build_mercenary_routing_engine,
     build_node_host_settlement_engine,
+    build_sla_compensation_engine,
+    build_sla_promise_engine,
     build_social_broadcast_engine,
     build_spatial_fomo_engine,
     build_tote_balancing_engine,
@@ -55,8 +63,19 @@ async def _run_cron_loop(engine: CronSchedulerEngine, interval_seconds: float) -
     while True:
         try:
             await engine.run_once()
-        except Exception:  # noqa: BLE001 - 单次 tick 失败不该杀死整个调度循环
+        except Exception as exc:  # noqa: BLE001 - 单次 tick 失败不该杀死整个调度循环
+            ENGINE_FAILURE_TOTAL.labels(engine=engine.name).inc()
+            try:
+                import asyncpg
+
+                if isinstance(exc, asyncpg.exceptions.DeadlockDetectedError):
+                    DB_DEADLOCK_ERRORS_TOTAL.inc()
+            except Exception:  # noqa: BLE001 - 指标埋点失败不影响主流程
+                pass
             logger.exception("ext cron engine '%s' tick failed", engine.name)
+        finally:
+            # 心跳探针：tick 完成 (无论成败) 都打点，做市引擎停滞告警依赖此值。
+            ENGINE_TICK_LAST_SECONDS.labels(engine=engine.name).set(time.time())
         await asyncio.sleep(interval_seconds)
 
 
@@ -80,6 +99,8 @@ class ExtOservi:
     affiliate_settlement: CronSchedulerEngine
     inventory_decay: CronSchedulerEngine
     competitor_spider: CronSchedulerEngine
+    sla_promise: CronSchedulerEngine
+    sla_compensation: CronSchedulerEngine
     _tasks: list[asyncio.Task] = field(default_factory=list)
 
     def _cron_engines(self) -> tuple[CronSchedulerEngine, ...]:
@@ -96,6 +117,8 @@ class ExtOservi:
             self.affiliate_settlement,
             self.inventory_decay,
             self.competitor_spider,
+            self.sla_promise,
+            self.sla_compensation,
         )
 
     def start_cron_engines(self) -> None:
@@ -149,6 +172,8 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     affiliate_settlement = build_affiliate_settlement_engine(pool)
     inventory_decay = build_inventory_decay_engine(pool, settings=settings)
     competitor_spider = build_competitor_spider_engine(pool)
+    sla_promise = build_sla_promise_engine(pool, settings=settings)
+    sla_compensation = build_sla_compensation_engine(pool, settings=settings)
 
     return ExtOservi(
         demand_aggregator=demand_aggregator,
@@ -167,4 +192,6 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         affiliate_settlement=affiliate_settlement,
         inventory_decay=inventory_decay,
         competitor_spider=competitor_spider,
+        sla_promise=sla_promise,
+        sla_compensation=sla_compensation,
     )

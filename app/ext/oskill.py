@@ -58,6 +58,82 @@ def resolve_display_batch(
 #: 常量，不允许出现两份互相脱节的硬编码 200。
 WAVE_SHIPPING_PRICE_CENTS = 200
 
+# ── 履约 SLA (P1 冲刺: 时效承诺 + 超时赔付) ────────────────────────────
+
+#: 履约超时赔付额 (算力金, 分)。架构师定调 3-5 元区间，取中值 4 元。
+SLA_COMPENSATION_CENTS = 400
+#: 邻里直达 (express) 承诺送达时长 (分钟)。
+EXPRESS_SLA_MINUTES = 120
+#: 自提 (pickup) 承诺备货时长 (分钟)。
+PICKUP_SLA_MINUTES = 60
+#: 班车波次承诺送达时长 (分钟)：发车后 + 邻里送达缓冲。
+WAVE_SLA_MINUTES = 120
+#: 班车波次定点 (每日两班，与 oservi.delivery_wave_engine 对齐)。
+WAVE_SCHEDULE_HOURS = (10, 16)
+
+
+def compute_delivery_sla(
+    now: Any,
+    *,
+    shipping_cents: int,
+    paid_at: Any | None = None,
+    next_wave_at: Any | None = None,
+    express_lead_minutes: int = EXPRESS_SLA_MINUTES,
+    pickup_lead_minutes: int = PICKUP_SLA_MINUTES,
+    wave_lead_minutes: int = WAVE_SLA_MINUTES,
+) -> dict:
+    """按配送方式计算时效承诺 (纯函数，可单测)。
+
+    规则 (跟邻里配送引擎的现状对齐，不做路径优化承诺)：
+        - wave (运费 = WAVE_SHIPPING_PRICE_CENTS): 承诺 = 下一班车发车时间 +
+          wave_lead_minutes。下一班车由 WAVE_SCHEDULE_HOURS 定点推演；
+          next_wave_at 可由调用方注入 (引擎内用 SQL 算下一班)。
+        - express (运费 > wave 且非 0): 承诺 = 支付时刻 + express_lead_minutes。
+        - pickup (运费 = 0): 承诺 = 支付时刻 + pickup_lead_minutes。
+
+    Returns:
+        {"shipping_type": "wave"|"express"|"pickup", "promised_at": datetime,
+         "lead_minutes": int, "compensation_cents": int}
+    """
+    from datetime import datetime, timedelta, time as dtime
+
+    if paid_at is None:
+        paid_at = now
+
+    if shipping_cents == WAVE_SHIPPING_PRICE_CENTS:
+        shipping_type = "wave"
+        base = next_wave_at or _next_wave_at(now)
+        promised = base + timedelta(minutes=wave_lead_minutes)
+        lead = wave_lead_minutes
+    elif shipping_cents == 0:
+        shipping_type = "pickup"
+        promised = paid_at + timedelta(minutes=pickup_lead_minutes)
+        lead = pickup_lead_minutes
+    else:
+        shipping_type = "express"
+        promised = paid_at + timedelta(minutes=express_lead_minutes)
+        lead = express_lead_minutes
+
+    return {
+        "shipping_type": shipping_type,
+        "promised_at": promised,
+        "lead_minutes": lead,
+        "compensation_cents": SLA_COMPENSATION_CENTS,
+    }
+
+
+def _next_wave_at(now: Any) -> Any:
+    """下一班车时间：当天 10:00/16:00 之后最近的一个波次点。"""
+    from datetime import datetime, timedelta, time as dtime
+
+    for hour in WAVE_SCHEDULE_HOURS:
+        candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if candidate > now:
+            return candidate
+    return (now + timedelta(days=1)).replace(
+        hour=WAVE_SCHEDULE_HOURS[0], minute=0, second=0, microsecond=0
+    )
+
 
 def compute_transparent_shipping_options(
     distance_km: float, *, weight: int

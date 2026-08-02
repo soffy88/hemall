@@ -5,6 +5,10 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# P1 冲刺: 生死告警规则 (prometheus.rules.yml, 容器内挂到 /etc/prometheus)
+rule_files:
+  - /etc/prometheus/prometheus.rules.yml
+
 scrape_configs:
   # Hemall 应用指标
   - job_name: 'hemall-backend'

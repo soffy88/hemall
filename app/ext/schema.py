@@ -311,6 +311,21 @@ async def _ensure_shared_table_local_columns(pool: PgPool) -> None:
             column_def=column_def,
         )
 
+    # promised_delivery_at / sla_compensated_at: 履约 SLA (P1 冲刺)。
+    # promised_delivery_at 由 sla_promise_engine 按配送方式回填，订单流透出；
+    # sla_compensated_at 是幂等标记 (一单一赔，重复 tick 不重复赔付)。
+    for column_name, column_def in (
+        ("promised_delivery_at", "TIMESTAMPTZ"),
+        ("sla_compensated_at", "TIMESTAMPTZ"),
+    ):
+        await ensure_column(
+            pool=pool,
+            schema=_SCHEMA,
+            table="customer_order",
+            column_name=column_name,
+            column_def=column_def,
+        )
+
     for column_name, column_def in (
         ("base_trust_score", "INT DEFAULT 80"),
         ("total_saved_amount", "INT DEFAULT 0"),

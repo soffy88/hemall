@@ -92,21 +92,47 @@ async def create_payment(
     code_url = None
 
     # 2. 调用第三方支付接口
+    settings = get_settings()
     if body.provider == PaymentProvider.WECHAT:
-        resp = await _wechat_provider.create_order(
-            WeChatPayOrderRequest(
+        if settings.payment_gateway_provider == "wechat":
+            # 补天 P0: 真实微信支付 v3 Native (平行替换)。密钥缺失时
+            # bootstrap 已回退 manual，这里仍走统一契约。
+            from obase.provider_registry import ProviderRegistry
+
+            gw = ProviderRegistry.get().generic("payment_gateway", "wechat")
+            prepay = await gw.prepay(
                 out_trade_no=payment_id,
+                total_fee_cents=amount_cents,
                 description=body.description or f"order-{body.order_id}",
-                total_amount=amount_cents,
-                payer_openid=body.payer_openid,
+                notify_url=settings.wechat_pay_notify_url,
             )
+            code_url = prepay.get("code_url")
+        else:
+            resp = await _wechat_provider.create_order(
+                WeChatPayOrderRequest(
+                    out_trade_no=payment_id,
+                    description=body.description or f"order-{body.order_id}",
+                    total_amount=amount_cents,
+                    payer_openid=body.payer_openid,
+                )
+            )
+            if not resp.success:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"wechat pay create failed: {resp.err_msg}",
+                )
+            code_url = resp.code_url
+
+    elif body.provider == PaymentProvider.STRIPE:
+        from obase.provider_registry import ProviderRegistry
+
+        gw = ProviderRegistry.get().generic("payment_gateway", "stripe")
+        prepay = await gw.stripe_prepay(
+            out_trade_no=payment_id,
+            total_fee_cents=amount_cents,
+            description=body.description or f"order-{body.order_id}",
         )
-        if not resp.success:
-            raise HTTPException(
-                status_code=502,
-                detail=f"wechat pay create failed: {resp.err_msg}",
-            )
-        code_url = resp.code_url
+        code_url = prepay.get("client_secret")  # 前端 Stripe.js 用 client_secret
 
     elif body.provider == PaymentProvider.ALIPAY:
         resp = await _alipay_provider.create_order(
@@ -213,11 +239,34 @@ async def refund_payment(
     refund_amount_cents = int(refund_amount * 100)
 
     provider = row["provider"]
+    settings = get_settings()
     if provider == PaymentProvider.WECHAT.value:
-        result = await _wechat_provider.refund(
+        if settings.payment_gateway_provider == "wechat":
+            from obase.provider_registry import ProviderRegistry
+
+            gw = ProviderRegistry.get().generic("payment_gateway", "wechat")
+            result = await gw.refund(
+                out_trade_no=body.payment_id,
+                out_refund_no=f"refund_{uuid.uuid4().hex[:12]}",
+                refund_fee_cents=refund_amount_cents,
+                reason=body.reason,
+                total_fee_cents=int(row["amount"]),
+            )
+        else:
+            result = await _wechat_provider.refund(
+                out_trade_no=body.payment_id,
+                out_refund_no=f"refund_{uuid.uuid4().hex[:12]}",
+                refund_amount=refund_amount_cents,
+            )
+    elif provider == PaymentProvider.STRIPE.value:
+        from obase.provider_registry import ProviderRegistry
+
+        gw = ProviderRegistry.get().generic("payment_gateway", "stripe")
+        result = await gw.refund(
             out_trade_no=body.payment_id,
             out_refund_no=f"refund_{uuid.uuid4().hex[:12]}",
-            refund_amount=refund_amount_cents,
+            refund_fee_cents=refund_amount_cents,
+            reason=body.reason,
         )
     elif provider == PaymentProvider.ALIPAY.value:
         result = await _alipay_provider.refund(
@@ -258,6 +307,34 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
     """微信支付回调通知处理。"""
     body = await request.body()
     headers = dict(request.headers)
+
+    settings = get_settings()
+    if settings.payment_gateway_provider == "wechat":
+        # 补天 P0: 真实平台证书验签 + AES-GCM 解密。验签失败直接 400，
+        # 微信侧会按失败重试；成功再落库。
+        from obase.provider_registry import ProviderRegistry
+
+        gw = ProviderRegistry.get().generic("payment_gateway", "wechat")
+        notify = await gw.verify_callback(headers, body)
+        if notify is None:
+            raise HTTPException(status_code=400, detail="invalid wechat notify")
+        out_trade_no = notify.get("out_trade_no") or notify.get("transaction_id")
+        success = notify.get("trade_state") == "SUCCESS"
+        if success and out_trade_no:
+            try:
+                pool = getattr(request.app.state, "pool", None)
+                if pool is not None:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE payment_session SET status = 'paid', "
+                            "provider_trade_no = $1, updated_at = NOW() "
+                            "WHERE id = $2 AND status = 'pending'",
+                            notify.get("transaction_id"),
+                            out_trade_no,
+                        )
+            except Exception as exc:
+                logger.warning("wechat notify DB update failed: %s", exc)
+        return {"code": "SUCCESS", "message": "ok"}
 
     notify = await _wechat_provider.handle_notify(headers, body)
     if notify is None:

@@ -34,6 +34,24 @@ class Settings(BaseSettings):
     # 生产环境必须用 HEMALL_WEBHOOK_SECRET 覆盖，与抖音/支付网关侧配置一致。
     webhook_secret: str = "dev-webhook-secret-change-me"
 
+    # ── 补天计划 Task 2 / P0 冲刺: 真实收款网关 (微信 Native / Stripe) ──
+    # provider: manual | wechat | stripe。沙盒/生产无缝切换 = 改这一个变量 +
+    # 对应密钥，bootstrap 按此注册；真实密钥缺失时诚实回退 manual。
+    payment_gateway_provider: str = "manual"
+    # 微信支付 v3 (值可为文件路径或内联 PEM 内容；用 str 而非 Path——
+    # pathlib 会把 base64 里的 // 折叠成 / 破坏密钥)
+    wechat_pay_appid: str = ""
+    wechat_pay_mchid: str = ""
+    wechat_pay_serial_no: str = ""
+    wechat_pay_private_key_path: str = ""
+    wechat_pay_api_v3_key: str = ""
+    wechat_pay_platform_cert_path: str = ""
+    wechat_pay_notify_url: str = ""
+    # Stripe
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_notify_url: str = ""
+
     # ── omodul 输出 (decision_trail / report 落盘) ─────────────────────
     output_root: Path = Path("./var/omodul_output")
 

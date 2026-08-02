@@ -148,6 +148,9 @@ class WebhookSignatureMiddleware:
             timestamp=timestamp,
             nonce=nonce,
         ):
+            from ..middleware.metrics import WEBHOOK_SIGNATURE_REJECTED
+
+            WEBHOOK_SIGNATURE_REJECTED.inc()
             logger.warning(
                 "webhook signature rejected: path=%s client=%s",
                 scope["path"],

@@ -249,6 +249,20 @@ export default function AccountPage() {
               </div>
               <div className="text-xs text-gray-400 mt-1 mb-2">{new Date(o.created_at).toLocaleString('zh-CN')}</div>
 
+              {/* 履约 SLA：时效承诺 + 超时赔付 (P1 冲刺) */}
+              {o.promised_delivery_at && (
+                <div className="flex flex-wrap gap-2 items-center mb-2">
+                  <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700">
+                    承诺送达 {new Date(o.promised_delivery_at).toLocaleString('zh-CN')}
+                  </span>
+                  {o.sla_compensated_at && (
+                    <span className="text-xs px-2 py-0.5 rounded bg-amber-50 text-amber-700">
+                      ⏱ 履约超时，已赔付 4 元算力金
+                    </span>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-1.5 border-t border-gray-200 pt-2">
                 {(o.line_items || []).map((li) => {
                   const result = claimResults[li.id];

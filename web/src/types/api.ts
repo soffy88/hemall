@@ -151,6 +151,8 @@ export interface Order {
   shipping_address: Address | null;
   created_at: string;
   updated_at: string | null;
+  promised_delivery_at: string | null;
+  sla_compensated_at: string | null;
   line_items: OrderLineItem[];
 }
 

@@ -94,11 +94,13 @@ from .oprim import (
 )
 from .oskill import (
     WAVE_SHIPPING_PRICE_CENTS,
+    SLA_COMPENSATION_CENTS,
     adjust_demand_curve_by_weather,
     calculate_broadcast_priority,
     calculate_decay_price,
     calculate_next_probe_price,
     calculate_vwap_deviation,
+    compute_delivery_sla,
     compute_market_maker_price,
     compute_mercenary_bounty_rate,
     evaluate_claim_credibility,
@@ -1372,7 +1374,7 @@ def build_competitor_spider_engine(
                     items = await spider_fetch_competitor_prices(
                         spider_provider,
                         lat=float(loc["lat"]),
-                        lon=float(loc["lon"]),
+                        lon=float(loc["lng"]),
                         radius_km=radius_km,
                         keywords=[variant["title"], variant["sku_code"]],
                     )
@@ -1426,4 +1428,128 @@ def build_competitor_spider_engine(
         trigger={"on_cron": "0 3 * * *"},
         config={"interval_seconds": 86400},
         name="ext-competitor-spider",
+    )
+
+
+# ── 履约 SLA (P1 冲刺: 时效承诺 + 超时赔付) ─────────────────────────────
+
+
+def build_sla_promise_engine(pool: Any, settings: Settings) -> CronSchedulerEngine:
+    """时效承诺回填引擎 (on_interval，每小时)。
+
+    对"已支付但还没有 promised_delivery_at"的订单按配送方式计算承诺：
+        wave → 下一班车 (10:00/16:00) + 2h；express → 支付时刻 + 2h；
+        pickup → 支付时刻 + 1h。
+    不依赖结算链路改造 (共享 checkout omodul 不动)，回填式把承诺补进订单流；
+    订单列表查询直接吐 promised_delivery_at (见 queries.list_customer_orders)。
+    """
+
+    async def backfill_promises(**_: Any) -> dict[str, Any]:
+        from datetime import datetime
+
+        rows = await db_query_many(
+            pool,
+            sql=(
+                'SELECT id, shipping_cents, created_at FROM "customer_order" '
+                "WHERE status = 'paid' AND promised_delivery_at IS NULL"
+            ),
+        )
+        if not rows:
+            return {"promises_backfilled": 0, "orders": []}
+
+        now = datetime.now(UTC)
+        updated: list[dict[str, Any]] = []
+        async with pool.acquire() as conn:
+            for row in rows:
+                sla = compute_delivery_sla(
+                    now,
+                    shipping_cents=row["shipping_cents"],
+                    paid_at=row["created_at"] or now,
+                )
+                await conn.execute(
+                    'UPDATE "customer_order" SET promised_delivery_at = $1 '
+                    "WHERE id = $2",
+                    sla["promised_at"],
+                    row["id"],
+                )
+                updated.append(
+                    {
+                        "order_id": str(row["id"]),
+                        "shipping_type": sla["shipping_type"],
+                        "promised_at": sla["promised_at"].isoformat(),
+                        "compensation_cents": sla["compensation_cents"],
+                    }
+                )
+        return {"promises_backfilled": len(updated), "orders": updated}
+
+    backfill_promises.__name__ = "backfill_promises"
+
+    return CronSchedulerEngine(
+        tasks=[backfill_promises],
+        trigger={"on_interval": 3600},
+        config={"interval_seconds": 3600},
+        name="ext-sla-promise",
+    )
+
+
+def build_sla_compensation_engine(pool: Any, settings: Settings) -> CronSchedulerEngine:
+    """履约超时赔付引擎 (on_interval，每小时)。
+
+    扫描 promised_delivery_at 已过、尚未赔付的已支付订单，向顾客
+    customer.system_balance 注入定额算力金 (SLA_COMPENSATION_CENTS = 400 分)，
+    并置 sla_compensated_at 幂等标记——一单一赔，重复 tick 不重复赔付。
+    赔付走 system_balance 1:1 (架构师禁区合规：无优惠券/折扣，只加余额)。
+    """
+
+    async def compensate_late_orders(**_: Any) -> dict[str, Any]:
+        overdue = await db_query_many(
+            pool,
+            sql=(
+                'SELECT o.id AS order_id, o.customer_id AS customer_id '
+                'FROM "customer_order" o '
+                "WHERE o.promised_delivery_at IS NOT NULL "
+                "AND o.promised_delivery_at < NOW() "
+                "AND o.status NOT IN ('canceled', 'refunded') "
+                "AND o.sla_compensated_at IS NULL"
+            ),
+        )
+        if not overdue:
+            return {"compensated": 0, "total_cents": 0, "orders": []}
+
+        compensated: list[str] = []
+        async with pool.acquire() as conn:
+            for row in overdue:
+                await conn.execute(
+                    'UPDATE "customer" SET system_balance = system_balance + $1 '
+                    "WHERE id = $2",
+                    SLA_COMPENSATION_CENTS,
+                    row["customer_id"],
+                )
+                await conn.execute(
+                    'UPDATE "customer_order" SET sla_compensated_at = NOW() '
+                    "WHERE id = $1",
+                    row["order_id"],
+                )
+                compensated.append(str(row["order_id"]))
+
+        total = len(compensated) * SLA_COMPENSATION_CENTS
+        logger.info(
+            "sla compensation: %d orders, %d cents credited to system_balance",
+            len(compensated),
+            total,
+        )
+        return {
+            "compensated": len(compensated),
+            "total_cents": total,
+            "orders": compensated,
+            "per_order_cents": SLA_COMPENSATION_CENTS,
+        }
+
+    compensate_late_orders.__name__ = "compensate_late_orders"
+
+    return CronSchedulerEngine(
+        tasks=[compensate_late_orders],
+        trigger={"on_interval": 3600},
+        config={"interval_seconds": 3600},
+        name="ext-sla-compensation",
     )

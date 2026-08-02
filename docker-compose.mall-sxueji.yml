@@ -35,6 +35,18 @@ services:
       HEMALL_DEFAULT_NOTIFICATION_PROVIDER: log
       HEMALL_DEFAULT_TAX_PROVIDER: flat_rate
       HEMALL_FLAT_TAX_RATE_PERCENT: 10.0
+      # ── 补天 P0: 真实收款网关 (manual|wechat|stripe, 沙盒/生产无缝切换) ──
+      HEMALL_PAYMENT_GATEWAY_PROVIDER: ${HEMALL_PAYMENT_GATEWAY_PROVIDER:-manual}
+      HEMALL_WECHAT_PAY_APPID: ${HEMALL_WECHAT_PAY_APPID:-}
+      HEMALL_WECHAT_PAY_MCHID: ${HEMALL_WECHAT_PAY_MCHID:-}
+      HEMALL_WECHAT_PAY_SERIAL_NO: ${HEMALL_WECHAT_PAY_SERIAL_NO:-}
+      HEMALL_WECHAT_PAY_PRIVATE_KEY_PATH: ${HEMALL_WECHAT_PAY_PRIVATE_KEY_PATH:-}
+      HEMALL_WECHAT_PAY_API_V3_KEY: ${HEMALL_WECHAT_PAY_API_V3_KEY:-}
+      HEMALL_WECHAT_PAY_PLATFORM_CERT_PATH: ${HEMALL_WECHAT_PAY_PLATFORM_CERT_PATH:-}
+      HEMALL_WECHAT_PAY_NOTIFY_URL: ${HEMALL_WECHAT_PAY_NOTIFY_URL:-}
+      HEMALL_STRIPE_SECRET_KEY: ${HEMALL_STRIPE_SECRET_KEY:-}
+      HEMALL_STRIPE_WEBHOOK_SECRET: ${HEMALL_STRIPE_WEBHOOK_SECRET:-}
+      HEMALL_STRIPE_NOTIFY_URL: ${HEMALL_STRIPE_NOTIFY_URL:-}
       # Observability
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       OTEL_TRACES_EXPORTER: otlp
@@ -128,6 +140,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'

@@ -50,6 +50,7 @@ class PaymentProvider(str, enum.Enum):
     WECHAT = "wechat"  # 微信支付
     ALIPAY = "alipay"  # 支付宝
     MANUAL = "manual"  # 手动确认 (测试/内部)
+    STRIPE = "stripe"  # Stripe (补天 P0: 真实网关通道)
 
 
 # ── 状态转换矩阵 ─────────────────────────────────────────────────────

@@ -1,0 +1,72 @@
+# Hemall 生死告警规则 (P1 冲刺 — 系统可以没有人工客服，但不能失去心跳监控)
+#
+# 指标源:
+#   - http_requests_total / http_request_duration_seconds: middleware/metrics.py
+#   - webhook_signature_rejected_total: security/webhook.py
+#   - engine_tick_last_seconds / engine_failure_total: ext/oservi_lifecycle.py
+#   - db_deadlock_errors_total: ext/oservi_lifecycle.py (DeadlockDetectedError)
+#
+# 告警接收: Prometheus 内评估 (rule_files)。通知渠道可接 Alertmanager /
+# Grafana Alerting (本仓库未配置 Alertmanager 收件人，告警先在 Prometheus UI
+# /alert 页可见)。
+
+groups:
+  - name: hemall-critical
+    rules:
+      # 1) 核心 API 5xx 错误率飙升 (死线: 支付/下单路径 5xx 即失血)
+      - alert: HemallApi5xxRateSpike
+        expr: |
+          sum by (job) (rate(http_requests_total{status=~"5..", job="hemall-backend"}[5m]))
+            / clamp_min(sum by (job) (rate(http_requests_total{job="hemall-backend"}[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "核心 API 5xx 错误率超过 5% (持续 5 分钟)"
+          description: "job={{ $labels.job }} 的 5xx 占比 > 5%。检查支付/下单/库存端点与 DB 状态。"
+
+      # 2) Webhook 验签失败频次激增 (被攻击/密钥漂移的早期信号)
+      - alert: HemallWebhookSignatureRejections
+        expr: increase(webhook_signature_rejected_total{job="hemall-backend"}[10m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Webhook 验签拒绝 10 分钟内超过 5 次"
+          description: "回调验签连续失败，可能为伪造攻击或 HEMALL_WEBHOOK_SECRET 与回调方不一致。"
+
+      # 3) 做市引擎 Tick 停滞 (价格智能心跳: 5 分钟引擎 >15 分钟未打点 = 心脏停跳)
+      - alert: HemallMarketMakerTickStalled
+        expr: time() - engine_tick_last_seconds{engine="ext-market-maker", job="hemall-backend"} > 900
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "做市引擎 Tick 停滞超过 15 分钟"
+          description: "ext-market-maker 已 15 分钟未打点，动态定价/试探单闭环可能已死。"
+
+      # 4) DB 不可用 (503 爆发) 或事务死锁
+      - alert: HemallDbUnavailableOrDeadlock
+        expr: |
+          rate(http_requests_total{status="503", job="hemall-backend"}[5m]) > 0
+          or increase(db_deadlock_errors_total{job="hemall-backend"}[15m]) > 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DB 不可用 (503 爆发) 或事务死锁"
+          description: "PostgreSQL 故障/死锁检测。检查 db 容器与连接池 (db_pool_used)。"
+
+      # 5) P95 延迟超标 (交互体验失血: >2.5s 持续 10 分钟)
+      - alert: HemallHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="hemall-backend"}[5m])))
+          > 2.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API P95 延迟超过 2.5 秒 (持续 10 分钟)"
+          description: "商城/结算路径慢查询或阻塞，检查慢 SQL 与连接池水位。"

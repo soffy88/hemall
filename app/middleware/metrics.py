@@ -43,6 +43,34 @@ DB_POOL_USED = Gauge("db_pool_used", "Database connections in use", ["pool_name"
 #: Redis 连接状态 (由外部更新)
 REDIS_CONNECTED = Gauge("redis_connected", "Redis connection status")
 
+# ── 心跳探针 (P1 冲刺: 生死告警的指标源) ────────────────────────────────
+
+#: Webhook 验签拒绝次数 (webhook.py 每次 403 短路时 +1)。
+WEBHOOK_SIGNATURE_REJECTED = Counter(
+    "webhook_signature_rejected_total",
+    "Total webhook requests rejected by signature verification",
+)
+
+#: 引擎最近一次 tick 完成时刻 (Unix 秒) (oservi_lifecycle 每 tick 后更新)。
+ENGINE_TICK_LAST_SECONDS = Gauge(
+    "engine_tick_last_seconds",
+    "Unix time of last successful engine tick",
+    ["engine"],
+)
+
+#: 引擎 tick 失败次数 (按引擎)。
+ENGINE_FAILURE_TOTAL = Counter(
+    "engine_failure_total",
+    "Total engine tick failures",
+    ["engine"],
+)
+
+#: DB 事务死锁错误次数 (oservi_lifecycle 捕获 DeadlockDetectedError 时 +1)。
+DB_DEADLOCK_ERRORS_TOTAL = Counter(
+    "db_deadlock_errors_total",
+    "Total PostgreSQL deadlock errors observed",
+)
+
 
 # ── 指标采集中间件 ──────────────────────────────────────────────────────
 

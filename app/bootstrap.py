@@ -23,6 +23,7 @@ from .config import Settings
 from .ext.cv_provider import ManualCVProvider
 from .ext.douyin_provider import ManualDouyinProvider
 from .ext.llm_provider import ManualLLMProvider
+from .ext.payment_gateways import build_payment_gateway
 from .ext.payout_provider import ManualPaymentGateway, ManualPayoutProvider
 from .ext.schema import ensure_ext_schema
 from .ext.spider_provider import ManualSpiderProvider
@@ -57,11 +58,17 @@ def register_providers(settings: Settings) -> None:
         replace=True,
     )
     reg.register_generic("payout", "manual", ManualPayoutProvider(), replace=True)
-    # 补天计划 Task 1.3: 收款网关 (统一下单/退款) 占位 provider，接入真实
-    # 微信支付/Stripe 密钥时替换同名注册即可，oprim.ext_payment_gateway_* 不变。
+    # 补天计划 Task 1.3 → P0 冲刺: 收款网关 (统一下单/退款)。真实通道
+    # (wechat/stripe) 平行替换：build_payment_gateway 按 HEMALL_PAYMENT_GATEWAY_PROVIDER
+    # 装配，密钥缺失诚实回退 manual；始终保留 manual 名兼容旧调用点。
+    gateway_provider, gateway = build_payment_gateway(settings)
     reg.register_generic(
-        "payment_gateway", "manual", ManualPaymentGateway(), replace=True
+        "payment_gateway", gateway_provider, gateway, replace=True
     )
+    if gateway_provider != "manual":
+        reg.register_generic(
+            "payment_gateway", "manual", ManualPaymentGateway(), replace=True
+        )
     reg.register_generic("weather", "manual", ManualWeatherProvider(), replace=True)
     reg.register_generic("vlm", "manual", ManualVLMProvider(), replace=True)
     reg.register_generic("cv", "manual", ManualCVProvider(), replace=True)
