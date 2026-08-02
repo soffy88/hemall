@@ -1,4 +1,4 @@
-"""透仓 (ClearNode) v4.0 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 v4.0 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
 覆盖微信视频号社交播报引擎：omodul.execute_channel_broadcast_workflow (正向
 发布/唯一索引防重发/库存耗尽拒绝/微信 API 拒绝) 和
@@ -38,7 +38,7 @@ async def cn_pool():
     reg.register_generic("wechat_channel", "manual", wx, replace=True)
 
     pool = await PgPool.create(
-        name="clearnode_phase5_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_phase5_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     pool._test_llm = llm  # type: ignore[attr-defined]

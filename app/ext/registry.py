@@ -2,8 +2,7 @@
 
 跟 hemall 原有商城域的 app/registry.py 同一个模式 (EndpointSpec + respond.py
 的 omodul_endpoint 工厂)，区别只在于 omodul 的模块来源：hemall 原有域的
-omodul 来自共享包 platform/3O/omodul (``import omodul.xxx``)，本模块 (原
-"ClearNode") 的 omodul 是本项目内的 app.ext.omodul 包。
+omodul 来自共享包 platform/3O/omodul (``import omodul.xxx``)，本模块的 omodul 是本项目内的 app.ext.omodul 包。
 
 **统一改造说明**：加车/运费/结账 (add_line_item_to_cart / cart_shipping_
 method_set / complete_checkout) 以前在这里各自有一份跟共享包同名但完全不同
@@ -25,7 +24,7 @@ base64) 的问题，改成在 app/routers.py 里手写一个 str->bytes 转换�
     顾客侧操作 (加车/运费/结账/集单/会员/押金退货/自动补货/客诉/比价) 公开
     无需登录，贴合 SPEC "零登录扫码即买" 的设计；供应商入驻 (claim_origin_
     workflow) 和邻居代送确认 (execute_peer_delivery_workflow) 同样公开——
-    跟顾客一样是"外部人自助操作"，ClearNode 压根没有供应商/邻居的登录体系。
+    跟顾客一样是"外部人自助操作"，hemall 扩展侧没有供应商/邻居的登录体系。
     仓管/结算/处罚/仲裁执行侧操作 (入库/销毁/结算/拣货确认/新节点注册/工资
     分润/斩仓/幽灵库存上报/CV入库/仲裁执行末端) 复用现有 admin Bearer JWT
     (跟 app/routers.py 的 admin_read_router 同一套 _require_admin 校验逻辑，
@@ -38,12 +37,12 @@ import importlib
 
 from ..registry import EndpointSpec
 
-# 统一改造收尾：域名不再带 "clearnode/" 前缀。能对上 hemall 原有 registry
+# 统一改造收尾：域名不再带独立扩展前缀。能对上 hemall 原有 registry
 # 域名的 (名字不撞车) 直接复用同一个域名字符串——两份 registry 各自的
 # all_endpoint_specs() 分别往同一个 FastAPI router 里挂路由，只要
 # (method, path) 组合不重复，物理上是两个 Python 字典没关系，URL 上看
 # 就是同一个域。撞车的 (create_inventory_batch 在 inventory 域已经被共享
-# 版占了) 或者压根没有对应共享域的，新开一个不带 "clearnode" 字样的域名。
+# 版占了) 或者压根没有对应共享域的，新开一个不带扩展字样的域名。
 # load_endpoint 直接拼 f"/{domain}/{name}"，不需要额外加前缀逻辑。
 DOMAINS: dict[str, list[str]] = {
     # create_inventory_batch 跟共享 inventory 域同名会撞车 (共享版没有
@@ -128,7 +127,7 @@ def _camel(snake: str) -> str:
 
 
 def load_endpoint(domain: str, name: str) -> EndpointSpec:
-    """按名加载一个 ClearNode omodul 的 (可调用, Config, Input) 并生成端点描述。
+    """按名加载一个扩展域 omodul 的 (可调用, Config, Input) 并生成端点描述。
 
     命名全部严格遵守 CamelCase(name) + "Config"/"Input" 约定 (跟 hemall 原有
     registry 不同，这里不需要 _NAME_OVERRIDES——14 个 omodul 逐一核对过，无例外)。
@@ -150,7 +149,7 @@ def load_endpoint(domain: str, name: str) -> EndpointSpec:
 
 
 def all_endpoint_specs() -> list[EndpointSpec]:
-    """加载全部 ClearNode omodul 端点描述。"""
+    """加载全部扩展域 omodul 端点描述。"""
     specs: list[EndpointSpec] = []
     for domain, names in DOMAINS.items():
         for name in names:

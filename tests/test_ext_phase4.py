@@ -1,4 +1,4 @@
-"""透仓 (ClearNode) v2.0 第二轮集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 v2.0 第二轮集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
 覆盖 SPEC v2.0 §4 剩余 7 个 omodul (claim_origin_workflow /
 execute_slashing_workflow / report_phantom_stock_workflow /
@@ -45,7 +45,7 @@ async def cn_pool():
     reg.register_generic("cv", "manual", cv, replace=True)
 
     pool = await PgPool.create(
-        name="clearnode_phase4_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_phase4_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     pool._test_cv = cv  # type: ignore[attr-defined]

@@ -1,7 +1,7 @@
 """app.ext.wechat_provider — 内存态微信视频号发版 provider。
 
 obase 没有"微信视频号 API"这个 provider 类别 (跟 weather/vlm/cv/llm 一样，是
-ClearNode 域特有的外部依赖)。真实实现应该接微信视频号带货组件的
+hemall 扩展域特有的外部依赖)。真实实现应该接微信视频号带货组件的
 ``/channels/ec/video/add`` 接口；这个开发环境里没有真实的 access_token/商家号
 资质，风格对齐 ManualVLMProvider：进程内内存态，默认返回成功 (errcode=0 +
 生成一个 feed_id)，可用 set_response 覆写指定调用的返回结果 (模拟风控拒绝/

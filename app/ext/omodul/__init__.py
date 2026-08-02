@@ -1,4 +1,4 @@
-"""app.ext.omodul — 透仓 (ClearNode) 元功能：核心业务事务。
+"""app.ext.omodul — hemall 扩展层元功能：核心业务事务。
 
 一函数一文件，对齐 platform/3O/omodul 包自己的组织方式。严格遵守
 (config, input_data, output_dir) 签名 + {"status": "completed"|"failed", ...}

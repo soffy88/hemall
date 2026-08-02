@@ -1,4 +1,4 @@
-"""app.ext.oskill — 透仓 (ClearNode) 元技能：纯内存算法。
+"""app.ext.oskill — hemall 扩展层元技能：纯内存算法。
 
 绝对无状态，不查库，不做任何 IO——全部 sync def (对齐全局契约"纯数学/内存
 计算必须 sync def")。承载所有"动态定价"与"路由决策"的复杂逻辑，omodul 组装
@@ -288,14 +288,14 @@ def calculate_piece_rate_wage(queue_depth: int, *, base_wage: int) -> int:
 
 
 def compute_user_savings_yield(market_price: int, *, node_retail_price: int) -> int:
-    """对比传统商超价格，算出用户在透仓下单能省多少钱，用于推销硬核会员制。
+    """对比传统商超价格，算出用户在 hemall 下单能省多少钱，用于推销硬核会员制。
 
     Args:
         market_price: 传统商超参考价 (分)，非负。
-        node_retail_price: 透仓当前零售价 (分)，非负。
+        node_retail_price: hemall 当前零售价 (分)，非负。
 
     Returns:
-        净省金额 (分)：``max(0, market_price - node_retail_price)``——透仓
+        净省金额 (分)：``max(0, market_price - node_retail_price)``——hemall
         价格反而更贵时不返回负数误导用户，直接判 0。
 
     Raises:
@@ -669,7 +669,7 @@ def construct_fomo_user_prompt(batch_info: dict[str, Any], *, market_price: int)
         f"批次号: {batch_info['id']}\n"
         f"商品: {batch_info['variant_desc']}\n"
         f"源头直拍: {batch_info['supplier_polygon_name']}\n"
-        f"透仓底价: {retail_price_yuan}元 (传统超市均价 {market_price_yuan}元，暴降 {discount_pct}%)\n"
+        f"hemall 底价: {retail_price_yuan}元 (传统超市均价 {market_price_yuan}元，暴降 {discount_pct}%)\n"
         f"全城仅剩物理库存: {batch_info['stock_qty']} 箱\n"
         f"当前状态: {batch_info['broadcast_type']} (上新或清仓)"
     )

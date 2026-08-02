@@ -1,4 +1,4 @@
-"""app.ext.oprim — 透仓 (ClearNode) 元实现：原子操作。
+"""app.ext.oprim — hemall 扩展层元实现：原子操作。
 
 严格扁平化，不包裹业务逻辑；oprim 之间禁止裸调。
 

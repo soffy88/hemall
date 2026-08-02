@@ -1,4 +1,4 @@
-"""app.ext — 透仓 (ClearNode)：hemall 的核心业务域。
+"""app.ext — hemall 原生内建扩展域。
 
 零搜索、零耗材、零抽成、全自动微仓网格零售底座。Batch (批次) 是最高维度的
 交易实体，彻底剥离 SPU 定价——products/variants 只是极薄的展示层描述，

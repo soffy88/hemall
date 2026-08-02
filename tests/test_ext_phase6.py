@@ -1,11 +1,11 @@
-"""透仓 (ClearNode) v5.0 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 v5.0 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
 覆盖全局定价与冷启动预言机：omodul.reward_crowdsourced_benchmark_workflow
 (众包小票核销/归一化/算力金奖励) 、omodul.submit_supplier_reverse_auction_
 workflow (果农反向竞标毛利红线核验) 和 oservi.market_maker_probe_engine
 (试探单出清/降价)。
 
-统一改造后：奖励余额并入共享 customer.system_balance (不再是 ClearNode 自己
+统一改造后：奖励余额并入共享 customer.system_balance (不再是 扩展域自己
 的 user_profiles 表)，价格基线表改名 price_benchmark 且 sku_id 改成真
 variant_id FK，批次/门店走共享表。
 """
@@ -42,7 +42,7 @@ async def cn_pool():
     reg.register_generic("spider", "manual", ManualSpiderProvider(), replace=True)
 
     pool = await PgPool.create(
-        name="clearnode_phase6_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_phase6_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     pool._test_cv = cv  # type: ignore[attr-defined]

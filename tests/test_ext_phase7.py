@@ -1,4 +1,4 @@
-"""透仓 (ClearNode) v6.0 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 v6.0 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
 覆盖抖音拓客与数字领主：omodul.process_cloud_franchise_claim_workflow (云
 加盟空间冲突检测) 、omodul.bind_digital_lord_contract_workflow (领主契约
@@ -42,7 +42,7 @@ async def cn_pool():
     reg.register_generic("payout", "manual", ManualPayoutProvider(), replace=True)
 
     pool = await PgPool.create(
-        name="clearnode_phase7_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_phase7_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     yield pool

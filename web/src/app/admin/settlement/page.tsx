@@ -5,7 +5,7 @@ import { api } from '@/lib/api-client';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 
 /**
- * 分润结算运维控制台 —— 大妈计件工资 / 车库宿主场地分润。原 /admin/clearnode
+ * 分润结算运维控制台 —— 大妈计件工资 / 车库宿主场地分润。原独立运维页面
  * 页面 §4.4 去中心化分润结算里的两张卡片搬迁至此（自动补货挪到了库存与渠道
  * 页面，语义上更贴合"补货"而不是"分润"），统一改造 Phase 4.3。
  */
@@ -31,7 +31,7 @@ export default function SettlementPage() {
             { key: 'payout_account', label: 'payout_account' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeDispatchLaborPayment(v as any)}
+          onSubmit={(v) => api.hemallDispatchLaborPayment(v as any)}
         />
         <ActionCard
           title="宿主分润 dispatch_host_dividend"
@@ -44,7 +44,7 @@ export default function SettlementPage() {
             { key: 'tote_count', label: 'tote_count', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeDispatchHostDividend(v as any)}
+          onSubmit={(v) => api.hemallDispatchHostDividend(v as any)}
         />
       </OpsSection>
     </div>

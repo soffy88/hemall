@@ -1,11 +1,11 @@
-"""透仓 (ClearNode) §5 oservi 引擎集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 §5 oservi 引擎集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
 每个引擎都通过 CronSchedulerEngine.run_once() / EventWebhookDispatcherEngine
 .dispatch() 驱动单次执行 (骨架自带的测试入口)，不跑真正的常驻循环/定时器。
 
 统一改造后：物理批次/门店/订单全部走共享表 (product/product_variant/
 inventory_batch/stock_location/customer_order/order_line_item)，不再是
-ClearNode 自己的平行表。
+扩展域自己的平行表。
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ async def cn_pool():
     reg.register_generic("weather", "manual", weather, replace=True)
 
     pool = await PgPool.create(
-        name="clearnode_oservi_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_oservi_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     pool._test_weather = weather  # type: ignore[attr-defined]

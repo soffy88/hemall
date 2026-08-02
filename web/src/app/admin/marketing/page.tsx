@@ -20,13 +20,13 @@ function ruleSummary(rule: Discount['rule']): string {
 
 /** 微信视频号播报记录 —— 文案 + 发布状态，运营核查用，带手动刷新。 */
 function BroadcastLogsTable({ refreshKey }: { refreshKey: number }) {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListClearnodeBroadcastLogs>>>([]);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallBroadcastLogs>>>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
     try {
-      setRows(await api.adminListClearnodeBroadcastLogs());
+      setRows(await api.adminListHemallBroadcastLogs());
     } catch {
       // 列表加载失败不阻断整个页面，留空表即可
     } finally {
@@ -98,13 +98,13 @@ function BroadcastLogsTable({ refreshKey }: { refreshKey: number }) {
 
 /** 价格基线记录 —— 爬虫/众包小票来源的归一化单价，运营核查定价依据用，带手动刷新。 */
 function PriceBenchmarksTable({ refreshKey }: { refreshKey: number }) {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListClearnodePriceBenchmarks>>>([]);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallPriceBenchmarks>>>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
     try {
-      setRows(await api.adminListClearnodePriceBenchmarks());
+      setRows(await api.adminListHemallPriceBenchmarks());
     } catch {
       // 列表加载失败不阻断整个页面，留空表即可
     } finally {
@@ -160,13 +160,13 @@ function PriceBenchmarksTable({ refreshKey }: { refreshKey: number }) {
 
 /** 试探单做市日志 —— 试探价 + 观测销售速度 + 状态，运营核查定价引擎用，带手动刷新。 */
 function ProbeLogsTable({ refreshKey }: { refreshKey: number }) {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListClearnodeProbeLogs>>>([]);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallProbeLogs>>>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
     try {
-      setRows(await api.adminListClearnodeProbeLogs());
+      setRows(await api.adminListHemallProbeLogs());
     } catch {
       // 列表加载失败不阻断整个页面，留空表即可
     } finally {
@@ -225,7 +225,7 @@ function ProbeLogsTable({ refreshKey }: { refreshKey: number }) {
 }
 
 export default function MarketingPage() {
-  // 透仓运维（原 /admin/clearnode 页面搬迁过来的裸操作卡片）用的独立 ctx——
+  // hemall 扩展运维（原独立运维页面搬迁过来的裸操作卡片）用的独立 ctx——
   // 跟上面折扣/礼品卡管理是两套不相干的状态，不复用。
   const [opsCtx, setOpsCtx] = useState<Record<string, string>>({});
   const [opsListRefreshKey, setOpsListRefreshKey] = useState(0);
@@ -546,7 +546,7 @@ export default function MarketingPage() {
       )}
 
       <div className="mt-10 mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">透仓运维 — 播报记录 / 价格基线 / 试探单</h2>
+        <h2 className="text-lg font-semibold">hemall 扩展运维 — 播报记录 / 价格基线 / 试探单</h2>
         <button
           onClick={() => setOpsListRefreshKey((k) => k + 1)}
           className="text-xs text-blue-600 hover:underline"
@@ -573,7 +573,7 @@ export default function MarketingPage() {
             },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeGenerateCrushingOffer(v as any)}
+          onSubmit={(v) => api.hemallGenerateCrushingOffer(v as any)}
         />
         <ActionCard
           title="发版 execute_channel_broadcast_workflow"
@@ -586,7 +586,7 @@ export default function MarketingPage() {
             { key: 'access_token', label: 'access_token (微信视频号，演示用任意字符串)' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeExecuteChannelBroadcast(v as any)}
+          onSubmit={(v) => api.hemallExecuteChannelBroadcast(v as any)}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -598,7 +598,7 @@ export default function MarketingPage() {
             { key: 'receipt_image_text', label: 'receipt_image_text (小票内容，纯文本占位)' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeRewardCrowdsourcedBenchmark(v as any)}
+          onSubmit={(v) => api.hemallRewardCrowdsourcedBenchmark(v as any)}
           onResult={(r) => {
             mergeOpsCtx(r as any);
             setOpsListRefreshKey((k) => k + 1);

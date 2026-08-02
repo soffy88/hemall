@@ -1,6 +1,6 @@
 """app.ext.omodul.create_inventory_batch — 批次入库 (统一改造后的本地薄封装)。
 
-**统一改造说明**：这个函数以前自己往 ClearNode 平行的 inventory_batches 表插入
+**统一改造说明**：这个函数以前自己往平行的 inventory_batches 表插入
 一整行，跟 platform/3O 共享包里同名的 omodul.create_inventory_batch 是两套
 完全独立、互不相关的实现，只是恰好同名。统一之后，这里改成"复用共享核心 +
 打本地补丁列"：先调共享的 omodul.create_inventory_batch 完成核心插入 (video_url
@@ -88,7 +88,7 @@ async def create_inventory_batch(
                 "pool is required — create_inventory_batch always touches persisted stock"
             )
 
-        # batch_no 是共享 schema 的必填唯一列，ClearNode 自己的 Input 从没有
+        # batch_no 是共享 schema 的必填唯一列，旧版 Input 从没有
         # 过这个字段——用 fingerprint 当 batch_no，保证同一批次重复提交能被
         # 共享层的幂等语义识别 (跟共享 omodul 自己的 compute_fingerprint_for
         # 用同一批字段是同一个道理)。

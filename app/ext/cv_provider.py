@@ -1,6 +1,6 @@
 """app.ext.cv_provider — 内存态计算机视觉 provider。
 
-obase 没有"计算机视觉/OCR"这个 provider 类别 (跟 weather/vlm 一样，是 ClearNode
+obase 没有"计算机视觉/OCR"这个 provider 类别 (跟 weather/vlm 一样，是 hemall
 域特有的外部依赖)。真实实现应该接顶棚摄像头的物体追踪/OCR 服务，或第三方
 OCR API 解析购物小票；这个开发环境里没有现成的凭据/网关，风格对齐
 ManualWeatherProvider/ManualVLMProvider：进程内内存态，默认返回一个可预测的

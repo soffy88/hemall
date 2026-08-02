@@ -489,7 +489,7 @@ async def list_customer_claims(pool: Any, customer_id: str) -> list[dict]:
 
     只筛 user_id = customer_id 这一批——claim 表本身是共享表，同时也承载
     普通退货/换货那条链路的记录 (claim_type 不是 'refund'/user_id 为 NULL 的
-    那些)，这里只关心透仓 RMA 全自动仲裁产生的记录 (decision 列非空即代表
+    那些)，这里只关心 hemall 全自动仲裁产生的记录 (decision 列非空即代表
     走过这条链路)。
     """
     async with pool.acquire() as conn:
@@ -881,7 +881,7 @@ async def list_batch_jobs(pool: Any) -> list[dict]:
 # 一段，跟上面原有商城域的读查询分开摆放。统一改造后这些查询指向的是新的
 # 本地表 (supplier/claim/channel_broadcast_log/price_benchmark/
 # probe_order_log/affiliate_contract/douyin_conversion_log)，不是已经退休
-# 不再写入的旧 ClearNode 平行表 (suppliers/rma_claims/channel_broadcast_logs/
+# 不再写入的旧平行表 (suppliers/rma_claims/channel_broadcast_logs/
 # price_benchmarks/probe_order_logs/affiliate_contracts/
 # douyin_conversion_logs)——之前这里一直读的是旧表，统一之后 omodul 早就
 # 全部改写新表了，旧表数据不会再更新，这几个 admin 只读端点之前一直在读

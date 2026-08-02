@@ -6,7 +6,7 @@ import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 
 /**
  * 供应链运维控制台 —— 批次入库/销毁/结款、供应商入驻/斩仓、C2B 集单、顶棚 CV
- * 自动入库、反向竞标。原 /admin/clearnode 页面 §4.1 批次与供应链 + v2.0 供应商
+ * 自动入库、反向竞标。原独立运维页面 §4.1 批次与供应链 + v2.0 供应商
  * 治理 + 顶棚 CV 入库 + v5.0 反向竞标搬迁至此，统一改造 Phase 4.3。
  *
  * variant_id / location_id 这些底层实体目前没有专门的创建入口——先用已有 ID
@@ -15,13 +15,13 @@ import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 
 /** 供应商列表 —— 信誉分 / escrow 质押余额 / 状态，运营巡查用，带手动刷新。 */
 function SuppliersTable({ refreshKey }: { refreshKey: number }) {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListClearnodeSuppliers>>>([]);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallSuppliers>>>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
     try {
-      setRows(await api.adminListClearnodeSuppliers());
+      setRows(await api.adminListHemallSuppliers());
     } catch {
       // 列表加载失败不阻断整个页面，留空表即可
     } finally {
@@ -118,7 +118,7 @@ export default function SupplyChainPage() {
             { key: 'supplier_id', label: 'supplier_id (可选, 供应商治理)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeCreateInventoryBatch(v as any)}
+          onSubmit={(v) => api.hemallCreateInventoryBatch(v as any)}
           onResult={(r) => merge({ batch_id: r.batch_id, variant_id: r.variant_id })}
         />
         <ActionCard
@@ -131,7 +131,7 @@ export default function SupplyChainPage() {
             { key: 'prepaid_amount', label: 'prepaid_amount (分)', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeCreateCrowdIntent(v as any)}
+          onSubmit={(v) => api.hemallCreateCrowdIntent(v as any)}
         />
         <ActionCard
           title="过期销毁 mark_batch_for_disposal"
@@ -142,7 +142,7 @@ export default function SupplyChainPage() {
             { key: 'reason', label: 'reason (默认 expired)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeMarkBatchForDisposal(v as any)}
+          onSubmit={(v) => api.hemallMarkBatchForDisposal(v as any)}
         />
         <ActionCard
           title="供应商结款 batch_settlement"
@@ -153,7 +153,7 @@ export default function SupplyChainPage() {
             { key: 'supplier_account', label: 'supplier_account' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeBatchSettlement(v as any)}
+          onSubmit={(v) => api.hemallBatchSettlement(v as any)}
         />
         <ActionCard
           title="顶棚 CV 自动入库 execute_ambient_intake_workflow"
@@ -166,7 +166,7 @@ export default function SupplyChainPage() {
             },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeExecuteAmbientIntake(v as any)}
+          onSubmit={(v) => api.hemallExecuteAmbientIntake(v as any)}
         />
       </OpsSection>
 
@@ -196,7 +196,7 @@ export default function SupplyChainPage() {
             },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeClaimOrigin(v as any)}
+          onSubmit={(v) => api.hemallClaimOrigin(v as any)}
           onResult={(r) => {
             merge({ supplier_id: (r as any).supplier_id });
             setListRefreshKey((k) => k + 1);
@@ -214,7 +214,7 @@ export default function SupplyChainPage() {
             { key: 'reason', label: 'reason' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeExecuteSlashing(v as any)}
+          onSubmit={(v) => api.hemallExecuteSlashing(v as any)}
           onResult={() => setListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -227,7 +227,7 @@ export default function SupplyChainPage() {
             { key: 'batch_cost_price', label: 'batch_cost_price (实际写回的整批成本，分)', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeSubmitSupplierReverseAuction(v as any)}
+          onSubmit={(v) => api.hemallSubmitSupplierReverseAuction(v as any)}
         />
       </OpsSection>
     </div>

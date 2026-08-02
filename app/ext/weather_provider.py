@@ -1,6 +1,6 @@
 """app.ext.weather_provider — 内存态天气 provider。
 
-obase 没有"天气"这个 provider 类别 (跟 payout 一样，是 ClearNode 域特有的外部
+obase 没有"天气"这个 provider 类别 (跟 payout 一样，是 hemall 扩展域特有的外部
 依赖)，风格对齐 obase.payment_providers.ManualPaymentProvider / 本域自己的
 ManualPayoutProvider：进程内内存态，无需真实气象 API 凭据即可本地/测试跑通。
 

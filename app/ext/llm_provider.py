@@ -1,6 +1,6 @@
 """app.ext.llm_provider — 内存态大模型文本生成 provider。
 
-obase 没有"大模型推理"这个 provider 类别 (跟 weather/vlm/cv 一样，是 ClearNode
+obase 没有"大模型推理"这个 provider 类别 (跟 weather/vlm/cv 一样，是 hemall
 域特有的外部依赖)。真实实现应该接 GPT-4o/Claude 之类的 API 生成播报文案；
 这个开发环境里没有现成的 API key，风格对齐 ManualVLMProvider：进程内内存态，
 默认生成一段基于 user_prompt 拼出来的确定性占位文案 (不是随机/不可复现的)，
@@ -28,4 +28,4 @@ class ManualLLMProvider:
         if override is not None:
             return override
         first_line = user_prompt.splitlines()[0] if user_prompt else ""
-        return f"[MOCK COPY] {first_line} 手慢无，透仓底价，先到先得。"
+        return f"[MOCK COPY] {first_line} 手慢无，hemall 底价，先到先得。"

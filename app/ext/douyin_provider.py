@@ -1,7 +1,7 @@
 """app.ext.douyin_provider — 内存态抖音开放平台网关 provider。
 
 obase 没有"抖音精选联盟/本地生活开放平台"这个 provider 类别 (跟 weather/vlm/
-cv/llm/wechat_channel/spider 一样，是 ClearNode 域特有的外部依赖)。真实实现
+cv/llm/wechat_channel/spider 一样，是 hemall 扩展域特有的外部依赖)。真实实现
 应该接字节跳动开放平台的 ``/local_life/sku/sync`` 接口；这个开发环境里没有
 真实的 access_token/本地生活资质，风格对齐 ManualWeChatChannelProvider：
 进程内内存态，默认返回成功 (err_no=0)，可用 set_response 覆写指定 SKU 这次

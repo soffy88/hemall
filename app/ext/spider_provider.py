@@ -1,7 +1,7 @@
 """app.ext.spider_provider — 内存态竞对价格爬虫 provider。
 
 obase 没有"O2O 商超比价爬虫"这个 provider 类别 (跟 weather/vlm/cv/llm/
-wechat_channel 一样，是 ClearNode 域特有的外部依赖)。真实实现应该接商业爬虫
+wechat_channel 一样，是 hemall 扩展域特有的外部依赖)。真实实现应该接商业爬虫
 集群或自建 Headless 浏览器抓取坐标周围商超的 O2O 价格；这个开发环境里没有
 真实的爬虫服务，风格对齐 ManualWeatherProvider：进程内内存态，默认返回空
 结果 (没抓到任何数据，不是伪造几条假数据糊弄过去)，可用 set_results 按坐标

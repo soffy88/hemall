@@ -46,7 +46,7 @@ export default function SupplierRegisterPage() {
 
     setSubmitting(true);
     try {
-      const res = await api.clearnodeClaimOrigin({
+      const res = await api.hemallClaimOrigin({
         wallet_account: walletAccount.trim(),
         spatial_polygon: buildPolygon(latNum, lngNum, radiusNum),
         polygon_name: polygonName.trim() || undefined,

@@ -7,7 +7,7 @@ import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 import type { StockLocation, SalesChannel, PriceList } from '@/types/api';
 
 export default function InventorySettingsPage() {
-  // 透仓运维（原 /admin/clearnode 页面搬迁过来的裸操作卡片）用的独立 ctx——
+  // hemall 扩展运维（原独立运维页面搬迁过来的裸操作卡片）用的独立 ctx——
   // 跟上面门店/渠道/价格表管理是两套不相干的状态，不复用。
   const [opsCtx, setOpsCtx] = useState<Record<string, string>>({});
   function mergeOpsCtx(patch: Record<string, unknown>) {
@@ -421,7 +421,7 @@ export default function InventorySettingsPage() {
       </div>
 
       <div className="mt-10">
-        <h2 className="text-lg font-semibold mb-3">透仓运维 — 新节点注册 / 自动补货</h2>
+        <h2 className="text-lg font-semibold mb-3">hemall 扩展运维 — 新节点注册 / 自动补货</h2>
         <OpsSection title="门店与补货">
           <ActionCard
             title="新节点注册 commission_new_location"
@@ -434,7 +434,7 @@ export default function InventorySettingsPage() {
               { key: 'lon', label: 'lon', type: 'number' },
             ]}
             defaults={opsCtx}
-            onSubmit={(v) => api.clearnodeCommissionNewLocation(v as any)}
+            onSubmit={(v) => api.hemallCommissionNewLocation(v as any)}
             onResult={(r) => mergeOpsCtx({ location_id: (r as any).location_id })}
           />
           <ActionCard
@@ -456,7 +456,7 @@ export default function InventorySettingsPage() {
               { key: 'customer_lon', label: 'customer_lon', type: 'number' },
             ]}
             defaults={opsCtx}
-            onSubmit={(v) => api.clearnodeExecuteAmbientReplenishment(v as any)}
+            onSubmit={(v) => api.hemallExecuteAmbientReplenishment(v as any)}
           />
         </OpsSection>
       </div>

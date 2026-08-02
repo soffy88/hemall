@@ -41,7 +41,7 @@ async def confirm_batch_pick(
     (labor_ledger)，供 dispatch_labor_payment 按 worker_id 聚合结算——这是
     confirm_batch_pick "验证正确"这一事件的自然副作用。
 
-    **统一改造说明**：ClearNode 自己原来的两阶段库存模型是"结账只锁库存
+    **统一改造说明**：旧版实现的两阶段库存模型是"结账只锁库存
     (locked_qty)，拣货确认才真正转出库 (stock_qty 才真的扣减)"。统一之后
     走的是共享 omodul.complete_checkout 的一阶段模型——结账当场就把预留
     转成永久出库 (stock_qty 和 reserved_qty 同时扣减，见该 omodul 自己的

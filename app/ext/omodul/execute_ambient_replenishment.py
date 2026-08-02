@@ -30,7 +30,7 @@ class ExecuteAmbientReplenishmentConfig(BaseConfig):
 
 
 class ExecuteAmbientReplenishmentInput(BaseModel):
-    # 统一之前 ClearNode 自己的 orders 表压根没有顾客身份列，customer_ref
+    # 统一之前扩展域自己的 orders 表压根没有顾客身份列，customer_ref
     # 只是个不落库的自由字符串；统一之后 customer_order.customer_id 是真
     # FK，这里跟着改成真 customer.id，创建的订单从此能在顾客账户下查到。
     customer_id: str

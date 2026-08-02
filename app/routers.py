@@ -321,7 +321,7 @@ async def admin_list_ext_conversion_logs(request: Request, _=Depends(_require_ad
 # "Input pydantic 模型直接当请求体 schema" 那套通用机制会有 JSON body 里
 # bytes 语义不清的问题；submit_rma_claim 根本不是 omodul (是拉起
 # oservi.autonomous_triage_engine 的信号入口)，两者都手写路由。统一改造收尾
-# 后不再有共同的 "/clearnode" 前缀——三个端点分别落进各自域名 (supply-chain/
+# 后不再有共同的扩展前缀——三个端点分别落进各自域名 (supply-chain/
 # marketing/aftersales)，不设 router 级别的公共 prefix。
 
 ext_bespoke_router = APIRouter(tags=["ext-bespoke"])

@@ -8,13 +8,13 @@ import type { Order, ReturnRequest, Swap, Claim } from '@/types/api';
 
 /** 客诉仲裁记录 —— VLM 判损 + 裁决结果，运营核查用，带手动刷新。 */
 function RmaClaimsTable({ refreshKey }: { refreshKey: number }) {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListClearnodeRmaClaims>>>([]);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallRmaClaims>>>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
     try {
-      setRows(await api.adminListClearnodeRmaClaims());
+      setRows(await api.adminListHemallRmaClaims());
     } catch {
       // 列表加载失败不阻断整个页面，留空表即可
     } finally {
@@ -100,7 +100,7 @@ export default function AftersalesPage() {
   const [claimType, setClaimType] = useState('refund');
   const [claimQty, setClaimQty] = useState<Record<string, number>>({});
 
-  // 透仓运维（原 /admin/clearnode 页面搬迁过来的裸操作卡片）用的独立 ctx——
+  // hemall 扩展运维（原独立运维页面搬迁过来的裸操作卡片）用的独立 ctx——
   // 跟上面订单查询/退换货表单是两套不相干的状态，不复用。
   const [opsCtx] = useState<Record<string, string>>({});
   const [opsListRefreshKey, setOpsListRefreshKey] = useState(0);
@@ -452,7 +452,7 @@ export default function AftersalesPage() {
       )}
 
       <div className="mt-10 mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">透仓运维 — 押金/回收桶/RMA 仲裁</h2>
+        <h2 className="text-lg font-semibold">hemall 扩展运维 — 押金/回收桶/RMA 仲裁</h2>
         <button
           onClick={() => setOpsListRefreshKey((k) => k + 1)}
           className="text-xs text-blue-600 hover:underline"
@@ -471,7 +471,7 @@ export default function AftersalesPage() {
             { key: 'action', label: 'action', placeholder: 'charge | refund' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeToteDepositAndRefund(v as any)}
+          onSubmit={(v) => api.hemallToteDepositAndRefund(v as any)}
         />
         <ActionCard
           title="回收桶退货 process_drop_return"
@@ -482,7 +482,7 @@ export default function AftersalesPage() {
             { key: 'reason', label: 'reason (默认 quality)' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeProcessDropReturn(v as any)}
+          onSubmit={(v) => api.hemallProcessDropReturn(v as any)}
         />
         <ActionCard
           title="🔥 一键提交客诉 submit_rma_claim (全自动仲裁, ~2 秒)"
@@ -497,7 +497,7 @@ export default function AftersalesPage() {
             { key: 'route_risk', label: 'route_risk (0-1, 默认 0)', type: 'number' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeSubmitRmaClaim(v as any)}
+          onSubmit={(v) => api.hemallSubmitRmaClaim(v as any)}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -513,7 +513,7 @@ export default function AftersalesPage() {
             { key: 'route_risk', label: 'route_risk (0-1, 默认 0)', type: 'number' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeProcessCreditGatedRma(v as any)}
+          onSubmit={(v) => api.hemallProcessCreditGatedRma(v as any)}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -531,7 +531,7 @@ export default function AftersalesPage() {
             { key: 'credibility_decision', label: 'credibility_decision', placeholder: 'instant | honeypot' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.clearnodeExecuteLiabilityRouting(v as any)}
+          onSubmit={(v) => api.hemallExecuteLiabilityRouting(v as any)}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
       </OpsSection>

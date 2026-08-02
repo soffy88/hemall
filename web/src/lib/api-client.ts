@@ -715,59 +715,58 @@ export const api = {
   cancelBatchJob: (data: { batch_job_id: string }) =>
     omodul('batch', 'cancel_batch_job', data),
 
-  // ── ClearNode: 透仓 (供应链 / 交易锁单 / 物理流转 / 分润结算) ──
+  // ── hemall 扩展域 (供应链 / 交易锁单 / 物理流转 / 分润结算) ──
   // 鉴权边界见 app/ext/registry.py 的 ADMIN_OPS：仓管/结算侧需要 admin
   // token (omodul 第四参传 true)，顾客自助侧 (加车/结账/集单等) 公开 (传 false)。
-  // 统一改造收尾：域名不再带 "clearnode/" 前缀 (见 app/ext/registry.py 的
-  // DOMAINS 映射说明)，这里的 JS 函数名暂时保留 clearnode 前缀不变——管理
-  // 后台页面重新分组 (拆到 hemall 现有分域页面) 是单独一个阶段，到时候这些
-  // 函数名会跟着页面一起搬家/改名，这一步只改后端真正认的域名字符串。
+  // 统一改造收尾：域名不带独立扩展前缀 (见 app/ext/registry.py 的 DOMAINS
+  // 映射说明)；JS 函数名统一以 hemall 为前缀，与后端域名字符串解耦——后端
+  // 认的是 omodul('domain', 'name', ...) 的域名字符串，函数名只是前端封装。
 
-  clearnodeCreateInventoryBatch: (data: { variant_id: string; location_id: string; video_url: string; stock_qty: number; cost_price: number; retail_price: number; expiration_time?: string; supplier_id?: string }) =>
+  hemallCreateInventoryBatch: (data: { variant_id: string; location_id: string; video_url: string; stock_qty: number; cost_price: number; retail_price: number; expiration_time?: string; supplier_id?: string }) =>
     omodul('supply-chain', 'create_inventory_batch', data, true),
 
-  clearnodeMarkBatchForDisposal: (data: { batch_id: string; reason?: string }) =>
+  hemallMarkBatchForDisposal: (data: { batch_id: string; reason?: string }) =>
     omodul('supply-chain', 'mark_batch_for_disposal', data, true),
 
-  clearnodeBatchSettlement: (data: { batch_id: string; supplier_account: string }) =>
+  hemallBatchSettlement: (data: { batch_id: string; supplier_account: string }) =>
     omodul('supply-chain', 'batch_settlement', data, true),
 
-  clearnodeCreateCrowdIntent: (data: { variant_id: string; customer_ref: string; prepaid_amount: number }) =>
+  hemallCreateCrowdIntent: (data: { variant_id: string; customer_ref: string; prepaid_amount: number }) =>
     omodul('community', 'create_crowd_intent', data, false),
 
   // 加车/运费/结账统一改造后直接走共享的 addLineItem / storeAddShippingMethod /
-  // checkout（见上面 Storefront 分组）——ClearNode 自己的 add_line_item_to_cart /
-  // cart_shipping_method_set / complete_checkout 已删除，不再有 clearnode/cart/* 端点。
+  // checkout（见上面 Storefront 分组）——扩展域旧版的 add_line_item_to_cart /
+  // cart_shipping_method_set / complete_checkout 已删除，不再有独立的 cart/* 端点。
 
-  clearnodeProcessSubscription: (data: { customer_ref: string; plan_fee_cents: number; duration_days?: number }) =>
+  hemallProcessSubscription: (data: { customer_ref: string; plan_fee_cents: number; duration_days?: number }) =>
     omodul('membership', 'process_subscription', data, false),
 
-  clearnodeConfirmBatchPick: (data: { order_line_item_id: string; worker_id: string }) =>
+  hemallConfirmBatchPick: (data: { order_line_item_id: string; worker_id: string }) =>
     omodul('fulfillment', 'confirm_batch_pick', data, true),
 
-  clearnodeToteDepositAndRefund: (data: { tote_id: string; action: 'charge' | 'refund' }) =>
+  hemallToteDepositAndRefund: (data: { tote_id: string; action: 'charge' | 'refund' }) =>
     omodul('aftersales', 'tote_deposit_and_refund', data, false),
 
-  clearnodeProcessDropReturn: (data: { order_line_item_id: string; reason?: string }) =>
+  hemallProcessDropReturn: (data: { order_line_item_id: string; reason?: string }) =>
     omodul('aftersales', 'process_drop_return', data, false),
 
-  clearnodeCommissionNewLocation: (data: { host_id: string; address: string; lat: number; lon: number }) =>
+  hemallCommissionNewLocation: (data: { host_id: string; address: string; lat: number; lon: number }) =>
     omodul('inventory', 'commission_new_location', data, true),
 
-  clearnodeDispatchLaborPayment: (data: { worker_id: string; payout_account: string }) =>
+  hemallDispatchLaborPayment: (data: { worker_id: string; payout_account: string }) =>
     omodul('settlement', 'dispatch_labor_payment', data, true),
 
-  clearnodeDispatchHostDividend: (data: { host_id: string; location_id: string; payout_account: string; tote_count: number }) =>
+  hemallDispatchHostDividend: (data: { host_id: string; location_id: string; payout_account: string; tote_count: number }) =>
     omodul('settlement', 'dispatch_host_dividend', data, true),
 
-  clearnodeExecuteAmbientReplenishment: (data: { customer_ref: string; variant_id: string; qty: number; family_size: number; purchase_history: { purchased_at: string; quantity: number }[]; customer_lat: number; customer_lon: number }) =>
+  hemallExecuteAmbientReplenishment: (data: { customer_ref: string; variant_id: string; qty: number; family_size: number; purchase_history: { purchased_at: string; quantity: number }[]; customer_lat: number; customer_lon: number }) =>
     omodul('inventory', 'execute_ambient_replenishment', data, false),
 
-  // ── ClearNode v2.0: 供应商治理 / 全自动仲裁 / 裂变 ──────────────
+  // ── hemall 扩展 v2.0: 供应商治理 / 全自动仲裁 / 裂变 ──────────────
   // 同样的鉴权约定：仓管/处罚/仲裁执行侧 admin token，供应商/顾客/邻居这类
   // "外部人自助操作" 公开。见 app/ext/registry.py 的 ADMIN_OPS 注释。
 
-  clearnodeClaimOrigin: (data: { wallet_account: string; spatial_polygon: { type: string; coordinates: number[][][] }; polygon_name?: string }) =>
+  hemallClaimOrigin: (data: { wallet_account: string; spatial_polygon: { type: string; coordinates: number[][][] }; polygon_name?: string }) =>
     omodul('supply-chain', 'claim_origin_workflow', data, false),
 
   // 小型供应商门户：查询自己的入驻状态。供应商目前没有真正的登录体系，
@@ -775,27 +774,27 @@ export const api = {
   supplierLookup: (walletAccount: string) =>
     request<SupplierStatus>(`/supply-chain/suppliers/lookup?wallet_account=${encodeURIComponent(walletAccount)}`, {}, false),
 
-  clearnodeExecuteSlashing: (data: { supplier_id: string; order_id: string; penalty_base_amount: number; new_trust_score: number; reason: string }) =>
+  hemallExecuteSlashing: (data: { supplier_id: string; order_id: string; penalty_base_amount: number; new_trust_score: number; reason: string }) =>
     omodul('supply-chain', 'execute_slashing_workflow', data, true),
 
-  clearnodeReportPhantomStock: (data: { order_line_item_id: string; worker_id: string; reason?: string }) =>
+  hemallReportPhantomStock: (data: { order_line_item_id: string; worker_id: string; reason?: string }) =>
     omodul('fulfillment', 'report_phantom_stock_workflow', data, true),
 
-  clearnodeExecutePeerDelivery: (data: { order_id: string; tote_id: string; neighbor_id: string; bounty_amount: number }) =>
+  hemallExecutePeerDelivery: (data: { order_id: string; tote_id: string; neighbor_id: string; bounty_amount: number }) =>
     omodul('fulfillment', 'execute_peer_delivery_workflow', data, false),
 
-  clearnodeProcessCreditGatedRma: (data: { order_id: string; batch_id: string; user_id: string; user_trust_score: number; batch_anomaly_rate?: number; route_risk?: number }) =>
+  hemallProcessCreditGatedRma: (data: { order_id: string; batch_id: string; user_id: string; user_trust_score: number; batch_anomaly_rate?: number; route_risk?: number }) =>
     omodul('aftersales', 'process_credit_gated_rma_workflow', data, false),
 
-  clearnodeExecuteLiabilityRouting: (data: { order_id: string; batch_id: string; user_id: string; evidence_image_url: string; vlm_damage_type: string; vlm_severity: number; fraud_probability: number; credibility_decision: 'instant' | 'honeypot' }) =>
+  hemallExecuteLiabilityRouting: (data: { order_id: string; batch_id: string; user_id: string; evidence_image_url: string; vlm_damage_type: string; vlm_severity: number; fraud_probability: number; credibility_decision: 'instant' | 'honeypot' }) =>
     omodul('aftersales', 'execute_liability_routing_workflow', data, true),
 
-  clearnodeGenerateCrushingOffer: (data: { customer_ref: string; receipt_items: { item: string; qty?: number; price: number }[] }) =>
+  hemallGenerateCrushingOffer: (data: { customer_ref: string; receipt_items: { item: string; qty?: number; price: number }[] }) =>
     omodul('marketing', 'generate_crushing_offer_workflow', data, false),
 
   // 手写端点 (不是裸 omodul)：execute_ambient_intake_workflow 的 video_stream
   // 是 bytes，HTTP 契约简化成纯文本字段，由后端路由做 str->bytes 转换。
-  clearnodeExecuteAmbientIntake: (data: { video_stream_text: string }) =>
+  hemallExecuteAmbientIntake: (data: { video_stream_text: string }) =>
     request<OmodulResult>('/supply-chain/execute_ambient_intake_workflow', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -803,73 +802,73 @@ export const api = {
 
   // 手写端点：不是 omodul，是拉起 autonomous_triage_engine 的信号入口——
   // 公开 (顾客自助报案)，2 秒内跑完 VLM 判损 + 信誉裁决 + 退款/责任方扣款全链路。
-  clearnodeSubmitRmaClaim: (data: { order_id: string; batch_id: string; user_id: string; evidence_image_url: string; user_trust_score: number; route_risk?: number }) =>
+  hemallSubmitRmaClaim: (data: { order_id: string; batch_id: string; user_id: string; evidence_image_url: string; user_trust_score: number; route_risk?: number }) =>
     request<OmodulResult>('/aftersales/submit_rma_claim', {
       method: 'POST',
       body: JSON.stringify(data),
     }, false),
 
-  // ── ClearNode v4.0: 微信视频号社交播报 ──────────────────────────
+  // ── hemall 扩展 v4.0: 微信视频号社交播报 ──────────────────────────
   // 需要 admin token——发一条视频号是运营/引擎的动作，不是顾客自助操作。
 
-  clearnodeExecuteChannelBroadcast: (data: { batch_id: string; broadcast_type: 'fresh_arrival' | 'clearance'; market_price: number; access_token: string }) =>
+  hemallExecuteChannelBroadcast: (data: { batch_id: string; broadcast_type: 'fresh_arrival' | 'clearance'; market_price: number; access_token: string }) =>
     omodul('marketing', 'execute_channel_broadcast_workflow', data, true),
 
-  // ── ClearNode v2.0/v4.0: 只读列表 (运营巡查用) ────────────────────
+  // ── hemall 扩展 v2.0/v4.0: 只读列表 (运营巡查用) ────────────────────
 
-  adminListClearnodeSuppliers: () =>
+  adminListHemallSuppliers: () =>
     request<Array<{ id: string; wallet_account: string; spatial_polygon: unknown; trust_score: number; escrow_balance: number; status: string }>>('/admin/supply-chain/suppliers', {}, true),
 
-  adminListClearnodeRmaClaims: () =>
+  adminListHemallRmaClaims: () =>
     request<Array<{ id: string; order_id: string; batch_id: string; user_id: string; evidence_image_url: string | null; vlm_damage_type: string | null; vlm_severity: number | null; decision: string | null; liable_party: string | null; created_at: string }>>('/admin/aftersales/rma-claims', {}, true),
 
-  adminListClearnodeBroadcastLogs: () =>
+  adminListHemallBroadcastLogs: () =>
     request<Array<{ id: string; batch_id: string; broadcast_type: string; llm_copywriting: string; wechat_feed_id: string | null; mini_program_path: string; status: string; error_message: string | null; created_at: string; published_at: string | null }>>('/admin/marketing/broadcast-logs', {}, true),
 
-  // ── ClearNode v5.0: 全局定价与冷启动预言机 ───────────────────────
+  // ── hemall 扩展 v5.0: 全局定价与冷启动预言机 ───────────────────────
   // 众包核销 (顾客上传小票) 和反向竞标 (供应商申报报价) 都是"外部人自助
   // 操作"，跟 claim_origin_workflow / process_credit_gated_rma_workflow 同类，公开无需 admin token。
 
   // 手写端点：receipt_image 是 bytes，HTTP 契约简化成纯文本字段，由后端
-  // 路由做 str->bytes 转换 (跟 clearnodeExecuteAmbientIntake 同一个套路)。
+  // 路由做 str->bytes 转换 (跟 hemallExecuteAmbientIntake 同一个套路)。
   // customer_id (不是 user_id)：统一改造后奖励余额落在真实 customer.system_
   // balance 上，需要一个真实 customer.id，不再是自由字符串。
-  clearnodeRewardCrowdsourcedBenchmark: (data: { customer_id: string; receipt_image_text: string }) =>
+  hemallRewardCrowdsourcedBenchmark: (data: { customer_id: string; receipt_image_text: string }) =>
     request<OmodulResult>('/marketing/reward_crowdsourced_benchmark_workflow', {
       method: 'POST',
       body: JSON.stringify(data),
     }, false),
 
-  clearnodeSubmitSupplierReverseAuction: (data: { batch_id: string; supplier_bid_price_per_gram: number; batch_cost_price: number }) =>
+  hemallSubmitSupplierReverseAuction: (data: { batch_id: string; supplier_bid_price_per_gram: number; batch_cost_price: number }) =>
     omodul('supply-chain', 'submit_supplier_reverse_auction_workflow', data, false),
 
-  // ── ClearNode v5.0: 只读列表 (运营巡查用) ──────────────────────────
+  // ── hemall 扩展 v5.0: 只读列表 (运营巡查用) ──────────────────────────
 
-  adminListClearnodePriceBenchmarks: () =>
+  adminListHemallPriceBenchmarks: () =>
     request<Array<{ id: string; variant_id: string | null; raw_item_name: string | null; source_type: string; competitor_name: string | null; raw_price_cents: number; raw_unit: string; normalized_price_per_unit: number | null; captured_at: string }>>('/admin/marketing/price-benchmarks', {}, true),
 
-  adminListClearnodeProbeLogs: () =>
+  adminListHemallProbeLogs: () =>
     request<Array<{ id: string; batch_id: string; probe_price_cents: number; traffic_exposure: number; observed_sales_velocity: number | null; status: string; created_at: string; resolved_at: string | null }>>('/admin/marketing/probe-logs', {}, true),
 
-  // ── ClearNode v6.0: 抖音拓客与数字领主 ───────────────────────────
+  // ── hemall 扩展 v6.0: 抖音拓客与数字领主 ───────────────────────────
   // 云加盟认领是"外部人自助操作" (跟 claim_origin_workflow 同类)，公开无需
   // admin token；领主契约册封 ("500 单点火"阈值由运营后台自行核实) 和转化
   // 落账 (公开的话任何人都能编造推荐关系骗分润) 都需要 admin token。
 
-  clearnodeProcessCloudFranchiseClaim: (data: { douyin_uid: string; address: string; lat: number; lon: number }) =>
+  hemallProcessCloudFranchiseClaim: (data: { douyin_uid: string; address: string; lat: number; lon: number }) =>
     omodul('growth', 'process_cloud_franchise_claim_workflow', data, false),
 
-  clearnodeBindDigitalLordContract: (data: { douyin_uid: string; location_id: string }) =>
+  hemallBindDigitalLordContract: (data: { douyin_uid: string; location_id: string }) =>
     omodul('growth', 'bind_digital_lord_contract_workflow', data, true),
 
-  clearnodeRecordDouyinConversion: (data: { order_id: string; douyin_uid?: string }) =>
+  hemallRecordDouyinConversion: (data: { order_id: string; douyin_uid?: string }) =>
     omodul('growth', 'record_douyin_conversion_workflow', data, true),
 
-  // ── ClearNode v6.0: 只读列表 (运营巡查用) ──────────────────────────
+  // ── hemall 扩展 v6.0: 只读列表 (运营巡查用) ──────────────────────────
 
-  adminListClearnodeAffiliateContracts: () =>
+  adminListHemallAffiliateContracts: () =>
     request<Array<{ id: string; douyin_uid: string; contract_type: string; bound_entity_id: string; commission_logic: unknown; status: string; created_at: string }>>('/admin/growth/affiliate-contracts', {}, true),
 
-  adminListClearnodeConversionLogs: () =>
+  adminListHemallConversionLogs: () =>
     request<Array<{ id: string; order_id: string; douyin_uid: string; contract_id: string | null; dividend_amount_cents: number; settlement_status: string; created_at: string }>>('/admin/growth/conversion-logs', {}, true),
 };

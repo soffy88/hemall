@@ -1,4 +1,4 @@
-"""app.ext.oservi — 透仓 (ClearNode) 元服务：无人工厂的调度引擎装配。
+"""app.ext.oservi — hemall 扩展层元服务：无人工厂的调度引擎装配。
 
 SPEC §5: "引擎不包含具体的电商逻辑，它只负责依据时间和信号，无情地拉起底层的
 omodul"——机制 (定时循环/信号扇出) 由 platform/3O/oservi 的共享引擎骨架
@@ -304,7 +304,7 @@ def build_demand_aggregator_engine(
             notification_provider,
             channel="email",
             template=event,
-            data={"to": "supply-chain@clearnode.internal", **payload},
+            data={"to": "supply-chain@hemall.internal", **payload},
         )
         return {"event": event, "notified": ok}
 
@@ -446,7 +446,7 @@ def build_batch_broadcast_engine(
 ) -> EventWebhookDispatcherEngine:
     """零成本广播引擎 (on_signal，批次视频上架/改价时触发)。
 
-    取代竞价排名：直接把底价实录推给私域订阅用户的终端。ClearNode 压根没有
+    取代竞价排名：直接把底价实录推给私域订阅用户的终端。hemall 扩展侧没有
     "订阅用户名单"这张表 (跟顾客身份一样，SPEC 没定义)，这里推给一个约定的
     广播频道 (notification provider="log" 时就是落日志)；真正接入私域推送
     (公众号模板消息/小程序订阅消息) 只需要换掉 provider 实现，上层不用改。
@@ -759,7 +759,7 @@ def build_spatial_fomo_engine(
     运营配置"幽灵打样批次" (is_ghost_batch=True) 后，两类信号都由这一个引擎
     处理 (根据 event 名分支)：
       - "spatial_fomo.promo_push"：向目标围栏区域定向推送极端底价——
-        ClearNode 没有"小区订阅名单"这张表 (跟 batch_broadcast_engine 的
+        hemall 扩展侧没有"小区订阅名单"这张表 (跟 batch_broadcast_engine 的
         "没有订阅用户名单"是同一个诚实空白)，这里推给一个约定的广播频道。
       - "spatial_fomo.threshold_reached"：意向金集够了 (由调用方监听
         crowd_intents 判定，不在这个引擎内部重新判断阈值——那是
@@ -917,7 +917,7 @@ def build_social_broadcast_engine(
                 await asyncio.sleep(stagger_seconds)
 
         for fb in fresh_batches:
-            await _fire(fb, "fresh_arrival", 2)  # 模拟商超均价 = 透仓价 2 倍
+            await _fire(fb, "fresh_arrival", 2)  # 模拟商超均价 = hemall 价 2 倍
         for cb in clearance_sorted:
             await _fire(cb, "clearance", 3)  # 清仓价更低，对比锚点拉大到 3 倍
 

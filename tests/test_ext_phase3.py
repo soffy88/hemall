@@ -1,11 +1,11 @@
-"""透仓 (ClearNode) v2.0 Phase 2/3 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 v2.0 Phase 2/3 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
 覆盖全自动纠纷仲裁链路：oskill.evaluate_claim_credibility 已在
-test_clearnode_oskill.py 单测过 (纯函数)；这里测 omodul.
+test_ext_oskill.py 单测过 (纯函数)；这里测 omodul.
 execute_liability_routing_workflow (instant 退款+判责 / honeypot 挂起 /
 rejected 拒赔) 和 oservi.autonomous_triage_engine 的端到端信号驱动全链路。
 
-统一改造后：仲裁记录并入共享 claim 表 (不再是 ClearNode 自己的 rma_claims)，
+统一改造后：仲裁记录并入共享 claim 表 (不再是 扩展域自己的 rma_claims)，
 供应商并入本地新表 supplier (不再是 suppliers)，订单走共享 omodul 的建车->
 加车->授权支付->结账链路。
 """
@@ -38,7 +38,7 @@ async def cn_pool():
     reg.register_generic("vlm", "manual", vlm, replace=True)
 
     pool = await PgPool.create(
-        name="clearnode_phase3_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_phase3_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     pool._test_vlm = vlm  # type: ignore[attr-defined]

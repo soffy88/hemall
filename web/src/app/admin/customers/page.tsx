@@ -10,7 +10,7 @@ function fmt(cents: number): string {
 }
 
 export default function CustomersPage() {
-  // 透仓运维（原 /admin/clearnode 页面搬迁过来的裸操作卡片）用的独立 ctx。
+  // hemall 扩展运维（原独立运维页面搬迁过来的裸操作卡片）用的独立 ctx。
   const [opsCtx] = useState<Record<string, string>>({});
 
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -323,7 +323,7 @@ export default function CustomersPage() {
       )}
 
       <div className="mt-10">
-        <h2 className="text-lg font-semibold mb-3">透仓运维 — 会员订阅</h2>
+        <h2 className="text-lg font-semibold mb-3">hemall 扩展运维 — 会员订阅</h2>
         <OpsSection title="会员">
           <ActionCard
             title="会员订阅 process_subscription"
@@ -335,7 +335,7 @@ export default function CustomersPage() {
               { key: 'duration_days', label: 'duration_days (默认 365)', type: 'number' },
             ]}
             defaults={opsCtx}
-            onSubmit={(v) => api.clearnodeProcessSubscription(v as any)}
+            onSubmit={(v) => api.hemallProcessSubscription(v as any)}
           />
         </OpsSection>
       </div>

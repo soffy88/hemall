@@ -5,7 +5,7 @@ import { api } from '@/lib/api-client';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 
 /**
- * 履约运维控制台 —— 拣货确认、幽灵库存上报、邻居代送确认。原 /admin/clearnode
+ * 履约运维控制台 —— 拣货确认、幽灵库存上报、邻居代送确认。原独立运维页面
  * 页面 §4.3 物理流转 + v2.0 物理世界异常处理里跟"履约"直接相关的三张卡片
  * 搬迁至此，统一改造 Phase 4.3。
  */
@@ -39,7 +39,7 @@ export default function FulfillmentPage() {
             { key: 'worker_id', label: 'worker_id' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeConfirmBatchPick(v as any)}
+          onSubmit={(v) => api.hemallConfirmBatchPick(v as any)}
         />
         <ActionCard
           title="幽灵库存上报 report_phantom_stock_workflow"
@@ -51,7 +51,7 @@ export default function FulfillmentPage() {
             { key: 'reason', label: 'reason (默认 phantom_stock)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeReportPhantomStock(v as any)}
+          onSubmit={(v) => api.hemallReportPhantomStock(v as any)}
         />
         <ActionCard
           title="邻居代送确认 execute_peer_delivery_workflow"
@@ -64,7 +64,7 @@ export default function FulfillmentPage() {
             { key: 'bounty_amount', label: 'bounty_amount (分)', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeExecutePeerDelivery(v as any)}
+          onSubmit={(v) => api.hemallExecutePeerDelivery(v as any)}
         />
       </OpsSection>
     </div>

@@ -1,7 +1,7 @@
 """app.ext.vlm_provider — 内存态多模态视觉 provider。
 
 obase 没有"多模态视觉大模型"这个 provider 类别 (跟 weather/payout 一样，是
-ClearNode 域特有的外部依赖)。真实实现应该接 GPT-4V/Gemini Pro Vision 之类的
+hemall 扩展域特有的外部依赖)。真实实现应该接 GPT-4V/Gemini Pro Vision 之类的
 API 去比对客诉证据图与原产地批次视频；这个开发环境里没有现成的凭据/网关，
 风格对齐 ManualWeatherProvider：进程内内存态，默认判定"完好无损、无造假嫌疑"，
 可用 set_assessment 按证据图 URL 覆写指定判定结果，供测试/演练模拟真实损坏

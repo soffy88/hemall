@@ -1,10 +1,10 @@
-"""app.ext.schema — hemall 商城扩展层 DDL Schema (原"ClearNode"六轮 SPEC)。
+"""app.ext.schema — hemall 商城扩展层 DDL Schema (六轮 SPEC)。
 
-**统一改造说明**：v1.0~v6.0 每一轮都把"透仓"当成一个独立新系统来建，自己起了
+**统一改造说明**：v1.0~v6.0 每一轮都把扩展特性当成一个独立新系统来建，自己起了
 一整套跟 hemall 原有商城 (platform/3O/obase.commerce_batch_schema 共享库定义
 的 product/product_variant/inventory_batch/cart/customer_order/claim 等 29
 张表) 平行的表 (products/variants/inventory_batches/orders/...)。用户明确
-指出"透仓就是 hemall，不该有两套"——本模块已经从"平行建表"迁移成"给共享表打
+指出扩展域就是 hemall 原生内建能力，不该有两套——本模块已经从"平行建表"迁移成"给共享表打
 hemall 本地补丁 + 只为真正新增的业务概念 (供应商托管/循环筐/C2B集单/计件
 工资/宿主分润/会员订阅/价格基线/试探单/社交播报/抖音分润...) 新建本地表"，
 `_TABLES`/`_INDEXES` 全部 FK 指向共享表，不再有自己的平行副本。旧平行表已在
@@ -80,7 +80,7 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
         ],
     ),
     # C2B 逆向集单 (原 crowd_intents；customer_ref 自由字符串改成真
-    # customer.id FK——统一之前 ClearNode 压根没有真实顾客账户可绑)
+    # customer.id FK——统一之前扩展域压根没有真实顾客账户可绑)
     (
         "crowd_intent",
         [

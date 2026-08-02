@@ -1,4 +1,4 @@
-"""透仓 (ClearNode) oskill 层单测 — 纯内存算法，不需要数据库，无条件运行。"""
+"""hemall 扩展域 oskill 层单测 — 纯内存算法，不需要数据库，无条件运行。"""
 
 from __future__ import annotations
 

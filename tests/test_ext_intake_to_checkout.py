@@ -1,6 +1,6 @@
-"""透仓 (ClearNode) 入库→加车→结账全链路集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 入库→加车→结账全链路集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
-统一改造后：ClearNode 自己重复实现的 add_line_item_to_cart/complete_checkout
+统一改造后：扩展域自己重复实现的 add_line_item_to_cart/complete_checkout
 已经退休，购物车/结账走的就是 hemall 原有 /store/* 背后那套共享 omodul
 (omodul.create_cart / omodul.add_line_item_to_cart / omodul.
 create_payment_sessions / omodul.set_payment_session / omodul.
@@ -34,7 +34,7 @@ async def cn_pool():
         "payment", "manual", ManualPaymentProvider(), replace=True
     )
     pool = await PgPool.create(
-        name="clearnode_e2e_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_e2e_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     yield pool
@@ -109,7 +109,7 @@ async def test_intake_to_checkout_full_chain(cn_pool, tmp_path):
     assert rejected["status"] == "failed"
     assert "video_url" in rejected["error"]["message"]
 
-    # 2. 建车 + 加车 (共享 omodul，不是 ClearNode 自己的版本)
+    # 2. 建车 + 加车 (共享 omodul，不是 扩展域自己的版本)
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
         AddLineItemInput,

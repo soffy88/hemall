@@ -17,8 +17,8 @@ from omodul._base import (
 
 from ..oskill import recompute_voronoi_grid
 
-#: 共享 stock_location 表要求 region_code NOT NULL，但没有区域概念的
-#: ClearNode 节点从没填过这个字段——统一之后借用商城默认区域码，不新增
+
+#: 旧版扩展域节点从没填过这个字段——统一之后借用商城默认区域码，不新增
 #: Input 字段 (调用方目前也没有区域信息可传)。
 _DEFAULT_REGION_CODE = "cn-east"
 
@@ -97,8 +97,8 @@ async def commission_new_location(
                 host_id=input_data.host_id,
             )
 
-            # 共享 stock_location 的 lat/lng 是可空列 (通用商城不强制要求
-            # 门店有坐标)——ClearNode 自己的旧版 lat/lon 是 NOT NULL，统一
+
+            # 门店有坐标)——旧版实现的 lat/lon 是 NOT NULL，统一
             # 之后不能再假设"active 节点都有坐标"，WHERE 里过滤掉没坐标的。
             all_active = await conn.fetch(
                 'SELECT id, lat, lng FROM "stock_location" '

@@ -1,13 +1,13 @@
-"""透仓 (ClearNode) §4.1-§4.4 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+"""hemall 扩展域 §4.1-§4.4 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
 
 覆盖入库侧 (集单/销毁/结算)、物理流转 (拣货/押金/退货/新节点)、分润结算
 (工资/宿主分润)、会员订阅、环境式自动补货。每个函数至少一条 happy path +
 一条该拒绝的负向用例。
 
 统一改造后：物理批次/门店/购物车/订单全部走共享表；购物车加车/结账走
-hemall 共享的 omodul 链路 (_checkout_cart 帮助函数)，不是 ClearNode 自己
+hemall 共享的 omodul 链路 (_checkout_cart 帮助函数)，不是 扩展域自己
 已经退休的 add_line_item_to_cart/complete_checkout。cart_shipping_method_
-set (ClearNode 自己的多行运费去重 hack) 也已经退休——共享 cart 模型本来就
+set (扩展域自己的多行运费去重 hack) 也已经退休——共享 cart 模型本来就
 只有一个 shipping_cents 标量字段，没有那个问题，这个测试跟着删掉。
 """
 
@@ -42,7 +42,7 @@ async def cn_pool():
     reg.register_generic("notification", "log", log_notify, replace=True)
 
     pool = await PgPool.create(
-        name="clearnode_phase2_test", dsn=TEST_DSN, min_size=1, max_size=5
+        name="hemall_phase2_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
     await ensure_ext_schema(pool)
     pool._test_log_notify = log_notify  # type: ignore[attr-defined]

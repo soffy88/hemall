@@ -6,18 +6,18 @@ import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 
 /**
  * 增长运维控制台 —— 抖音拓客与数字领主：云加盟认领、领主契约册封、转化落账。
- * 原 /admin/clearnode 页面 v6.0 §4 全部内容搬迁至此，统一改造 Phase 4.3。
+ * 原独立运维页面 v6.0 §4 全部内容搬迁至此，统一改造 Phase 4.3。
  */
 
 /** 抖音达人智能分润契约 —— 领主税/雇佣兵悬赏绑定关系，运营核查用，带手动刷新。 */
 function AffiliateContractsTable({ refreshKey }: { refreshKey: number }) {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListClearnodeAffiliateContracts>>>([]);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallAffiliateContracts>>>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
     try {
-      setRows(await api.adminListClearnodeAffiliateContracts());
+      setRows(await api.adminListHemallAffiliateContracts());
     } catch {
       // 列表加载失败不阻断整个页面，留空表即可
     } finally {
@@ -75,13 +75,13 @@ function AffiliateContractsTable({ refreshKey }: { refreshKey: number }) {
 
 /** 抖音引流转化流水 —— 每笔订单的分润明细 + 结算状态，运营核查用，带手动刷新。 */
 function ConversionLogsTable({ refreshKey }: { refreshKey: number }) {
-  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListClearnodeConversionLogs>>>([]);
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallConversionLogs>>>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
     try {
-      setRows(await api.adminListClearnodeConversionLogs());
+      setRows(await api.adminListHemallConversionLogs());
     } catch {
       // 列表加载失败不阻断整个页面，留空表即可
     } finally {
@@ -181,7 +181,7 @@ export default function GrowthPage() {
             { key: 'lon', label: 'lon', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeProcessCloudFranchiseClaim(v as any)}
+          onSubmit={(v) => api.hemallProcessCloudFranchiseClaim(v as any)}
           onResult={(r) => merge(r as any)}
         />
         <ActionCard
@@ -193,7 +193,7 @@ export default function GrowthPage() {
             { key: 'location_id', label: 'location_id' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeBindDigitalLordContract(v as any)}
+          onSubmit={(v) => api.hemallBindDigitalLordContract(v as any)}
           onResult={() => setListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -205,7 +205,7 @@ export default function GrowthPage() {
             { key: 'douyin_uid', label: 'douyin_uid (可选，抖音引荐人)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.clearnodeRecordDouyinConversion(v as any)}
+          onSubmit={(v) => api.hemallRecordDouyinConversion(v as any)}
           onResult={() => setListRefreshKey((k) => k + 1)}
         />
       </OpsSection>

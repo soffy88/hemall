@@ -5,7 +5,7 @@ import type { OmodulResult } from '@/types/api';
 
 /**
  * 裸操作卡片 —— 表单填参数 → 拍执行 → 摊 JSON 结果，配 decision_trail/
- * fingerprint 审计。原 ClearNode 运营控制台 (/admin/clearnode) 统一改造
+ * fingerprint 审计。原扩展域运营控制台统一改造
  * Phase 4.3 拆分后，各分域页面 (aftersales/inventory/marketing/customers/
  * supply-chain/fulfillment/settlement/growth) 共用这一套卡片组件，不重复
  *造轮子。跟"代客下单"这类专用业务对象 UI 不同：这里没有强制的线性步骤，
