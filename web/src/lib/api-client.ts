@@ -23,6 +23,7 @@ import type {
   Product,
   ProductCategory,
   ProductCollection,
+  RecommendationResult,
   Region,
   ReturnRequest,
   RmaClaim,
@@ -260,6 +261,14 @@ export const api = {
 
   storeRegions: () =>
     request<Region[]>('/store/regions'),
+
+  // ── Storefront: 推荐 (热门 / 相似商品；product_id 列表需自行对照 storeProducts 数据渲染) ──
+
+  storeRecommendHot: (topK: number = 12) =>
+    request<{ data: RecommendationResult }>(`/recommend/hot?top_k=${topK}`),
+
+  storeRecommendSimilar: (productId: string, topK: number = 8) =>
+    request<{ data: RecommendationResult }>(`/recommend/${productId}/similar?top_k=${topK}`),
 
   // ── Storefront: Cart ────────────────────────────────────────
 

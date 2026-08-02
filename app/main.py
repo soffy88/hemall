@@ -24,9 +24,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse
 from prometheus_client import make_asgi_app
 
 from . import __version__
@@ -38,6 +38,7 @@ from .inventory.router import router as inventory_router
 from .middleware.logging import LoggingMiddleware, configure_structlog
 from .orders.router import router as orders_router
 from .middleware.metrics import MetricsMiddleware
+from .observability.health import check_redis_health
 from .observability.health import router as health_router
 from .observability.tracing import setup_tracing
 from .payments.router import router as payment_router
@@ -54,6 +55,8 @@ from .analytics.service import AnalyticsService
 from .i18n.service import CurrencyConverter, LocalizedPaymentRouter, TranslationManager
 from .recommend.router import router as recommend_router
 from .recommend.service import RecommendationService
+from .recommend.models import ProductFeatures
+from . import queries
 from .risk.engine import RiskEngine
 from .risk.router import router as risk_router
 from .ai_assistant.router import router as ai_router
@@ -77,6 +80,109 @@ from .security.audit import AuditMiddleware
 configure_structlog()
 
 logger = logging.getLogger("hemall.main")
+
+
+# ── 门店落地页 (根路径) ────────────────────────────────────────────────
+
+
+_LANDING_CSS = """
+:root { color-scheme: light dark; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #e2e8f0;
+  padding: 2rem 1rem;
+}
+.card {
+  width: 100%; max-width: 560px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 2.5rem 2rem;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.brand { font-size: 1.6rem; font-weight: 700; letter-spacing: 0.02em; }
+.brand em { font-style: normal; color: #38bdf8; }
+.subtitle { margin-top: 0.4rem; color: #94a3b8; font-size: 0.9rem; }
+.badge {
+  display: inline-block; margin-top: 1.2rem; padding: 0.3rem 0.8rem;
+  border-radius: 999px; font-size: 0.8rem; font-weight: 600;
+}
+.badge.healthy { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+.badge.degraded { background: rgba(234, 179, 8, 0.15); color: #facc15; }
+.status {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.6rem;
+}
+.status-item {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px; padding: 0.9rem 1rem;
+  display: flex; align-items: center; gap: 0.6rem;
+}
+.status-item .label { color: #94a3b8; font-size: 0.8rem; }
+.status-item .value { font-size: 0.95rem; font-weight: 600; }
+.status-item .stack { display: flex; flex-direction: column; gap: 0.15rem; }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+.dot-up { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.7); }
+.dot-down { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.7); }
+.links { margin-top: 1.8rem; display: flex; flex-wrap: wrap; gap: 0.7rem; }
+.links a {
+  color: #e2e8f0; text-decoration: none; font-size: 0.85rem;
+  padding: 0.5rem 1rem; border-radius: 8px;
+  background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3);
+  transition: background 0.2s ease;
+}
+.links a:hover { background: rgba(56, 189, 248, 0.25); }
+.footer { margin-top: 1.8rem; color: #64748b; font-size: 0.75rem; }
+"""
+
+
+def _render_landing(
+    version: str,
+    badge: str,
+    status_class: str,
+    db_dot: str,
+    db_text: str,
+    redis_dot: str,
+    redis_text: str,
+) -> str:
+    """渲染根路径门店落地页 HTML (自包含, 无外部依赖)。"""
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hemall 商城</title>
+<style>{_LANDING_CSS}</style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">Hemall <em>商城</em></div>
+    <div class="subtitle">Headless Commerce 服务端 · v{version}</div>
+    <span class="badge {status_class}">{badge}</span>
+    <div class="status">
+      <div class="status-item">{db_dot}<div class="stack">
+        <span class="label">数据库</span><span class="value">{db_text}</span>
+      </div></div>
+      <div class="status-item">{redis_dot}<div class="stack">
+        <span class="label">Redis</span><span class="value">{redis_text}</span>
+      </div></div>
+    </div>
+    <nav class="links">
+      <a href="/store/products">商品目录</a>
+      <a href="/store/regions">配送区域</a>
+      <a href="/health/ready">健康检查</a>
+      <a href="/docs">API 文档</a>
+    </nav>
+    <div class="footer">mall.sxueji.com · 由 Cloudflare Tunnel 提供公网访问</div>
+  </main>
+</body>
+</html>"""
 
 
 # ── 应用状态 (供 health 模块访问，避免循环导入) ─────────────────────────
@@ -111,6 +217,19 @@ _app_state = AppState()
 def get_app_state() -> AppState:
     """获取应用运行时状态 (供 health 模块使用)。"""
     return _app_state
+
+
+def _recommend_price_bucket(min_price_cents: int | None) -> str:
+    """按真实售价分档，满足 ProductFeatures.price_range 必填字段。"""
+    if min_price_cents is None:
+        return "mid"
+    if min_price_cents < 10000:
+        return "budget"
+    if min_price_cents < 50000:
+        return "mid"
+    if min_price_cents < 200000:
+        return "high"
+    return "premium"
 
 
 @asynccontextmanager
@@ -218,6 +337,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Phase 0: 更新全局状态供 health 模块访问
     _app_state.pool = app.state.pool
+
+    # Phase 3: 用真实商城目录数据灌入推荐引擎 (否则 /recommend/* 一直返回空列表)
+    if app.state.pool is not None and _app_state.recommend_service is not None:
+        try:
+            products = await queries.list_storefront_products(app.state.pool, limit=500)
+            features = [
+                ProductFeatures(
+                    product_id=p["id"],
+                    category_id=p.get("category_id") or "uncategorized",
+                    brand_id=None,
+                    price_range=_recommend_price_bucket(p.get("min_price_cents")),
+                    tags=[],
+                    min_price_cents=p.get("min_price_cents"),
+                    max_price_cents=p.get("min_price_cents"),
+                    avg_rating=0.0,
+                    review_count=0,
+                    sold_count=0,
+                )
+                for p in products
+            ]
+            await _app_state.recommend_service.register_product_features(features)
+            await _app_state.recommend_service.train()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("recommend product feature seeding failed: %s", exc)
 
     app.state.ext_oservi = None
     if app.state.pool is not None:
@@ -336,9 +479,41 @@ def create_app() -> FastAPI:
     app.include_router(build_router())
 
     @app.get("/", tags=["system"], include_in_schema=False)
-    async def root() -> RedirectResponse:
-        """根路径友好跳转到 API 文档, 避免浏览器直连后端根时裸 404。"""
-        return RedirectResponse(url="/docs")
+    async def root(request: Request) -> HTMLResponse:
+        """门店落地页 — 无独立前端时展示服务状态与入口 (不跳 /docs)。"""
+        pool = getattr(app.state, "pool", None)
+        settings = getattr(app.state, "config", None)
+
+        db_up = pool is not None
+        redis_up = False
+        if settings is not None:
+            try:
+                redis_up = (await check_redis_health(settings.redis_url))[
+                    "status"
+                ] == "up"
+            except Exception:  # noqa: BLE001 - 落地页状态降级显示
+                redis_up = False
+
+        status = "healthy" if (db_up and redis_up) else "degraded"
+        badge = "运行正常" if status == "healthy" else "部分降级"
+
+        def _dot(up: bool) -> str:
+            return (
+                '<span class="dot dot-up"></span>'
+                if up
+                else '<span class="dot dot-down"></span>'
+            )
+
+        html = _render_landing(
+            version=__version__,
+            badge=badge,
+            status_class=status,
+            db_dot=_dot(db_up),
+            db_text="已连接" if db_up else "未连接",
+            redis_dot=_dot(redis_up),
+            redis_text="已连接" if redis_up else "未连接",
+        )
+        return HTMLResponse(content=html, status_code=200)
 
     return app
 

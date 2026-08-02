@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { getCustomerAuth, clearCustomerAuth } from '@/lib/customer-auth-store';
+import { useToast } from '@/components/Toast';
 import type { Customer, CustomerAddress, Order, RmaClaim, SubmitClaimResult } from '@/types/api';
 
 function claimDecisionCopy(decision: RmaClaim['decision']): { label: string; className: string; detail: string } {
@@ -22,6 +23,7 @@ function claimDecisionCopy(decision: RmaClaim['decision']): { label: string; cla
 
 export default function AccountPage() {
   const router = useRouter();
+  const showToast = useToast();
   const [profile, setProfile] = useState<Customer | null>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -87,7 +89,7 @@ export default function AccountPage() {
       setEditingProfile(false);
       load();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -106,7 +108,7 @@ export default function AccountPage() {
       setShowAddrForm(false);
       load();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -115,7 +117,7 @@ export default function AccountPage() {
       await api.customerUpdateAddress(addressId, { is_default: true });
       load();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -125,7 +127,7 @@ export default function AccountPage() {
       await api.customerDeleteAddress(addressId);
       load();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -135,7 +137,7 @@ export default function AccountPage() {
   }
 
   async function handleSubmitClaim(orderId: string, batchId: string, lineItemId: string) {
-    if (!evidenceUrl.trim()) { alert('请填写证据图片链接'); return; }
+    if (!evidenceUrl.trim()) { showToast('请填写证据图片链接', 'error'); return; }
     setSubmittingClaim(true);
     try {
       const result = await api.customerSubmitClaim({

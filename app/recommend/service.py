@@ -7,7 +7,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from .engine import CollaborativeFilteringEngine, ContentBasedEngine, HybridRecommender, TrendingEngine
+from .engine import (
+    CollaborativeFilteringEngine,
+    ContentBasedEngine,
+    HybridRecommender,
+    TrendingEngine,
+)
 from .models import (
     ProductFeatures,
     RecommendConfig,
@@ -63,15 +68,22 @@ class RecommendationService:
             await asyncio.sleep(self._config.update_interval_seconds)
             if self._behaviors:
                 await self.train()
-                logger.info("Recommendation model retrained (%d behaviors)", len(self._behaviors))
+                logger.info(
+                    "Recommendation model retrained (%d behaviors)",
+                    len(self._behaviors),
+                )
 
     # ── 行为收集 ────────────────────────────────────────────────
 
     async def log_behavior(self, event: UserBehaviorEvent) -> None:
         """记录用户行为到内存 + 数据库。"""
         self._behaviors.append(event)
-        logger.debug("Behavior logged: user=%s product=%s type=%s",
-                      event.user_id, event.product_id, event.behavior_type.value)
+        logger.debug(
+            "Behavior logged: user=%s product=%s type=%s",
+            event.user_id,
+            event.product_id,
+            event.behavior_type.value,
+        )
 
     async def log_behaviors_batch(self, events: list[UserBehaviorEvent]) -> None:
         """批量记录用户行为。"""
@@ -83,14 +95,17 @@ class RecommendationService:
     async def train(self) -> None:
         """训练/更新推荐模型。
 
-        从已有行为数据重建评分矩阵，更新热门商品列表。
+        从已有行为数据重建评分矩阵，更新热门商品列表。内容/热门推荐不依赖行为
+        数据 (本来就是冷启动兜底)，即使没有任何行为记录也要用已注册的商品特征
+        更新一遍，否则新部署在第一条用户行为出现前 /recommend/hot 会一直空着。
         """
-        if not self._behaviors:
-            logger.warning("No behavior data to train")
-            return
-
-        # 1. 协同过滤模型训练
-        await self._hybrid.collaborative.init_from_behaviors(self._behaviors)
+        # 1. 协同过滤模型训练 (需要行为数据)
+        if self._behaviors:
+            await self._hybrid.collaborative.init_from_behaviors(self._behaviors)
+        else:
+            logger.info(
+                "No behavior data yet; skipping collaborative filtering training"
+            )
 
         # 2. 内容推荐模型训练
         features = list(self._product_features.values())
@@ -100,8 +115,11 @@ class RecommendationService:
         await self._hybrid.trending.update_trending(features)
 
         self._trained = True
-        logger.info("Recommendation model trained: %d behaviors, %d products",
-                     len(self._behaviors), len(features))
+        logger.info(
+            "Recommendation model trained: %d behaviors, %d products",
+            len(self._behaviors),
+            len(features),
+        )
 
     # ── 推荐生成 ────────────────────────────────────────────────
 
@@ -130,15 +148,17 @@ class RecommendationService:
         products = []
         for pid, score in recs:
             feat = self._product_features.get(pid)
-            products.append(RecommendedProduct(
-                product_id=pid,
-                name=feat.product_id if feat else pid,
-                main_image_url=None,
-                selling_price_cents=feat.min_price_cents if feat else None,
-                rating_avg=feat.avg_rating if feat else 0.0,
-                sold_count=feat.sold_count if feat else 0,
-                reason=self._generate_reason(),
-            ))
+            products.append(
+                RecommendedProduct(
+                    product_id=pid,
+                    name=feat.product_id if feat else pid,
+                    main_image_url=None,
+                    selling_price_cents=feat.min_price_cents if feat else None,
+                    rating_avg=feat.avg_rating if feat else 0.0,
+                    sold_count=feat.sold_count if feat else 0,
+                    reason=self._generate_reason(),
+                )
+            )
 
         return RecommendationResult(
             products=products,
@@ -156,15 +176,17 @@ class RecommendationService:
         products = []
         for pid, score in recs:
             feat = self._product_features.get(pid)
-            products.append(RecommendedProduct(
-                product_id=pid,
-                name=feat.product_id if feat else pid,
-                main_image_url=None,
-                selling_price_cents=feat.min_price_cents if feat else None,
-                rating_avg=feat.avg_rating if feat else 0.0,
-                sold_count=feat.sold_count if feat else 0,
-                reason="与您浏览的商品相似",
-            ))
+            products.append(
+                RecommendedProduct(
+                    product_id=pid,
+                    name=feat.product_id if feat else pid,
+                    main_image_url=None,
+                    selling_price_cents=feat.min_price_cents if feat else None,
+                    rating_avg=feat.avg_rating if feat else 0.0,
+                    sold_count=feat.sold_count if feat else 0,
+                    reason="与您浏览的商品相似",
+                )
+            )
 
         return RecommendationResult(
             products=products,
@@ -180,15 +202,17 @@ class RecommendationService:
         products = []
         for pid, score in recs:
             feat = self._product_features.get(pid)
-            products.append(RecommendedProduct(
-                product_id=pid,
-                name=feat.product_id if feat else pid,
-                main_image_url=None,
-                selling_price_cents=feat.min_price_cents if feat else None,
-                rating_avg=feat.avg_rating if feat else 0.0,
-                sold_count=feat.sold_count if feat else 0,
-                reason="当前热门推荐",
-            ))
+            products.append(
+                RecommendedProduct(
+                    product_id=pid,
+                    name=feat.product_id if feat else pid,
+                    main_image_url=None,
+                    selling_price_cents=feat.min_price_cents if feat else None,
+                    rating_avg=feat.avg_rating if feat else 0.0,
+                    sold_count=feat.sold_count if feat else 0,
+                    reason="当前热门推荐",
+                )
+            )
 
         return RecommendationResult(
             products=products,
@@ -223,6 +247,7 @@ class RecommendationService:
     def _generate_reason(self) -> str:
         """生成推荐理由 (随机选择)。"""
         import random
+
         reasons = [
             "基于您的浏览历史推荐",
             "与您购买过的商品相似",

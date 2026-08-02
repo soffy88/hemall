@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
+import { productIcon, productGradient } from '@/lib/product-visual';
+import { useToast } from '@/components/Toast';
 import type { Cart } from '@/types/api';
 
 const SHIPPING_METHODS = [
@@ -15,6 +17,7 @@ const SHIPPING_METHODS = [
 
 export default function CartPage() {
   const router = useRouter();
+  const showToast = useToast();
   const [cart, setCart] = useState<Cart | null>(null);
   const fmt = (cents: number) => formatMoney(cents, cart?.currency);
   const [loading, setLoading] = useState(true);
@@ -51,7 +54,7 @@ export default function CartPage() {
       }
       loadCart();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -61,7 +64,7 @@ export default function CartPage() {
       await api.deleteLineItem(cart.id, lineItemId);
       loadCart();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -74,7 +77,7 @@ export default function CartPage() {
       setDiscountCode('');
       loadCart();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     } finally {
       setApplying(false);
     }
@@ -86,7 +89,7 @@ export default function CartPage() {
       await api.storeRemoveDiscount(cart.id, discountId);
       loadCart();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -99,7 +102,7 @@ export default function CartPage() {
       setGiftCardCode('');
       loadCart();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     } finally {
       setApplying(false);
     }
@@ -111,7 +114,7 @@ export default function CartPage() {
       await api.storeRemoveGiftCard(cart.id, giftCardId);
       loadCart();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -121,7 +124,7 @@ export default function CartPage() {
       await api.storeAddShippingMethod(cart.id, methodName, priceCents);
       loadCart();
     } catch (e: any) {
-      alert(e.message);
+      showToast(e.message, 'error');
     }
   }
 
@@ -146,8 +149,8 @@ export default function CartPage() {
         <div className="lg:col-span-2 space-y-3">
           {cart.line_items.map((item) => (
             <div key={item.id} className="flex items-center gap-4 bg-white rounded-xl p-4 border border-gray-200">
-              <div className="w-16 h-16 bg-emerald-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                <span className="text-2xl">📦</span>
+              <div className={`w-16 h-16 rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${productGradient(item.id)}`}>
+                <span className="text-2xl">{productIcon(item.product_title || '')}</span>
               </div>
               <div className="flex-1 min-w-0">
                 <h3 className="font-medium text-gray-900 truncate">{item.product_title || '—'}</h3>

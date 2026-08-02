@@ -246,6 +246,24 @@ export interface Region {
   currency: string;
 }
 
+export interface RecommendedProduct {
+  product_id: string;
+  name: string;
+  main_image_url: string | null;
+  selling_price_cents: number | null;
+  rating_avg: number;
+  sold_count: number;
+  reason: string | null;
+}
+
+export interface RecommendationResult {
+  products: RecommendedProduct[];
+  algorithm: string;
+  total: number;
+  personalized: boolean;
+  refresh_time: string;
+}
+
 export interface CheckoutResult {
   order_id: string;
   grand_total_cents: number;
