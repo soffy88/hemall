@@ -1351,7 +1351,10 @@ def build_competitor_spider_engine(
                 "SELECT v.id, v.sku_code, p.title "
                 'FROM "product_variant" v '
                 'JOIN "product" p ON p.id = v.product_id '
-                "WHERE v.status = 'active' AND p.status = 'active'"
+                # 商品状态与商城口径一致 (published) 而非 active——生产库里
+                # 商品全是 published (storefront 查询也用 published)，用
+                # active 会永远扫 0 个 SKU。
+                "WHERE v.status = 'active' AND p.status = 'published'"
             ),
         )
         locations = await db_query_many(
