@@ -44,6 +44,16 @@ export interface InventoryBatch {
   currency: string;
   location_id: string;
   status: string;
+  shelf_image_url?: string | null;
+  media_assets?: string[] | null;
+}
+
+export interface GroceryCategory {
+  id: string;
+  name: string;
+  slug: string;
+  icon: string;
+  count: number;
 }
 
 export interface ProductVariant {
@@ -237,6 +247,8 @@ export interface StorefrontProduct {
   slug: string;
   description: string | null;
   category_id: string | null;
+  category_name?: string | null;
+  category_slug?: string | null;
   variants: ProductVariant[];
   total_stock: number;
   min_price_cents: number | null;

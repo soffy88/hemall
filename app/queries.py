@@ -38,11 +38,13 @@ async def list_products(
             f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id, p.status,
                    p.created_at, p.updated_at,
+                   pc.name AS category_name, pc.slug AS category_slug,
                    COALESCE(options.options, '[]'::jsonb) AS options,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
                    COALESCE(variants.total_stock, 0) AS total_stock,
                    COALESCE(variants.min_price, NULL) AS min_price_cents
             FROM product p
+            LEFT JOIN product_category pc ON pc.id = p.category_id AND pc.deleted_at IS NULL
             LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object('id', po.id, 'name', po.name)) AS options
                 FROM product_option po
@@ -73,7 +75,9 @@ async def list_products(
                         'cost_price_cents', ib.cost_price_cents,
                         'currency', ib.currency,
                         'location_id', ib.location_id,
-                        'status', ib.status
+                        'status', ib.status,
+                        'shelf_image_url', ib.shelf_image_url,
+                        'media_assets', ib.media_assets
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -100,11 +104,13 @@ async def get_product(pool: Any, product_id: str) -> dict | None:
             """
             SELECT p.id, p.title, p.slug, p.description, p.category_id, p.status,
                    p.created_at, p.updated_at,
+                   pc.name AS category_name, pc.slug AS category_slug,
                    COALESCE(options.options, '[]'::jsonb) AS options,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
                    COALESCE(variants.total_stock, 0) AS total_stock,
                    COALESCE(variants.min_price, NULL) AS min_price_cents
             FROM product p
+            LEFT JOIN product_category pc ON pc.id = p.category_id AND pc.deleted_at IS NULL
             LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object('id', po.id, 'name', po.name)) AS options
                 FROM product_option po
@@ -135,7 +141,9 @@ async def get_product(pool: Any, product_id: str) -> dict | None:
                         'cost_price_cents', ib.cost_price_cents,
                         'currency', ib.currency,
                         'location_id', ib.location_id,
-                        'status', ib.status
+                        'status', ib.status,
+                        'shelf_image_url', ib.shelf_image_url,
+                        'media_assets', ib.media_assets
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -181,10 +189,12 @@ async def list_storefront_products(
         rows = await conn.fetch(
             f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id,
+                   pc.name AS category_name, pc.slug AS category_slug,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
                    COALESCE(variants.total_stock, 0) AS total_stock,
                    COALESCE(variants.min_price, NULL) AS min_price_cents
             FROM product p
+            LEFT JOIN product_category pc ON pc.id = p.category_id AND pc.deleted_at IS NULL
             LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object(
                     'id', pv.id,
@@ -204,7 +214,9 @@ async def list_storefront_products(
                         'batch_no', ib.batch_no,
                         'available_qty', ib.stock_qty - ib.reserved_qty,
                         'retail_price_cents', ib.retail_price_cents,
-                        'currency', ib.currency
+                        'currency', ib.currency,
+                        'shelf_image_url', ib.shelf_image_url,
+                        'media_assets', ib.media_assets
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -247,10 +259,12 @@ async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
         row = await conn.fetchrow(
             """
             SELECT p.id, p.title, p.slug, p.description, p.category_id,
+                   pc.name AS category_name, pc.slug AS category_slug,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
                    COALESCE(variants.total_stock, 0) AS total_stock,
                    COALESCE(variants.min_price, NULL) AS min_price_cents
             FROM product p
+            LEFT JOIN product_category pc ON pc.id = p.category_id AND pc.deleted_at IS NULL
             LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object(
                     'id', pv.id,
@@ -270,7 +284,9 @@ async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
                         'batch_no', ib.batch_no,
                         'available_qty', ib.stock_qty - ib.reserved_qty,
                         'retail_price_cents', ib.retail_price_cents,
-                        'currency', ib.currency
+                        'currency', ib.currency,
+                        'shelf_image_url', ib.shelf_image_url,
+                        'media_assets', ib.media_assets
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price

@@ -72,9 +72,29 @@ export default function ShopPage() {
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-600 to-teal-600 text-white px-8 py-12 mb-10">
         <div className="relative z-10 max-w-lg">
           <h1 className="text-3xl font-bold tracking-tight">好物商城，一站买齐</h1>
-          <p className="mt-2 text-emerald-50/90">精选数码与生活好物，实时库存，多区域配送。</p>
+          <p className="mt-2 text-emerald-50/90">生鲜日用 · 数码好物，实时库存，多区域配送。</p>
         </div>
         <div className="pointer-events-none absolute -right-6 -bottom-10 text-[160px] opacity-20 select-none">🛍️</div>
+      </div>
+
+      {/* 生鲜日用超市入口 (对标小象超市) */}
+      <div className="mb-3">
+        <Link
+          href="/shop/market"
+          className="flex items-center justify-between rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-500 to-cyan-500 px-5 py-4 text-white shadow-lg transition-transform active:scale-[0.99]"
+        >
+          <div>
+            <div className="text-base font-black" style={{ fontSize: 22, fontWeight: 800 }}>
+              🥬 生鲜日用超市
+            </div>
+            <div className="text-xs text-emerald-50/90 font-medium">
+              9 大分类 · 蔬菜水果肉禽蛋 · 粮油乳品冷冻 · 真实价格
+            </div>
+          </div>
+          <span className="rounded-full bg-white/25 px-4 py-2 text-sm font-extrabold">
+            逛逛 →
+          </span>
+        </Link>
       </div>
 
       {/* 极速商城入口 (Phase 9: 扫码即买零层级交互) */}
