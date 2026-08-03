@@ -1435,8 +1435,26 @@ def build_competitor_spider_engine(
 
     spider_tick.__name__ = "spider_tick"
 
+    # 每次 tick 落一行抓取状态 (Phase 7 Task 2 汇报口径: 真实请求数/解析数/
+    # 有价数/入库数)，看板/日志直接核对爬虫是不是在空转。
+    async def spider_tick_logged(**_: Any) -> dict[str, Any]:
+        result = await spider_tick(**_: Any)
+        logger.info(
+            "spider engine tick: scanned_variants=%s scanned_locations=%s calls=%s "
+            "parsed=%s priced=%s written=%s",
+            result.get("scanned_variants"),
+            result.get("scanned_locations"),
+            result.get("calls"),
+            result.get("parsed"),
+            result.get("priced"),
+            result.get("written"),
+        )
+        return result
+
+    spider_tick_logged.__name__ = "spider_tick_logged"
+
     return CronSchedulerEngine(
-        tasks=[spider_tick],
+        tasks=[spider_tick_logged],
         trigger={"on_cron": "0 3 * * *"},
         config={"interval_seconds": 86400},
         name="ext-competitor-spider",
@@ -1672,8 +1690,15 @@ def build_wechat_cert_rotation_engine(pool: Any, settings: Settings) -> CronSche
 
     cert_rotation_tick.__name__ = "cert_rotation_tick"
 
+    async def cert_rotation_tick_logged(**_: Any) -> dict[str, Any]:
+        result = await cert_rotation_tick(**_: Any)
+        logger.info("wechat cert rotation tick: %s", result)
+        return result
+
+    cert_rotation_tick_logged.__name__ = "cert_rotation_tick_logged"
+
     return CronSchedulerEngine(
-        tasks=[cert_rotation_tick],
+        tasks=[cert_rotation_tick_logged],
         trigger={"on_cron": "0 */12 * * *"},
         config={"interval_seconds": 43200},
         name="ext-wechat-cert-rotation",
