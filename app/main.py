@@ -482,6 +482,14 @@ def create_app() -> FastAPI:
     metrics_app = make_asgi_app()
     app.mount("/metrics", metrics_app)
 
+    # 智能体传货媒体 (agent_ingest 输出): /media/agent_ingest/<user>/<file>
+    from fastapi.staticfiles import StaticFiles
+
+    # 实际保存路径: <output_root>/ext_bespoke/agent_ingest/agent_ingest/<user>/<file>
+    ingest_root = settings.output_root / "ext_bespoke" / "agent_ingest" / "agent_ingest"
+    ingest_root.mkdir(parents=True, exist_ok=True)
+    app.mount("/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest")
+
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
 

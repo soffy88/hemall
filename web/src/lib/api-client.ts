@@ -922,4 +922,36 @@ export const api = {
   // 零号探针触发器 (Admin Ops)：运营在批次上架时手动激活试探单做市。
   triggerInitialProbe: (data: { batch_id: string; initial_price: number }) =>
     omodul('marketing', 'trigger_initial_probe_workflow', data, true),
+
+  // ── Phase 9.5: 智能体网关 (Agent Gateway) ──────────────────────
+  // 手机指挥台 / Hermes/Cindy 等智能体接管系统的标准协议。
+
+  agentListTools: () =>
+    request<{ count: number; tools: Array<{ tool: string; domain: string; name: string; path: string; require_auth: boolean; parameters: Record<string, any> }> }>('/agent/tools', {}, true),
+
+  agentCommand: (text: string) =>
+    request<any>('/agent/command', { method: 'POST', body: JSON.stringify({ text }) }, true),
+
+  agentExecute: (tool: string, args: Record<string, any>) =>
+    request<any>('/agent/execute', { method: 'POST', body: JSON.stringify({ tool, args }) }, true),
+
+  // 视频/图片传货: multipart 上传, 自动上架
+  agentIngest: async (file: File, opts?: { retailPriceCents?: number; stockQty?: number; categorySlug?: string }) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (opts?.retailPriceCents) form.append('retail_price_cents', String(opts.retailPriceCents));
+    if (opts?.stockQty) form.append('stock_qty', String(opts.stockQty));
+    if (opts?.categorySlug) form.append('category_slug', opts.categorySlug);
+    const t = token();
+    const res = await fetch(`${BASE}/agent/ingest`, {
+      method: 'POST',
+      body: form,
+      headers: t ? { Authorization: `Bearer ${t}` } : {},
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(errorMessage(body, res.status));
+    }
+    return res.json();
+  },
 };

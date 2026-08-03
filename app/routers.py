@@ -13,16 +13,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from . import queries
 from .auth import router as auth_router
+from .deps import get_current_user
 from .events import fire_event
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
 from .ext.feed_quant import build_feed_item, normalize_velocity
+from .ext.agent_gateway import (
+    discover_tools,
+    execute_tool,
+    ingest_media,
+)
 from .ext.oskill import (
     compute_batch_affinity_scores,
     find_nearest_location,
@@ -808,6 +814,109 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
         "grand_total_cents": int(row["grand_total_cents"] or 0),
         "expires_at": expires_at.isoformat(),
     }
+
+
+# ── 智能体网关 (Agent Gateway): Hermes/Cindy/任意 Agent 接管系统 ───────
+# 鉴权: /agent/* 全部要求 ADMIN OPS JWT (get_current_user)，手机指挥台先登录。
+# 工具发现/执行/命令/视频传货 —— 见 app/ext/agent_gateway.py。
+
+
+class _AgentExecuteRequest(BaseModel):
+    tool: str
+    args: dict[str, Any] = {}
+
+
+class _AgentCommandRequest(BaseModel):
+    text: str
+
+
+class _AgentIngestRequest(BaseModel):
+    location_id: str = ""
+    retail_price_cents: int | None = None
+    stock_qty: int = 30
+    category_slug: str = "daily"
+
+
+@ext_bespoke_router.get("/agent/tools")
+async def agent_list_tools(
+    principal: dict[str, Any] = Depends(get_current_user),
+):
+    """工具发现: 返回全部 omodul 工具清单 (含参数 schema)。
+
+    这是 Hermes/Cindy 等智能体接管系统的标准入口 —— 拿到清单即可调用
+    /agent/execute 执行任意业务能力 (上架/调价/结算/退款/广播)。
+    """
+    return {"count": len(discover_tools()), "tools": discover_tools()}
+
+
+@ext_bespoke_router.post("/agent/execute")
+async def agent_execute(
+    body: _AgentExecuteRequest,
+    request: Request,
+    principal: dict[str, Any] = Depends(get_current_user),
+):
+    """工具执行 (JSON-RPC 风格): {tool, args} → omodul 结果。
+
+    Hermes/Cindy 等 agent 的 function-calling 后端直接指到这里。
+    """
+
+    result = await execute_tool(
+        body.tool,
+        body.args,
+        pool=_pool(request),
+        out_root=_ext_bespoke_output_dir(request, "agent_execute"),
+        principal=principal,
+    )
+    return result
+
+
+@ext_bespoke_router.post("/agent/command")
+async def agent_command(
+    body: _AgentCommandRequest,
+    request: Request,
+    principal: dict[str, Any] = Depends(get_current_user),
+):
+    """自然语言命令: 手机发指令 (如"上架 西红柿 19.9 元 30 件")。
+
+    规则意图匹配 → 自动提取参数 → 执行工具；返回路由 + 执行结果。
+    LLM 就绪后可替换为 tool-calling 编排 (与 /admin/agent-chat 同构)。
+    """
+    from .ext.agent_gateway import execute_command
+
+    return await execute_command(
+        body.text,
+        pool=_pool(request),
+        out_root=_ext_bespoke_output_dir(request, "agent_command"),
+        principal=principal,
+    )
+
+
+@ext_bespoke_router.post("/agent/ingest")
+async def agent_ingest(
+    request: Request,
+    file: UploadFile,
+    location_id: str = Form(""),
+    retail_price_cents: int | None = Form(None),
+    stock_qty: int = Form(30),
+    category_slug: str = Form("daily"),
+    principal: dict[str, Any] = Depends(get_current_user),
+):
+    """视频/图片传货: 手机实拍 → 自动上架。
+
+    multipart/form-data: file=视频文件, 可选 location_id/retail_price_cents/
+    stock_qty/category_slug。文件名清洗成商品名，媒体文件即商品图/视频。
+    """
+
+    return await ingest_media(
+        file,
+        location_id=location_id,
+        pool=_pool(request),
+        out_root=_ext_bespoke_output_dir(request, "agent_ingest"),
+        principal=principal,
+        retail_price_cents=retail_price_cents,
+        stock_qty=stock_qty,
+        category_slug=category_slug,
+    )
 
 
 # ── 补天计划 Task 1.1: 抖音转化回调 (HMAC-SHA256 验签入口) ─────────────────

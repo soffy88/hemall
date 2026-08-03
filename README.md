@@ -40,6 +40,7 @@ docker compose -f docker-compose.prod.yml up -d
 - [通用部署指南](docs/deployment.md)
 - [生产环境部署与性能优化](docs/production-deployment.md)  
 - [mall.sxueji.com 专用部署指南](docs/deployment-mall-sxueji.md)
+- [智能体网关: Hermes/Cindy 接管系统指南](docs/agent-gateway.md)
 
 ## 📊 可观测性
 
