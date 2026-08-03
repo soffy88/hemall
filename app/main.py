@@ -62,6 +62,8 @@ from .risk.router import router as risk_router
 from .ai_assistant.router import router as ai_router
 from .ai_assistant.models import AIConfig
 from .ai_assistant.service import AIAssistantService
+# Phase 8 Task 2: LLM 智能体运维中枢
+from .ext.admin_agent_chat import router as agent_chat_router
 
 
 from .cache.service import CacheManager
@@ -512,6 +514,9 @@ def create_app() -> FastAPI:
 
     # Phase 4+: 挂载 AI 助手路由
     app.include_router(ai_router)
+
+    # Phase 8 Task 2: LLM 智能体运维中枢 (/admin/agent-chat)
+    app.include_router(agent_chat_router)
 
     app.include_router(build_router())
 

@@ -49,4 +49,6 @@
             log；这个 omodul 补上"匹配契约 → 算分润 → 落库"这一步，领主税
             按订单落在哪个节点判定，跟请求带的 douyin_uid 无关，雇佣兵悬赏
             则需要 douyin_uid 才能归因)
+    Phase 8 Task 1:
+        ignite_ghost_node — 幽灵节点点火事务 (意向金集单达标 → 物理建仓 + 悬赏)
 """

@@ -247,6 +247,55 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("purchased_at", "TIMESTAMPTZ DEFAULT NOW()"),
         ],
     ),
+    # ── Phase 8: C2B 幽灵节点点火 ────────────────────────────────
+    # intention_order: C2B 意向订单，含 GPS 坐标 (用于空间聚类)
+    # 不同于 crowd_intent——crowd_intent 无坐标，仅作为历史遗留；
+    # intention_order 是前端扫码/小程序上报的真实意图单，带精确定位。
+    (
+        "intention_order",
+        [
+            ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+            ("variant_id", "UUID REFERENCES product_variant(id)"),
+            ("customer_id", "UUID REFERENCES customer(id)"),
+            ("prepaid_cents", "INT NOT NULL DEFAULT 0"),
+            ("lat", "DECIMAL(10,6)"),
+            ("lng", "DECIMAL(10,6)"),
+            ("status", "VARCHAR(20) DEFAULT 'pending'"),
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+        ],
+    ),
+    # bounty_post: 悬赏任务记录——幽灵建仓成功后自动生成
+    (
+        "bounty_post",
+        [
+            ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+            ("target_location_id", "UUID REFERENCES stock_location(id)"),
+            ("bounty_title", "VARCHAR(128) NOT NULL"),
+            ("bounty_description", "TEXT NOT NULL"),
+            ("reward_rate", "INT NOT NULL"),  # 奖励比例 * 10000 (e.g. 5000 = 50%)
+            ("status", "VARCHAR(20) DEFAULT 'active'"),
+            ("assignee_filter", "VARCHAR(32) DEFAULT 'nearest_active'"),
+            ("assigned_to", "UUID"),  # 认领者 ID
+            ("fulfilled_at", "TIMESTAMPTZ"),
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+        ],
+    ),
+    # digital_lord_contract: 数字领主契约 —— 谁在哪个区域拥有永久分润权
+    (
+        "digital_lord_contract",
+        [
+            ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+            ("lord_douyin_uid", "VARCHAR(64) NOT NULL"),
+            ("lord_name", "VARCHAR(128)"),
+            ("location_id", "UUID REFERENCES stock_location(id)"),
+            ("spatial_polygon", "JSONB"),
+            ("tax_rate", "DECIMAL(5,4) DEFAULT 0.002"),  # 万分之二
+            ("status", "VARCHAR(20) DEFAULT 'active'"),
+            ("total_earned_cents", "INT DEFAULT 0"),
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+            ("expires_at", "TIMESTAMPTZ"),
+        ],
+    ),
 ]
 
 _INDEXES: list[tuple[str, str, str]] = [
@@ -273,6 +322,11 @@ _INDEXES: list[tuple[str, str, str]] = [
         "douyin_uid, settlement_status",
     ),
     ("labor_ledger", "idx_labor_ledger_worker", "worker_id, status"),
+    # Phase 8: Ghost ignition indexes
+    ("intention_order", "idx_intention_order_status", "status, created_at"),
+    ("intention_order", "idx_intention_order_coords", "lat, lng"),
+    ("bounty_post", "idx_bounty_post_status", "target_location_id, status"),
+    ("digital_lord_contract", "idx_digital_lord_status", "location_id, status"),
 ]
 
 
@@ -304,6 +358,8 @@ async def _ensure_shared_table_local_columns(pool: PgPool) -> None:
         ("host_id", "VARCHAR(32)"),
         ("address", "TEXT"),
         ("douyin_host_uid", "VARCHAR(64)"),
+        # Phase 8: 幽灵节点来源标记
+        ("ghost_origin_cluster", "VARCHAR(32)"),
     ):
         await ensure_column(
             pool=pool,

@@ -55,6 +55,7 @@ from .oservi import (
     build_weather_arbitrage_engine,
     build_wechat_cert_rotation_engine,
 )
+from .oservi_ghost_engine import build_ghost_ignition_engine
 
 logger = logging.getLogger("hemall.ext.oservi_lifecycle")
 
@@ -103,6 +104,7 @@ class ExtOservi:
     sla_promise: CronSchedulerEngine
     sla_compensation: CronSchedulerEngine
     wechat_cert_rotation: CronSchedulerEngine
+    ghost_ignition: CronSchedulerEngine  # Phase 8: Ghost node ignition engine
     _tasks: list[asyncio.Task] = field(default_factory=list)
 
     def _cron_engines(self) -> tuple[CronSchedulerEngine, ...]:
@@ -122,6 +124,7 @@ class ExtOservi:
             self.sla_promise,
             self.sla_compensation,
             self.wechat_cert_rotation,
+            self.ghost_ignition,  # Phase 8
         )
 
     def start_cron_engines(self) -> None:
@@ -178,6 +181,9 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     sla_promise = build_sla_promise_engine(pool, settings=settings)
     sla_compensation = build_sla_compensation_engine(pool, settings=settings)
     wechat_cert_rotation = build_wechat_cert_rotation_engine(pool, settings=settings)
+    ghost_ignition = build_ghost_ignition_engine(
+        pool, settings=settings, notification_provider=settings.default_notification_provider
+    )
 
     return ExtOservi(
         demand_aggregator=demand_aggregator,
@@ -199,4 +205,5 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         sla_promise=sla_promise,
         sla_compensation=sla_compensation,
         wechat_cert_rotation=wechat_cert_rotation,
+        ghost_ignition=ghost_ignition,  # Phase 8
     )
