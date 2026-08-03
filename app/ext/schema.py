@@ -189,7 +189,7 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
     (
         "cart_lock",
         [
-            ("id", "UUID PRIMARY KEY"),
+            ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
             ("batch_id", "UUID REFERENCES inventory_batch(id) NOT NULL"),
             ("device_id", "VARCHAR(64)"),
             ("qty", "INT NOT NULL DEFAULT 1"),

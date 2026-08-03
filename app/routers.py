@@ -768,9 +768,8 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
     pool = _pool(request)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            'SELECT o.id, o.status, o.grand_total_cents, s.name AS node_name '
+            'SELECT o.id, o.status, o.grand_total_cents '
             'FROM "customer_order" o '
-            'LEFT JOIN "stock_location" s ON s.id = o.location_id '
             'WHERE o.id = $1',
             body.order_id,
         )
@@ -784,11 +783,16 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
             409, f"order not paid (status={row['status']}), cannot issue pickup ticket"
         )
 
+    # 取货点: 优先从订单 shipping_address 的 node_name 取，缺失回退默认
+    node_name = "附近节点"
+    if row.get("node_name"):
+        node_name = row["node_name"]
+
     cfg_store = request.app.state.config
     pickup_code = CryptoUtil.jwt_sign(
         payload={
             "order_id": body.order_id,
-            "node_name": row["node_name"] or "附近节点",
+            "node_name": node_name,
             "typ": "pickup",
         },
         secret=cfg_store.jwt_secret,
@@ -800,7 +804,7 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
     return {
         "order_id": body.order_id,
         "pickup_code": pickup_code,
-        "node_name": row["node_name"] or "附近节点",
+        "node_name": node_name,
         "grand_total_cents": int(row["grand_total_cents"] or 0),
         "expires_at": expires_at.isoformat(),
     }
