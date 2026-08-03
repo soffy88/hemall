@@ -77,6 +77,26 @@ export default function ShopPage() {
         <div className="pointer-events-none absolute -right-6 -bottom-10 text-[160px] opacity-20 select-none">🛍️</div>
       </div>
 
+      {/* 极速商城入口 (Phase 9: 扫码即买零层级交互) */}
+      <div className="mb-6">
+        <Link
+          href="/shop/feed"
+          className="flex items-center justify-between rounded-2xl bg-gradient-to-r from-red-600 via-orange-500 to-amber-500 px-5 py-4 text-white shadow-lg transition-transform active:scale-[0.99]"
+        >
+          <div>
+            <div className="text-base font-black" style={{ fontSize: 22, fontWeight: 800 }}>
+              ⚡ 极速商城
+            </div>
+            <div className="text-xs text-orange-100 font-medium">
+              附近微仓直供 · 暴降大卡 · 一键抢购
+            </div>
+          </div>
+          <span className="rounded-full bg-white/25 px-4 py-2 text-sm font-extrabold">
+            抢 →
+          </span>
+        </Link>
+      </div>
+
       {/* Hot picks */}
       {hotPicks.length > 0 && (
         <section className="mb-10">
