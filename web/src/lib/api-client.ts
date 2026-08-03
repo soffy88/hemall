@@ -6,6 +6,7 @@ import type {
   AppUser,
   BatchJob,
   Cart,
+  CartLockResponse,
   CheckoutResult,
   Claim,
   Customer,
@@ -17,8 +18,10 @@ import type {
   Fulfillment,
   GiftCard,
   Health,
+  NearbyFeedResponse,
   Order,
   OmodulResult,
+  PickupTicket,
   PriceList,
   Product,
   ProductCategory,
@@ -888,33 +891,33 @@ export const api = {
 
   // ── 补天计划 Task 2.1/3.1: 位置 Feed + 零号探针 ──────────────────────
 
-  // 位置 Feed 流 (公开，零登录)：按当前坐标找最近 active 微仓，只返回有货且
-  // 在安全货架期内的批次——"人找货"到"地理位置找货"。Phase 7 升维：带
+  // 位置 Feed 流 v9.0 (公开，零登录)：按当前坐标找最近 active 微仓，BFF
+  // 层把做市属性 (tag_type/benchmark/velocity) 量化成标量字段；带
   // X-Device-Id 设备指纹，后端按购买轨迹把关联商品 (boosted=true) 插队。
-  getNearbyFeed: (lat: number, lon: number, limit?: number) =>
-    request<{
-      nearest_location: { id: string; distance_km: number } | null;
-      safety_margin_hours: number;
-      behavior_boosted: boolean;
-      batches: Array<{
-        batch_id: string;
-        variant_id: string;
-        product_id: string;
-        title: string;
-        sku_code: string;
-        retail_price_cents: number;
-        stock_qty: number;
-        expiration_time: string | null;
-        video_url: string | null;
-        location_name: string;
-        affinity: number;
-        boosted: boolean;
-      }>;
-    }>(
-      `/store/nearby-feed?lat=${lat}&lon=${lon}${limit ? `&limit=${limit}` : ''}`,
+  getNearbyFeed: (lat: number, lon: number, opts?: { limit?: number; customerId?: string }) => {
+    const qs = new URLSearchParams({ lat: String(lat), lon: String(lon) });
+    if (opts?.limit) qs.set('limit', String(opts.limit));
+    if (opts?.customerId) qs.set('customer_id', opts.customerId);
+    return request<NearbyFeedResponse>(
+      `/store/nearby-feed?${qs}`,
       { method: 'GET', headers: { 'X-Device-Id': deviceId() } },
       false,
-    ),
+    );
+  },
+
+  // Phase 9: 薛定谔购物车 TTL 锁 (乐观 UI 锁) —— 点击"抢！"瞬间调用
+  lockCartItem: (batchId: string, quantity: number = 1) =>
+    request<CartLockResponse>('/store/cart/lock', {
+      method: 'POST',
+      body: JSON.stringify({ batch_id: batchId, device_id: deviceId(), quantity }),
+    }, false),
+
+  // Phase 9: 弱网离线核销提货码 (支付成功后签发加密 JWT)
+  issuePickupTicket: (orderId: string) =>
+    request<PickupTicket>('/store/pickup-ticket', {
+      method: 'POST',
+      body: JSON.stringify({ order_id: orderId }),
+    }, false),
 
   // 零号探针触发器 (Admin Ops)：运营在批次上架时手动激活试探单做市。
   triggerInitialProbe: (data: { batch_id: string; initial_price: number }) =>

@@ -181,6 +181,22 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("resolved_at", "TIMESTAMPTZ"),
         ],
     ),
+    # 乐观购物车 TTL 锁 (Phase 9: 薛定谔购物车状态机后端基座)
+    # 前端点击"抢！"的瞬间插一条锁单记录，locked_until = now + 5min；
+    # 到期未结算自动释放 (lock 端点每次调用前清扫过期行，无需后台任务)。
+    # 与 inventory_batch.reserved_qty (结算期硬锁) 分层：cart_lock 是
+    # 浏览期软锁，checkout 硬锁时用 SELECT ... FOR UPDATE 重新校验可用量。
+    (
+        "cart_lock",
+        [
+            ("id", "UUID PRIMARY KEY"),
+            ("batch_id", "UUID REFERENCES inventory_batch(id) NOT NULL"),
+            ("device_id", "VARCHAR(64)"),
+            ("qty", "INT NOT NULL DEFAULT 1"),
+            ("locked_until", "TIMESTAMPTZ NOT NULL"),
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+        ],
+    ),
     # 抖音达人智能分润契约 (原 affiliate_contracts；bound_entity_id 保持多态
     # (batch_id 或 location_id)，两者现在都指向共享表的 UUID)
     (
@@ -327,6 +343,8 @@ _INDEXES: list[tuple[str, str, str]] = [
     ("intention_order", "idx_intention_order_coords", "lat, lng"),
     ("bounty_post", "idx_bounty_post_status", "target_location_id, status"),
     ("digital_lord_contract", "idx_digital_lord_status", "location_id, status"),
+    # Phase 9: 购物车 TTL 锁的可用量校验 + 过期清扫都用 (batch_id, locked_until)
+    ("cart_lock", "idx_cart_lock_batch", "batch_id, locked_until"),
 ]
 
 

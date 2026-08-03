@@ -272,6 +272,64 @@ export interface CheckoutResult {
   receipt_token: string;
 }
 
+// ── Phase 9: BFF v9.0 做市量化 Feed 契约 ──────────────────────
+// 前端绝不拉取多余富文本详情；后端把做市属性量化成标量字段，前端
+// 根据 tag_type 在流 (HeroCard) 和网格 (GridItem) 之间切换渲染引擎。
+
+export type FeedTagType = 'clearance' | 'fresh' | 'standard';
+
+export interface FeedItem {
+  batch_id: string;
+  sku_name: string;
+  tag_type: FeedTagType;
+  retail_price: number;      // 现价 (分)
+  benchmark_price: number;   // 爬虫基准价 (分) → 划线价
+  stock_qty: number;         // 真实物理库存 (可用量)
+  observed_velocity: number; // 过去一小时流速
+  media_url: string | null;  // 实景视频或图片
+  affinity_boosted: boolean; // 行为算法强制插队
+}
+
+export interface NearbyFeedResponse {
+  location_context: {
+    node_id: string | null;
+    node_name: string | null;
+    distance_meters: number | null;
+    user_system_balance: number; // 分 (15元 → 1500)
+  };
+  feed_items: FeedItem[];
+}
+
+export interface CartLockResponse {
+  status: 'locked' | 'failed';
+  batch_id: string;
+  reason?: 'oversold' | 'insufficient';
+  available_qty?: number;
+  qty?: number;
+  locked_until?: string; // ISO timestamp
+  ttl_seconds?: number;
+}
+
+// 薛定谔购物车项 (前端状态机)
+export interface OptimisticCartItem {
+  batch_id: string;
+  sku_name: string;
+  retail_price: number;
+  qty: number;
+  locked_until: number; // Unix 毫秒
+  status: 'locking' | 'locked' | 'failed' | 'expired';
+}
+
+// 弱网离线核销凭证 (PWA Service Worker 硬缓存)
+export interface PickupTicket {
+  order_id: string;
+  pickup_code: string;      // 加密 JWT 提货码
+  node_name: string;
+  grand_total_cents: number;
+  issued_at: string;
+  expires_at: string;
+}
+
 // ── Marketing ───────────────────────────────────────────────────
 
 export interface DiscountRule {

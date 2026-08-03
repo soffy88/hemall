@@ -22,6 +22,7 @@ from . import queries
 from .auth import router as auth_router
 from .events import fire_event
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
+from .ext.feed_quant import build_feed_item, normalize_velocity
 from .ext.oskill import (
     compute_batch_affinity_scores,
     find_nearest_location,
@@ -471,52 +472,62 @@ async def get_nearby_feed(
     lat: float,
     lon: float,
     limit: int = Query(50, ge=1, le=100),
+    customer_id: str | None = Query(None, description="已登录顾客 id (零登录可省略，省略时 user_system_balance=0)"),
 ):
-    """位置 Feed 流："人找货"到"地理位置找货"的彻底反转 (补天计划 Task 2.1)，
-    Phase 7 Task 3 升维为"空间-行为矩阵"。
+    """位置 Feed 流 v9.0 (BFF 做市量化契约)：“人找货”到“地理位置找货”的彻底反转。
 
-    根据传入坐标，通过底层距离算法 (oskill.find_nearest_location，纯 Python
-    haversine，不依赖 PostGIS) 找出最近的 active 微仓，只返回该节点内
-    ``stock_qty > 0`` 且 ``expiration_time`` 安全的批次列表 (安全货架期余量
-    2 小时，过期/临期批次在 SQL 层直接过滤掉，是比 decay 引擎更靠前的一道
-    防线)。
+    Phase 9 升级：响应切到 ``location_context + feed_items`` 扁平数组——前端绝不
+    拉取多余的富文本详情，后端直接把做市属性 (tag_type / benchmark_price /
+    observed_velocity / affinity_boosted) 量化成标量字段，前端按 tag_type 在
+    零层级大卡 (HeroCard) 和高密网格 (GridItem) 之间自动切换渲染引擎。
 
-    升维 (Phase 7 Task 3)：携带 X-Device-Id 头时，读取该设备最近 90 天的
-    购买轨迹 (checkout 时写入的 device_purchase_log)，用全局订单共现矩阵
-    (oskill.build_cooccurrence_matrix，极简协同过滤) 计算候选批次与用户历史
-    的关联度；关联商品 (如买过牛肉 → 番茄/洋葱) 通过 oskill.rerank_feed_by_
-    affinity 插队到视野最前方，且带 ``boosted``/``affinity`` 标记供前端展示
-    "为你推荐"。无设备头/无历史时退化为纯距离排序 (与旧行为完全一致)。
+    tag_type 派生规则 (feed_quant.classify_feed_tag)：
+      clearance: 现价比基准价直降 ≥ 40% 或 距过期 ≤ 12h (暴降大卡)
+      fresh:     入库 ≤ 48h 且降幅 < 20% (溯源大卡)
+      standard:  其余刚需生鲜 (基础网格)
 
-    公开端点 (零登录扫码即买)，纳入限流防刷保护 (见 public_zero_login_paths)。
+    其余行为与旧版一致：最近 active 微仓 + 安全货架期过滤 + X-Device-Id
+    行为序列加权 (协同过滤插队)。兼容旧契约字段 (nearest_location/batches)。
 
-    Args (query params):
-        lat/lon: 顾客当前位置 (十进制坐标)。
-        limit: 返回批次上限 (默认 50，最多 100)。
-
-    Header:
-        X-Device-Id: 设备指纹 (与限流层同一识别维度)；可选，缺失时无行为升维。
+    公开端点 (零登录扫码即买)，纳入限流防刷保护。
     """
     pool = _pool(request)
 
     async with pool.acquire() as conn:
         locations = await conn.fetch(
-            'SELECT id, lat, lng FROM "stock_location" '
+            'SELECT id, name, lat, lng FROM "stock_location" '
             "WHERE status = 'active' AND lat IS NOT NULL AND lng IS NOT NULL"
         )
     if not locations:
-        return {"nearest_location": None, "batches": []}
+        return {
+            "location_context": {"node_id": None, "node_name": None, "distance_meters": None, "user_system_balance": 0},
+            "feed_items": [],
+            "nearest_location": None,
+            "batches": [],
+        }
 
     loc_list = [
         (str(row["id"]), float(row["lat"]), float(row["lng"])) for row in locations
     ]
     nearest_id, distance_km = find_nearest_location(loc_list, lat=lat, lon=lon)
+    nearest_row = next((r for r in locations if str(r["id"]) == nearest_id), None)
+
+    # ── 顾客资产外显 (v9.0): 已登录顾客的系统余额用于渲染顶部资产 ──
+    user_system_balance = 0
+    if customer_id:
+        async with pool.acquire() as conn:
+            bal_row = await conn.fetchval(
+                'SELECT system_balance FROM "customer" WHERE id = $1 AND deleted_at IS NULL',
+                customer_id,
+            )
+            user_system_balance = int(bal_row or 0)
 
     safety_cutoff = datetime.now(UTC) + timedelta(hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS)
     async with pool.acquire() as conn:
         batches = await conn.fetch(
             "SELECT b.id, b.variant_id, b.retail_price_cents, b.stock_qty, "
-            "b.expiration_time, b.video_url, v.sku_code, p.title, p.id AS product_id, "
+            "b.reserved_qty, b.expiration_time, b.video_url, b.created_at, "
+            "v.sku_code, v.reference_price_cents, p.title, p.id AS product_id, "
             "s.name AS location_name "
             'FROM "inventory_batch" b '
             'JOIN "product_variant" v ON v.id = b.variant_id '
@@ -533,6 +544,22 @@ async def get_nearby_feed(
         )
 
     batch_rows = [dict(row) for row in batches]
+    batch_ids = [str(r["id"]) for r in batch_rows]
+
+    # ── 实况流速 (v9.0): 过去 1 小时每个批次的成交笔数 ──
+    velocity_by_batch: dict[str, int] = {}
+    if batch_ids:
+        async with pool.acquire() as conn:
+            vel_rows = await conn.fetch(
+                "SELECT ib.id AS batch_id, COUNT(*) AS n "
+                'FROM "order_line_item" oli '
+                'JOIN "inventory_batch" ib ON ib.id = oli.batch_id '
+                'JOIN "customer_order" o ON o.id = oli.order_id '
+                "WHERE ib.id = ANY($1::uuid[]) AND o.created_at > NOW() - INTERVAL '1 hour' "
+                "GROUP BY ib.id",
+                batch_ids,
+            )
+            velocity_by_batch = {str(r["batch_id"]): int(r["n"]) for r in vel_rows}
 
     # ── Phase 7 Task 3: 行为序列加权 (极简协同过滤) ──
     device_id = (request.headers.get("x-device-id") or "").strip()
@@ -577,7 +604,32 @@ async def get_nearby_feed(
 
     reranked = rerank_feed_by_affinity(batch_rows, affinity_scores)
 
+    # ── BFF v9.0: 量化做市扁平数组 ──
+    feed_items = []
+    for row in reranked:
+        enriched = dict(row)
+        # 基准价: price_benchmark 缺失 (v9 时点表为空) → 回退商品参考价
+        benchmark = int(enriched.get("reference_price_cents") or 0)
+        if benchmark <= 0:
+            benchmark = int(enriched.get("retail_price_cents") or 0)
+        enriched["benchmark_price_cents"] = benchmark
+        enriched["observed_velocity"] = normalize_velocity(
+            velocity_by_batch.get(str(enriched["id"]), 0)
+        )
+        # 可用量 = 物理库存 - 结算期硬锁
+        available = int(enriched.get("stock_qty") or 0) - int(enriched.get("reserved_qty") or 0)
+        enriched["stock_qty"] = max(0, available)
+        feed_items.append(build_feed_item(enriched))
+
     return {
+        "location_context": {
+            "node_id": nearest_id,
+            "node_name": nearest_row["name"] if nearest_row else None,
+            "distance_meters": round(distance_km * 1000),
+            "user_system_balance": user_system_balance,
+        },
+        "feed_items": feed_items,
+        # 旧契约兼容字段 (Phase 7 前端迁移期仍引用)
         "nearest_location": {"id": nearest_id, "distance_km": round(distance_km, 3)},
         "safety_margin_hours": _NEARBY_FEED_SAFETY_MARGIN_HOURS,
         "behavior_boosted": bool(affinity_scores),
@@ -589,11 +641,9 @@ async def get_nearby_feed(
                 "title": row["title"],
                 "sku_code": row["sku_code"],
                 "retail_price_cents": row["retail_price_cents"],
-                "stock_qty": row["stock_qty"],
+                "stock_qty": max(0, int(row["stock_qty"]) - int(row.get("reserved_qty") or 0)),
                 "expiration_time": (
-                    row["expiration_time"].isoformat()
-                    if row["expiration_time"]
-                    else None
+                    row["expiration_time"].isoformat() if row["expiration_time"] else None
                 ),
                 "video_url": row["video_url"],
                 "location_name": row["location_name"],
@@ -602,6 +652,157 @@ async def get_nearby_feed(
             }
             for row in reranked
         ],
+    }
+
+
+# ── Phase 9: 薛定谔购物车 TTL 锁 (乐观 UI 锁的后端基座) ──────────────────
+
+#: 锁单 TTL 秒数 (5 分钟)。到期未结算自动释放，库存还给网络。
+CART_LOCK_TTL_SECONDS = 300
+
+
+class _CartLockRequest(BaseModel):
+    batch_id: str
+    device_id: str = ""
+    quantity: int = 1
+
+
+@ext_bespoke_router.post("/store/cart/lock")
+async def lock_cart_item(body: _CartLockRequest, request: Request):
+    """乐观锁单 (Phase 9: 薛定谔购物车状态机后端基座)。
+
+    前端点击"抢！"的瞬间调用，后端原子写入 ``cart_lock`` TTL 锁行，返回
+    ``locked_until`` (now + 5 分钟) 供前端倒计时；到期未结算自动释放。
+
+    可用量口径: 物理库存 - 结算期硬锁 (reserved_qty) - 未过期软锁 (cart_lock)。
+    每次调用先清扫本批次的过期锁 (防僵尸锁堆积)。
+
+    原子性: 用 ``SELECT ... FOR UPDATE`` 锁住批次行，串行化同批次的并发
+    抢锁，杜绝超卖 (与 checkout 的硬锁同一把互斥)。
+
+    公开端点 (零登录扫码即买)，纳入限流防刷。
+    """
+    pool = _pool(request)
+    qty = max(1, body.quantity)
+
+    # 清扫过期软锁 (本批次) + 原子锁行，同一事务内完成
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                'DELETE FROM "cart_lock" WHERE batch_id = $1 AND locked_until <= NOW()',
+                body.batch_id,
+            )
+            # 锁批次行，串行化并发抢锁
+            batch = await conn.fetchrow(
+                'SELECT id, stock_qty, reserved_qty FROM "inventory_batch" '
+                "WHERE id = $1 AND status = 'active' "
+                "FOR UPDATE",
+                body.batch_id,
+            )
+            if batch is None:
+                raise HTTPException(404, "batch not found or not active")
+
+            locked_row = await conn.fetchrow(
+                'SELECT COALESCE(SUM(qty), 0)::int AS n FROM "cart_lock" '
+                "WHERE batch_id = $1 AND locked_until > NOW()",
+                body.batch_id,
+            )
+            active_locks = int(locked_row["n"])
+
+            stock_qty = int(batch["stock_qty"])
+            reserved_qty = int(batch["reserved_qty"] or 0)
+            available = stock_qty - reserved_qty - active_locks
+
+            if qty > available:
+                return {
+                    "status": "failed",
+                    "batch_id": body.batch_id,
+                    "reason": "oversold" if available <= 0 else "insufficient",
+                    "available_qty": max(0, available),
+                }
+
+            locked_until = datetime.now(UTC) + timedelta(seconds=CART_LOCK_TTL_SECONDS)
+            await conn.execute(
+                'INSERT INTO "cart_lock" (batch_id, device_id, qty, locked_until) '
+                "VALUES ($1, $2, $3, $4)",
+                body.batch_id,
+                body.device_id[:64],
+                qty,
+                locked_until,
+            )
+
+    return {
+        "status": "locked",
+        "batch_id": body.batch_id,
+        "qty": qty,
+        "locked_until": locked_until.isoformat(),
+        "ttl_seconds": CART_LOCK_TTL_SECONDS,
+    }
+
+
+# ── Phase 9: 弱网离线核销提货码 (PWA 凭证签发) ─────────────────────
+
+#: 提货码有效期 (小时)。24 小时内凭码取货。
+PICKUP_TICKET_TTL_HOURS = 24
+
+
+class _PickupTicketRequest(BaseModel):
+    order_id: str
+
+
+@ext_bespoke_router.post("/store/pickup-ticket")
+async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
+    """签发加密 JWT 提货码 (Phase 9 SPEC §5 弱网离线核销凭证)。
+
+    支付成功回调后调用：后端校验订单已支付，签发带过期时间的 JWT，
+    前端 Service Worker 将其硬缓存至 localStorage——大妈在地下车库断网
+    也能用全屏最高亮度渲染该提货码，微仓扫码枪可反向读取。
+
+    JWT payload: { order_id, node_name, typ: "pickup" }
+    有效期: 24 小时。
+
+    公开端点 (持提货码即可核销，无需登录)，纳入限流防刷。
+    """
+    from obase.crypto.util import CryptoUtil
+
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT o.id, o.status, o.grand_total_cents, s.name AS node_name '
+            'FROM "customer_order" o '
+            'LEFT JOIN "stock_location" s ON s.id = o.location_id '
+            'WHERE o.id = $1',
+            body.order_id,
+        )
+    if row is None:
+        raise HTTPException(404, "order not found")
+
+    # 只对已支付订单签发提货码
+    paid_statuses = {"confirmed", "paid", "fulfilled", "completed"}
+    if str(row["status"]) not in paid_statuses:
+        raise HTTPException(
+            409, f"order not paid (status={row['status']}), cannot issue pickup ticket"
+        )
+
+    cfg_store = request.app.state.config
+    pickup_code = CryptoUtil.jwt_sign(
+        payload={
+            "order_id": body.order_id,
+            "node_name": row["node_name"] or "附近节点",
+            "typ": "pickup",
+        },
+        secret=cfg_store.jwt_secret,
+        expires_in_minutes=PICKUP_TICKET_TTL_HOURS * 60,
+        algorithm=cfg_store.jwt_algorithm,
+    )
+    expires_at = datetime.now(UTC) + timedelta(hours=PICKUP_TICKET_TTL_HOURS)
+
+    return {
+        "order_id": body.order_id,
+        "pickup_code": pickup_code,
+        "node_name": row["node_name"] or "附近节点",
+        "grand_total_cents": int(row["grand_total_cents"] or 0),
+        "expires_at": expires_at.isoformat(),
     }
 
 
@@ -650,6 +851,8 @@ _EXT_BESPOKE_PUBLIC_PATHS = {
     "/aftersales/submit_rma_claim",
     "/supply-chain/suppliers/lookup",
     "/store/nearby-feed",
+    "/store/cart/lock",
+    "/store/pickup-ticket",
     "/growth/douyin_callback",
 }
 

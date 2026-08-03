@@ -6,7 +6,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
-    image: hemall/backend:latest
+      additional_contexts:
+        platform3o: ../platform/3O
+    image: hemall/backend:v1.0.0-ghost-ignition
     ports:
       - "8000:8000"
     environment:
