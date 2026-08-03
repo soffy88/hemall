@@ -165,8 +165,8 @@ export default function ShopPage() {
         </div>
       </div>
 
-      {/* 商品网格 */}
-      <div className="mx-auto max-w-md px-3 pb-24 pt-3">
+      {/* 商品网格 — 自适应: 手机 2 列, 大屏多列 */}
+      <div className="mx-auto max-w-7xl px-3 pb-24 pt-3">
         {loading ? (
           <div className="flex justify-center py-16">
             <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-600 border-t-transparent" />
@@ -177,7 +177,7 @@ export default function ShopPage() {
             <p className="text-gray-500">该分类暂无商品</p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
             {filtered.map((p) => {
               const img = productImage(p);
               const ref = referencePrice(p);
@@ -221,34 +221,33 @@ export default function ShopPage() {
                     </div>
                   </Link>
 
-                  {/* 信息区 */}
-                  <div className="p-2.5">
-                    <Link href={`/shop/products/${p.id}`} className="block">
-                      <h3 className="truncate text-[13px] font-semibold text-gray-800">
-                        {p.title}
-                      </h3>
-                      {spec && <div className="mt-0.5 text-[11px] text-gray-400">{spec}</div>}
-                    </Link>
-                    <div className="mt-1.5 flex items-baseline gap-1.5">
-                      <span
-                        className="font-black text-emerald-700"
-                        style={{ fontSize: 22, fontWeight: 800 }}
-                      >
-                        ¥{(retail / 100).toFixed(2)}
-                      </span>
-                      {ref && ref > retail && (
-                        <span className="text-[11px] text-gray-400 line-through">
-                          ¥{(ref / 100).toFixed(2)}
+                  {/* 信息区 — 商品名与价格同一排, 压矮卡片高度 */}
+                  <div className="px-2 pb-2 pt-1.5">
+                    <div className="flex items-center justify-between gap-1">
+                      <Link href={`/shop/products/${p.id}`} className="block min-w-0">
+                        <h3 className="truncate text-[13px] font-semibold text-gray-800">
+                          {p.title}
+                        </h3>
+                        {spec && <div className="mt-0.5 truncate text-[11px] text-gray-400">{spec}</div>}
+                      </Link>
+                      <div className="flex shrink-0 items-baseline gap-1">
+                        <span className="font-black text-emerald-700" style={{ fontSize: 18, fontWeight: 800 }}>
+                          ¥{(retail / 100).toFixed(2)}
                         </span>
-                      )}
+                        {ref && ref > retail && (
+                          <span className="text-[10px] text-gray-400 line-through">
+                            ¥{(ref / 100).toFixed(2)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => addToCart(p)}
                       disabled={stock === 0}
-                      className="mt-2 w-full rounded-xl bg-emerald-600 py-2 text-sm font-bold text-white transition active:scale-95 disabled:bg-gray-200 disabled:text-gray-400"
+                      className="mt-1.5 w-full rounded-lg bg-emerald-600 py-1.5 text-[13px] font-bold text-white transition active:scale-95 disabled:bg-gray-200 disabled:text-gray-400"
                     >
-                      {stock === 0 ? '已售罄' : '+ 加入购物车'}
+                      {stock === 0 ? '已售罄' : '+ 加购'}
                     </button>
                   </div>
                 </div>
