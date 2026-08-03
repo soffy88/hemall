@@ -104,6 +104,20 @@ async function request<T>(
   return res.json();
 }
 
+// ── Phase 7 Task 3: 设备指纹 (空间-行为矩阵的数据源标识) ──────────────
+// 零登录端点 (nearby-feed / 限流层) 都用 X-Device-Id 识别设备；浏览器端用
+// localStorage 持久化一个随机指纹，checkout 后后端据此记录购买轨迹，Feed
+// 才能把关联商品 (买过牛肉 → 番茄/洋葱) 插队到视野最前方。
+export function deviceId(): string {
+  if (typeof window === 'undefined') return '';
+  let id = window.localStorage.getItem('hemall_device_id');
+  if (!id) {
+    id = `dev-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+    window.localStorage.setItem('hemall_device_id', id);
+  }
+  return id;
+}
+
 /** 通用 omodul 写端点调用：POST /<domain>/<name>，请求体即 Input 模型。 */
 function omodul<T = OmodulResult>(domain: string, name: string, data: object, auth: boolean = true) {
   return request<T>(`/${domain}/${name}`, { method: 'POST', body: JSON.stringify(data) }, auth);
@@ -875,14 +889,17 @@ export const api = {
   // ── 补天计划 Task 2.1/3.1: 位置 Feed + 零号探针 ──────────────────────
 
   // 位置 Feed 流 (公开，零登录)：按当前坐标找最近 active 微仓，只返回有货且
-  // 在安全货架期内的批次——"人找货"到"地理位置找货"。
+  // 在安全货架期内的批次——"人找货"到"地理位置找货"。Phase 7 升维：带
+  // X-Device-Id 设备指纹，后端按购买轨迹把关联商品 (boosted=true) 插队。
   getNearbyFeed: (lat: number, lon: number, limit?: number) =>
     request<{
       nearest_location: { id: string; distance_km: number } | null;
       safety_margin_hours: number;
+      behavior_boosted: boolean;
       batches: Array<{
         batch_id: string;
         variant_id: string;
+        product_id: string;
         title: string;
         sku_code: string;
         retail_price_cents: number;
@@ -890,10 +907,12 @@ export const api = {
         expiration_time: string | null;
         video_url: string | null;
         location_name: string;
+        affinity: number;
+        boosted: boolean;
       }>;
     }>(
       `/store/nearby-feed?lat=${lat}&lon=${lon}${limit ? `&limit=${limit}` : ''}`,
-      { method: 'GET' },
+      { method: 'GET', headers: { 'X-Device-Id': deviceId() } },
       false,
     ),
 

@@ -52,6 +52,7 @@ from oservi.engines.cron_scheduler_engine import CronSchedulerEngine
 from oservi.engines.event_webhook_dispatcher import EventWebhookDispatcherEngine
 
 from ..config import Settings
+from .spider_targets import extract_unit_from_text
 from .omodul.commission_new_location import (
     CommissionNewLocationConfig,
     CommissionNewLocationInput,
@@ -1311,7 +1312,7 @@ def build_inventory_decay_engine(
 def build_competitor_spider_engine(
     pool: Any,
     *,
-    spider_provider: str = "manual",
+    spider_provider: str = "layered",
     radius_km: int = 5,
     max_calls_per_tick: int = 200,
 ) -> CronSchedulerEngine:
@@ -1324,9 +1325,11 @@ def build_competitor_spider_engine(
     submit_supplier_reverse_auction_workflow 的基准线 / 众包 OCR 核销从此有
     了自动来源。
 
-    诚实的空白：ManualSpiderProvider 默认返回空结果 (不伪造假数据)，所以真实
-    部署里这个引擎装上爬虫 provider 前每 tick 都是"扫了 N 个 SKU、抓了 0 条"，
-    如实记录不假装成功。radius_km 默认 5 公里跟 SPEC 的周边 O2O 比价语义一致。
+    Phase 7 Task 2 升级：默认 provider 从 "manual" (永远空转) 换成
+    "layered" (app.ext.spider_targets)——对关键词发真实 HTTP 请求 (苏宁移动
+    搜索 / 京东到家 / OpenFoodFacts)，真实解析后入库。诚实的空白依然成立：
+    免费源的价格字段覆盖率决定真实写入率，抓不到价就如实记 0，不伪造。
+    tick 返回新增 requests/parsed/priced 统计，方便看板核对真实抓取状态。
 
     SKU↔抓取条目匹配：抓取返回 {"item", "price", "unit", "store"}，item 是
     商品名自由文本，跟 SKU 没有稳定键——按 SKU 标题做大小写不敏感子串匹配，
@@ -1335,7 +1338,7 @@ def build_competitor_spider_engine(
 
     Args:
         pool: obase.persistence.PgPool。
-        spider_provider: 爬虫 provider 名，默认 "manual"。
+        spider_provider: 爬虫 provider 名，默认 "layered"。
         radius_km: 抓取半径 (公里)。
         max_calls_per_tick: 单 tick 抓取调用上限，防止 SKU×节点组合爆炸
             (真实爬虫有成本和速率限制，这里先做硬上限)。
@@ -1365,6 +1368,8 @@ def build_competitor_spider_engine(
 
         written = 0
         calls = 0
+        parsed = 0
+        priced = 0
         for loc in locations:
             for variant in variants:
                 if calls >= max_calls_per_tick:
@@ -1386,10 +1391,15 @@ def build_competitor_spider_engine(
                     continue
 
                 for item in items:
+                    parsed += 1
                     raw_price = float(item.get("price", 0) or 0)
                     if raw_price <= 0:
                         continue
+                    priced += 1
                     raw_unit = str(item.get("unit", "") or "")
+                    title = str(item.get("item", "") or "")
+                    if not raw_unit:
+                        raw_unit = extract_unit_from_text(title)
                     title = str(item.get("item", "") or "")
                     match = (
                         title.strip().lower() == variant["title"].strip().lower()
@@ -1418,6 +1428,8 @@ def build_competitor_spider_engine(
             "scanned_variants": len(variants),
             "scanned_locations": len(locations),
             "calls": calls,
+            "parsed": parsed,
+            "priced": priced,
             "written": written,
         }
 
@@ -1552,4 +1564,117 @@ def build_sla_compensation_engine(pool: Any, settings: Settings) -> CronSchedule
         trigger={"on_interval": 3600},
         config={"interval_seconds": 3600},
         name="ext-sla-compensation",
+    )
+
+
+# ── 微信平台证书轮换 (Phase 7 Task 1: 消灭"到期运维手动更新") ─────────────
+
+
+def build_wechat_cert_rotation_engine(pool: Any, settings: Settings) -> CronSchedulerEngine:
+    """平台证书自轮换守护引擎 (on_cron，每 12 小时)。
+
+    微信 v3 平台证书会过期，传统做法是运维到期手动拉新证书替换；本引擎把
+    这条链路自动化：
+
+        1. 从 ProviderRegistry 解析当前付款网关 (按 HEMALL_PAYMENT_GATEWAY_PROVIDER
+           注册名)；
+        2. 非 wechat 网关 / 密钥未配齐 → 诚实跳过并记录原因 (不假装轮换)；
+        3. GET /v3/certificates (商户私钥 RSA-SHA256 签名) → 解密 encrypt_
+           certificate (AEAD_AES_256_GCM, APIv3 密钥) → 解析 PEM 平台证书；
+        4. 取 expire_time 最新的一张 → 热更新到内存网关 (rotate_platform_cert，
+           无重启生效) + 原子写 settings.wechat_platform_cert_store 持久化
+           (JSON: serial_no/expire_time/pem)；
+        5. 返回轮换结果留痕 (fetched/rotated_to/expire_time/stored)。
+
+    pool 参数保留给未来持久化轮换轨迹 (cert_rotation_log) 用，当前版本不做
+    额外建表——轮换本身只是内存热换 + 文件持久化，不产生业务数据。
+    """
+    import json as _json
+    import tempfile
+
+    def _load_gateway() -> tuple[str, Any] | None:
+        from obase.provider_registry import ProviderRegistry
+
+        reg = ProviderRegistry.get()
+        name = settings.payment_gateway_provider
+        try:
+            gw = reg.generic("payment_gateway", name)
+        except Exception:  # noqa: BLE001 - 未注册时按未配置处理
+            gw = None
+        if gw is None or not getattr(gw, "is_configured", False):
+            return None
+        return name, gw
+
+    async def cert_rotation_tick(**_: Any) -> dict[str, Any]:
+        from .payment_gateways import (
+            WechatPayNativeGateway,
+            fetch_wechat_platform_certificates,
+        )
+
+        loaded = _load_gateway()
+        if loaded is None:
+            logger.info(
+                "wechat cert rotation skipped: gateway '%s' not wechat or "
+                "not configured",
+                settings.payment_gateway_provider,
+            )
+            return {
+                "rotated": False,
+                "reason": "gateway not wechat or not configured",
+                "provider": settings.payment_gateway_provider,
+            }
+        name, gateway = loaded
+        if not isinstance(gateway, WechatPayNativeGateway):
+            logger.info(
+                "wechat cert rotation skipped: provider '%s' is %s",
+                name,
+                type(gateway).__name__,
+            )
+            return {"rotated": False, "reason": f"gateway type {type(gateway).__name__}"}
+
+        certs = await fetch_wechat_platform_certificates(gateway)
+        if not certs:
+            logger.warning("wechat cert rotation: /v3/certificates returned no certs")
+            return {"rotated": False, "reason": "no certificates returned", "fetched": 0}
+
+        # 新旧并存窗口期响应多张证书：取 expire_time 最新的一张 (RFC3339 字符串
+        # 字典序即时间序)。
+        newest = max(certs, key=lambda c: c.expire_time)
+        gateway.rotate_platform_cert(newest.pem, serial_no=newest.serial_no)
+
+        # 原子持久化 (先写临时文件再 rename，避免中途崩溃留下半个 JSON)。
+        store_path = Path(settings.wechat_platform_cert_store)
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=store_path.parent, delete=False, encoding="utf-8"
+        ) as tmp:
+            _json.dump(newest.to_dict(), tmp, ensure_ascii=False)
+            tmp_path = tmp.name
+        import os
+
+        os.replace(tmp_path, store_path)
+
+        logger.info(
+            "wechat cert rotated: serial=%s expire=%s stored=%s (fetched=%d)",
+            newest.serial_no,
+            newest.expire_time,
+            store_path,
+            len(certs),
+        )
+        return {
+            "rotated": True,
+            "fetched": len(certs),
+            "rotated_to": newest.serial_no,
+            "effective_time": newest.effective_time,
+            "expire_time": newest.expire_time,
+            "stored": str(store_path),
+        }
+
+    cert_rotation_tick.__name__ = "cert_rotation_tick"
+
+    return CronSchedulerEngine(
+        tasks=[cert_rotation_tick],
+        trigger={"on_cron": "0 */12 * * *"},
+        config={"interval_seconds": 43200},
+        name="ext-wechat-cert-rotation",
     )

@@ -231,10 +231,27 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
         ],
     ),
+    # Phase 7 Task 3: 零登录设备购买轨迹 (空间-行为矩阵的"行为序列"数据源)。
+    # nearby-feed 是零登录公开端点 (限流按 IP+X-Device-Id)，顾客没有账号可用；
+    # checkout 时把 X-Device-Id 头 + 成交行项写入此表，feed 就能"知道用户买过
+    # 什么"，用 oskill 的关联度算子把关联商品插队到视野最前方。
+    (
+        "device_purchase_log",
+        [
+            ("id", "UUID PRIMARY KEY"),
+            ("device_id", "VARCHAR(64) NOT NULL"),
+            ("order_id", "UUID REFERENCES customer_order(id)"),
+            ("batch_id", "UUID REFERENCES inventory_batch(id)"),
+            ("product_id", "UUID REFERENCES product(id)"),
+            ("variant_id", "UUID REFERENCES product_variant(id)"),
+            ("purchased_at", "TIMESTAMPTZ DEFAULT NOW()"),
+        ],
+    ),
 ]
 
 _INDEXES: list[tuple[str, str, str]] = [
     ("tote_deposit", "idx_tote_deposit_tote", "tote_id, status"),
+    ("device_purchase_log", "idx_device_purchase_device", "device_id, purchased_at"),
     ("crowd_intent", "idx_crowd_intent_variant", "variant_id, status"),
     ("host_dividend_ledger", "idx_host_dividend_ledger_host", "host_id, period_date"),
     ("membership", "idx_membership_customer", "customer_id"),

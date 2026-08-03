@@ -53,6 +53,7 @@ from .oservi import (
     build_spatial_fomo_engine,
     build_tote_balancing_engine,
     build_weather_arbitrage_engine,
+    build_wechat_cert_rotation_engine,
 )
 
 logger = logging.getLogger("hemall.ext.oservi_lifecycle")
@@ -101,6 +102,7 @@ class ExtOservi:
     competitor_spider: CronSchedulerEngine
     sla_promise: CronSchedulerEngine
     sla_compensation: CronSchedulerEngine
+    wechat_cert_rotation: CronSchedulerEngine
     _tasks: list[asyncio.Task] = field(default_factory=list)
 
     def _cron_engines(self) -> tuple[CronSchedulerEngine, ...]:
@@ -119,6 +121,7 @@ class ExtOservi:
             self.competitor_spider,
             self.sla_promise,
             self.sla_compensation,
+            self.wechat_cert_rotation,
         )
 
     def start_cron_engines(self) -> None:
@@ -174,6 +177,7 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     competitor_spider = build_competitor_spider_engine(pool)
     sla_promise = build_sla_promise_engine(pool, settings=settings)
     sla_compensation = build_sla_compensation_engine(pool, settings=settings)
+    wechat_cert_rotation = build_wechat_cert_rotation_engine(pool, settings=settings)
 
     return ExtOservi(
         demand_aggregator=demand_aggregator,
@@ -194,4 +198,5 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         competitor_spider=competitor_spider,
         sla_promise=sla_promise,
         sla_compensation=sla_compensation,
+        wechat_cert_rotation=wechat_cert_rotation,
     )

@@ -783,8 +783,9 @@ def calculate_broadcast_priority(stock_qty: int, *, theta_decay_hours: float) ->
 #: 从原始单位字符串里提取数量+单位——SPEC 原文写的是 (g|kg|ml|L)，但入参先
 #: .lower() 过再拿这个 pattern 去 re.search，大写 "L" 永远不可能匹配已经被
 #: 转小写的字符串，等于升 (L/公升) 这个单位从来没被正确识别过；这里改成
-#: 统一小写 "l"，真的能匹配上。
-_UNIT_PATTERN = re.compile(r"(\d+)(g|kg|ml|l)")
+#: 统一小写 "l"，真的能匹配上。支持小数数量 (1.5kg)——生鲜 O2O 里"1.5斤"
+#: 类标注常见，只取整数会静默算错每克价。
+_UNIT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)(g|kg|ml|l)")
 
 
 def normalize_sku_price(raw_price: int, *, raw_unit: str) -> float | None:
@@ -1032,3 +1033,112 @@ def is_shelf_life_safe(expiration_time: Any, *, now: Any, margin_hours: float) -
     if expiration_time is None:
         return True
     return expiration_time > now + timedelta(hours=margin_hours)
+
+
+# ── Phase 7 Task 3: 空间-行为矩阵 (商品关联度算子) ──────────────────────
+# nearby-feed 的升维：从"距离最近 + 有货 + 未过期"升级为"行为序列加权"。
+# 极简协同过滤——用全局订单的共现关系算商品关联度，用户买过牛肉就把他
+# 历史上跟牛肉一起买过的番茄/洋葱插队到 Feed 最前方。三个纯函数都只吃
+# 数据结构、不碰 DB，SQL 层 (routers) 负责取数据，这里只做权重运算，
+# 可单测。
+
+
+def build_cooccurrence_matrix(
+    order_product_pairs: list[list[str]],
+) -> dict[tuple[str, str], int]:
+    """从订单×商品矩阵构建共现矩阵 (无向边，去自环)。
+
+    全局关联度的数据源：每个订单下单的商品 id 列表。共现次数越多，两个
+    商品越"经常一起被买"。矩阵键为 (a, b) 且 a < b (规范化无向边)，查询
+    时按 (min, max) 取键即可，不存两份。
+
+    Args:
+        order_product_pairs: 每个元素是一个订单里下单的商品 id 列表。
+
+    Returns:
+        {(a, b): 共现次数}，a < b。
+    """
+    matrix: dict[tuple[str, str], int] = {}
+    for products in order_product_pairs:
+        uniq = sorted({str(p) for p in products})
+        for i in range(len(uniq)):
+            for j in range(i + 1, len(uniq)):
+                key = (uniq[i], uniq[j])
+                matrix[key] = matrix.get(key, 0) + 1
+    return matrix
+
+
+def compute_batch_affinity_scores(
+    user_product_ids: list[str],
+    candidate_product_ids: list[str],
+    cooccurrence: dict[tuple[str, str], int],
+) -> dict[str, float]:
+    """计算候选商品相对用户历史购买序列的关联度得分。
+
+    对每个候选商品，累加它与用户买过的每个商品的共现次数，除以用户商品数
+    (归一化到 0~1 区间，弱关联不放大)。得分 0 = 无历史关联 (不插队，保持
+    距离排序)；> 0 才参与插队。
+
+    Args:
+        user_product_ids: 用户 (设备) 最近购买过的商品 id 列表。
+        candidate_product_ids: 候选批次对应的商品 id 列表 (与候选一一对应，
+            按同一下标对齐)。
+        cooccurrence: build_cooccurrence_matrix 的产物。
+
+    Returns:
+        {商品 id: 关联度得分}——只含候选集里有分 (得分 > 0) 的商品。
+    """
+    if not user_product_ids:
+        return {}
+    user_set = set(user_product_ids)
+    scores: dict[str, float] = {}
+    for cand in candidate_product_ids:
+        if not cand or cand in user_set:
+            # 自己买过的东西不叫"关联"，不参与插队
+            continue
+        total = 0
+        for u in user_set:
+            key = tuple(sorted((u, cand)))
+            total += cooccurrence.get(key, 0)
+        if total > 0:
+            scores[cand] = total / len(user_set)
+    return scores
+
+
+def rerank_feed_by_affinity(
+    batches: list[dict[str, Any]],
+    affinity_scores: dict[str, float],
+    *,
+    boost_threshold: float = 0.0,
+) -> list[dict[str, Any]]:
+    """把关联商品插队到 Feed 最前方 (稳定排序，不动原始顺序)。
+
+    实现：给每项加 ``affinity`` (得分或 0.0) 与 ``boosted`` 标记，按
+    (boosted desc, 原始下标 asc) 稳定排序——有关联的先整体上浮，组内保持
+    原有"按过期时间/距离"的相对顺序，避免破坏货架期优先语义。
+
+    Args:
+        batches: nearby-feed 的候选批次 dict 列表 (每项含 product_id)。
+        affinity_scores: compute_batch_affinity_scores 的结果 (按 product_id
+            索引)。
+        boost_threshold: 得分大于该值才插队 (默认 > 0 即插队)。
+
+    Returns:
+        重排后的列表，每项新增 ``affinity`` / ``boosted`` 两个字段。
+    """
+    scored: list[dict[str, Any]] = []
+    for idx, batch in enumerate(batches):
+        score = affinity_scores.get(str(batch.get("product_id")), 0.0)
+        boosted = score > boost_threshold
+        scored.append(
+            {
+                **batch,
+                "affinity": round(float(score), 4),
+                "boosted": boosted,
+                "_feed_index": idx,
+            }
+        )
+    scored.sort(key=lambda b: (0 if b["boosted"] else 1, b["_feed_index"]))
+    for b in scored:
+        b.pop("_feed_index", None)
+    return scored

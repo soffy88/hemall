@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     wechat_pay_api_v3_key: str = ""
     wechat_pay_platform_cert_path: str = ""
     wechat_pay_notify_url: str = ""
+    # 证书轮换引擎的持久化落盘路径 (JSON: serial_no/expire_time/pem)。
+    # 轮换引擎每 12h 拉 /v3/certificates 热更新内存网关 + 写此文件，重启后
+    # bootstrap 读文件继续用，消灭"到期运维手动更新"。
+    wechat_platform_cert_store: str = "var/wechat_platform_cert.json"
     # Stripe
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""

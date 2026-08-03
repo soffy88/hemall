@@ -61,6 +61,92 @@ class PaymentGatewayError(RuntimeError):
     """网关调用失败 (网络/签名/商户配置错误)。"""
 
 
+# ── 微信平台证书 (轮换支持) ────────────────────────────────────────────
+
+
+class WechatCertificate:
+    """微信支付平台证书快照 (轮换引擎解析 /v3/certificates 后的产物)。"""
+
+    __slots__ = ("serial_no", "effective_time", "expire_time", "pem")
+
+    def __init__(
+        self, *, serial_no: str, effective_time: str, expire_time: str, pem: str
+    ) -> None:
+        self.serial_no = serial_no
+        self.effective_time = effective_time
+        self.expire_time = expire_time
+        self.pem = pem
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "serial_no": self.serial_no,
+            "effective_time": self.effective_time,
+            "expire_time": self.expire_time,
+            "pem": self.pem,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, str]) -> "WechatCertificate":
+        return cls(
+            serial_no=data["serial_no"],
+            effective_time=data["effective_time"],
+            expire_time=data["expire_time"],
+            pem=data["pem"],
+        )
+
+
+async def fetch_wechat_platform_certificates(
+    gateway: "WechatPayNativeGateway",
+) -> list[WechatCertificate]:
+    """GET /v3/certificates → 解密 encrypt_certificate → 解析 PEM 平台证书。
+
+    微信 v3 平台证书接口返回的证书本体也是用 APIv3 密钥加密的
+    (AEAD_AES_256_GCM)，必须解密后才能得到 PEM——这正是轮换引擎要消灭的
+    "首次手动拉取落盘"痛点。响应里可能有多张证书 (新旧并存窗口期)，调用方
+    按 expire_time 取最新的即可。
+    """
+    path = "/v3/certificates"
+    headers = {
+        "Authorization": gateway._auth_header("GET", path, ""),
+        "Accept": "application/json",
+        "User-Agent": "hemall/1.0",
+    }
+    async with gateway._client() as client:
+        resp = await client.get(path, headers=headers)
+    if resp.status_code >= 300:
+        raise PaymentGatewayError(
+            f"wechat cert api -> {resp.status_code}: {resp.text[:300]}"
+        )
+    data = resp.json()
+    certs: list[WechatCertificate] = []
+    for item in data.get("data", []):
+        enc = item.get("encrypt_certificate", {})
+        plaintext = aes_256_gcm_decrypt(
+            gateway._api_v3_key,
+            enc.get("nonce", ""),
+            enc.get("ciphertext", ""),
+            enc.get("associated_data", ""),
+        )
+        # 校验解析出的 PEM 确实能加载为公钥，坏证书直接丢弃不热换
+        try:
+            load_public_key_pem(plaintext)
+        except Exception as exc:  # noqa: BLE001 - 单张坏证书不拖垮整批
+            logger.warning(
+                "wechat certificate %s failed PEM parse: %s",
+                item.get("serial_no"), exc,
+            )
+            continue
+        certs.append(
+            WechatCertificate(
+                serial_no=str(item.get("serial_no", "")),
+                effective_time=str(item.get("effective_time", "")),
+                expire_time=str(item.get("expire_time", "")),
+                pem=plaintext,
+            )
+        )
+    return certs
+
+
 # ── 签名/解密原语 (纯算法，可单测) ───────────────────────────────────────
 
 
@@ -200,9 +286,31 @@ class WechatPayNativeGateway:
         self._platform_cert = (
             load_public_key_pem(platform_cert) if platform_cert else None
         )
+        self._platform_cert_serial = ""
+        self._platform_cert_pem = str(platform_cert) if platform_cert else ""
         self._notify_url = notify_url
         self._base_url = base_url.rstrip("/")
         self._transport = transport
+
+    def rotate_platform_cert(self, pem: str, serial_no: str = "") -> None:
+        """热更新平台证书 (cert_rotation_engine 调用，无重启换证书)。
+
+        同时保留 PEM 原文与序列号——引擎用它们落盘持久化，重启后加载的
+        网关 (bootstrap 从文件读) 能接上轮换后的状态。
+        """
+        if not pem:
+            raise PaymentGatewayError("rotate_platform_cert: empty pem")
+        self._platform_cert = load_public_key_pem(pem)
+        self._platform_cert_pem = pem
+        self._platform_cert_serial = serial_no
+
+    @property
+    def platform_cert_snapshot(self) -> dict[str, str]:
+        """当前生效平台证书快照 (轮换引擎持久化用)。"""
+        return {
+            "serial_no": self._platform_cert_serial,
+            "pem": self._platform_cert_pem,
+        }
 
     @property
     def is_configured(self) -> bool:

@@ -18,6 +18,12 @@ dependencies = [
     # app.ext.oskill 直接用 scipy.spatial.Voronoi (recompute_voronoi_grid)；
     # 之前只是通过 oskill 包transitively 可用，这里显式声明，不依赖隐式传递依赖。
     "scipy>=1.11",
+    # app.ext.spider_targets: 真实目标页解析 (苏宁/京东到家 HTML + OpenFoodFacts JSON)
+    "beautifulsoup4>=4.12",
+    # httpx 真实传输栈的 HTTP/2 依赖: 老版 h2 2.x + hyperframe 3.x 在 Py3.12
+    # 下崩溃 (collections.MutableSet 已移除)，钉住兼容组合。
+    "h2>=4.0",
+    "hyperframe>=6.0",
 ]
 
 [project.optional-dependencies]

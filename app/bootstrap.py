@@ -27,6 +27,7 @@ from .ext.payment_gateways import build_payment_gateway
 from .ext.payout_provider import ManualPaymentGateway, ManualPayoutProvider
 from .ext.schema import ensure_ext_schema
 from .ext.spider_provider import ManualSpiderProvider
+from .ext.spider_targets import LayeredSpiderProvider
 from .ext.vlm_provider import ManualVLMProvider
 from .ext.weather_provider import ManualWeatherProvider
 from .ext.wechat_provider import ManualWeChatChannelProvider
@@ -77,6 +78,10 @@ def register_providers(settings: Settings) -> None:
         "wechat_channel", "manual", ManualWeChatChannelProvider(), replace=True
     )
     reg.register_generic("spider", "manual", ManualSpiderProvider(), replace=True)
+    # Phase 7 Task 2: 具象化真实爬虫 (苏宁/京东到家/OpenFoodFacts)。默认走
+    # layered——测试覆写 (set_results) 仍然生效，关键词命中真实目标时发真实
+    # HTTP 请求；manual 保留兼容旧调用点。
+    reg.register_generic("spider", "layered", LayeredSpiderProvider(), replace=True)
     reg.register_generic("douyin", "manual", ManualDouyinProvider(), replace=True)
     logger.info(
         "registered fallback providers: payment/payout/weather/vlm/cv/llm/"

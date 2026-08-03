@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,9 @@ from pydantic import BaseModel
 
 from app import queries
 from app.deps import get_current_customer
+from obase.uuid7 import uuid7
+
+logger = logging.getLogger("hemall.storefront")
 
 router = APIRouter(prefix="/store", tags=["storefront"])
 
@@ -471,6 +475,39 @@ async def checkout(body: CheckoutRequest, request: Request):
         cfg_store.jwt_secret,
         cfg_store.jwt_algorithm,
     )
+
+    # Phase 7 Task 3: 行为序列数据源——best-effort 记录零登录设备购买轨迹。
+    # 顾客没账号 (nearby-feed 是零登录公开端点)，但限流层一直按 X-Device-Id
+    # 头识别设备；这里把同款头 + 成交行项写入 device_purchase_log，feed 就能
+    # "知道用户买过什么"，用 oskill 关联度算子把关联商品插队。失败只记日志，
+    # 绝不影响下单主流程 (旁路旁得干净)。
+    device_id = (request.headers.get("x-device-id") or "").strip()
+    if device_id:
+        try:
+            pool = _pool(request)
+            async with pool.acquire() as conn:
+                items = await conn.fetch(
+                    "SELECT oli.batch_id, ib.product_id, ib.variant_id "
+                    'FROM "order_line_item" oli '
+                    'JOIN "inventory_batch" ib ON ib.id = oli.batch_id '
+                    "WHERE oli.order_id = $1",
+                    order_id,
+                )
+                if items:
+                    await conn.executemany(
+                        'INSERT INTO "device_purchase_log" '
+                        "(id, device_id, order_id, batch_id, product_id, variant_id) "
+                        "VALUES ($1, $2, $3, $4, $5, $6)",
+                        [
+                            (uuid7(), device_id[:64], order_id, str(i["batch_id"]),
+                             str(i["product_id"]), str(i["variant_id"]))
+                            for i in items
+                        ],
+                    )
+        except Exception as exc:  # noqa: BLE001 - 行为轨迹是旁路，不阻断下单
+            logger.warning(
+                "device purchase log failed (order=%s): %s", order_id, exc
+            )
 
     return {
         "order_id": order_id,

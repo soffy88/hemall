@@ -22,7 +22,11 @@ from . import queries
 from .auth import router as auth_router
 from .events import fire_event
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
-from .ext.oskill import find_nearest_location
+from .ext.oskill import (
+    compute_batch_affinity_scores,
+    find_nearest_location,
+    rerank_feed_by_affinity,
+)
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .storefront import router as storefront_router
@@ -452,6 +456,14 @@ async def ext_lookup_supplier(wallet_account: str, request: Request):
 #: inventory_decay_engine 还没到下一个 tick，临期商品也不会流到顾客面前。
 _NEARBY_FEED_SAFETY_MARGIN_HOURS = 2.0
 
+#: 行为序列窗口 (天)：设备购买轨迹只取最近这些天的，旧购买不再影响 Feed。
+_NEARBY_FEED_HISTORY_DAYS = 90
+#: 行为序列最多取的商品数 (防单设备历史爆炸)。
+_NEARBY_FEED_HISTORY_MAX_PRODUCTS = 20
+#: 全局共现矩阵构建上限 (订单数)。全量订单可能很大，取最近窗口的样本就够
+#: 算关联度 (冷启动阶段数据量小，上限够用；量大时按窗口截断)。
+_NEARBY_FEED_COOCCURRENCE_ORDER_CAP = 2000
+
 
 @ext_bespoke_router.get("/store/nearby-feed")
 async def get_nearby_feed(
@@ -460,7 +472,8 @@ async def get_nearby_feed(
     lon: float,
     limit: int = Query(50, ge=1, le=100),
 ):
-    """位置 Feed 流："人找货"到"地理位置找货"的彻底反转 (补天计划 Task 2.1)。
+    """位置 Feed 流："人找货"到"地理位置找货"的彻底反转 (补天计划 Task 2.1)，
+    Phase 7 Task 3 升维为"空间-行为矩阵"。
 
     根据传入坐标，通过底层距离算法 (oskill.find_nearest_location，纯 Python
     haversine，不依赖 PostGIS) 找出最近的 active 微仓，只返回该节点内
@@ -468,11 +481,21 @@ async def get_nearby_feed(
     2 小时，过期/临期批次在 SQL 层直接过滤掉，是比 decay 引擎更靠前的一道
     防线)。
 
+    升维 (Phase 7 Task 3)：携带 X-Device-Id 头时，读取该设备最近 90 天的
+    购买轨迹 (checkout 时写入的 device_purchase_log)，用全局订单共现矩阵
+    (oskill.build_cooccurrence_matrix，极简协同过滤) 计算候选批次与用户历史
+    的关联度；关联商品 (如买过牛肉 → 番茄/洋葱) 通过 oskill.rerank_feed_by_
+    affinity 插队到视野最前方，且带 ``boosted``/``affinity`` 标记供前端展示
+    "为你推荐"。无设备头/无历史时退化为纯距离排序 (与旧行为完全一致)。
+
     公开端点 (零登录扫码即买)，纳入限流防刷保护 (见 public_zero_login_paths)。
 
     Args (query params):
         lat/lon: 顾客当前位置 (十进制坐标)。
         limit: 返回批次上限 (默认 50，最多 100)。
+
+    Header:
+        X-Device-Id: 设备指纹 (与限流层同一识别维度)；可选，缺失时无行为升维。
     """
     pool = _pool(request)
 
@@ -493,7 +516,8 @@ async def get_nearby_feed(
     async with pool.acquire() as conn:
         batches = await conn.fetch(
             "SELECT b.id, b.variant_id, b.retail_price_cents, b.stock_qty, "
-            "b.expiration_time, b.video_url, v.sku_code, p.title, s.name AS location_name "
+            "b.expiration_time, b.video_url, v.sku_code, p.title, p.id AS product_id, "
+            "s.name AS location_name "
             'FROM "inventory_batch" b '
             'JOIN "product_variant" v ON v.id = b.variant_id '
             'JOIN "product" p ON p.id = v.product_id '
@@ -508,13 +532,60 @@ async def get_nearby_feed(
             limit,
         )
 
+    batch_rows = [dict(row) for row in batches]
+
+    # ── Phase 7 Task 3: 行为序列加权 (极简协同过滤) ──
+    device_id = (request.headers.get("x-device-id") or "").strip()
+    affinity_scores: dict[str, float] = {}
+    history_cutoff = datetime.now(UTC) - timedelta(days=_NEARBY_FEED_HISTORY_DAYS)
+    if device_id:
+        async with pool.acquire() as conn:
+            user_products = await conn.fetch(
+                "SELECT DISTINCT product_id FROM device_purchase_log "
+                "WHERE device_id = $1 AND purchased_at > $2 "
+                "LIMIT $3",
+                device_id[:64],
+                history_cutoff,
+                _NEARBY_FEED_HISTORY_MAX_PRODUCTS,
+            )
+            if user_products:
+                cooccurrence_rows = await conn.fetch(
+                    "WITH recent AS ( "
+                    "  SELECT oli.order_id, ib.product_id "
+                    '  FROM "order_line_item" oli '
+                    '  JOIN "inventory_batch" ib ON ib.id = oli.batch_id '
+                    '  JOIN "customer_order" o ON o.id = oli.order_id '
+                    "  WHERE o.created_at > $1 "
+                    "  GROUP BY oli.order_id, ib.product_id "
+                    ") "
+                    "SELECT a.product_id AS left_id, b.product_id AS right_id, COUNT(*) AS n "
+                    "FROM recent a JOIN recent b ON a.order_id = b.order_id "
+                    "AND a.product_id < b.product_id "
+                    "GROUP BY 1, 2 ORDER BY n DESC LIMIT $2",
+                    history_cutoff,
+                    _NEARBY_FEED_COOCCURRENCE_ORDER_CAP,
+                )
+                cooccurrence = {
+                    (str(r["left_id"]), str(r["right_id"])): r["n"]
+                    for r in cooccurrence_rows
+                }
+                user_ids = [str(r["product_id"]) for r in user_products]
+                candidate_ids = [str(r["product_id"]) for r in batch_rows]
+                affinity_scores = compute_batch_affinity_scores(
+                    user_ids, candidate_ids, cooccurrence
+                )
+
+    reranked = rerank_feed_by_affinity(batch_rows, affinity_scores)
+
     return {
         "nearest_location": {"id": nearest_id, "distance_km": round(distance_km, 3)},
         "safety_margin_hours": _NEARBY_FEED_SAFETY_MARGIN_HOURS,
+        "behavior_boosted": bool(affinity_scores),
         "batches": [
             {
                 "batch_id": str(row["id"]),
                 "variant_id": str(row["variant_id"]),
+                "product_id": str(row["product_id"]),
                 "title": row["title"],
                 "sku_code": row["sku_code"],
                 "retail_price_cents": row["retail_price_cents"],
@@ -526,8 +597,10 @@ async def get_nearby_feed(
                 ),
                 "video_url": row["video_url"],
                 "location_name": row["location_name"],
+                "affinity": row["affinity"],
+                "boosted": row["boosted"],
             }
-            for row in batches
+            for row in reranked
         ],
     }
 
