@@ -56,9 +56,25 @@
 		}
 	}
 	handle /admin/* {
-		reverse_proxy hemal-api-1:8000 {
-			header_up Host {host}
-			header_up X-Forwarded-Proto {scheme}
+		# 商家后台: 页面路由 (/admin/products 等) 由 Next.js 前端渲染;
+		# 数据 API (前端 api.request 带 Authorization: Bearer) 反代到 API。
+		# 之前全部转发 API 会把后台页面遮蔽成 401 (路径与 /admin/* 数据接口同形)。
+		@admin_api {
+			header Authorization Bearer*
+		}
+		handle @admin_api {
+			reverse_proxy hemal-api-1:8000 {
+				header_up Host {host}
+				header_up X-Forwarded-Proto {scheme}
+			}
+		}
+		handle {
+			reverse_proxy hemal-web-1:3000 {
+				header_up Host {host}
+				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-Proto {scheme}
+				header_up X-Forwarded-Port {server_port}
+			}
 		}
 	}
 	handle /docs* {
