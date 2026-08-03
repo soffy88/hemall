@@ -1,0 +1,22 @@
+# ═══════════════════════════════════════════════════
+# ClearNode v1.0.0 — 代码所有权定义
+# 生产封板后，所有核心路径变更需人类工程师 Review
+# ═══════════════════════════════════════════════════
+
+# 核心业务逻辑 — 架构师审批
+app/ext/              @soffy
+app/auth.py           @soffy
+app/main.py           @soffy
+app/routers.py        @soffy
+
+# 库存与订单引擎
+app/inventory/        @soffy
+app/orders/           @soffy
+app/payments/         @soffy
+
+# 混沌测试与运维脚本 — CC 可自由修改
+scripts/              *
+tests/                *
+
+# 文档 — CC 可自由修改
+docs/                 *

@@ -1,0 +1,53 @@
+# ClearNode v1.0.0 — Post-Release Access Control
+# This tag (v1.0.0-ghost-ignition) marks the production freeze point.
+
+# 🔒 CORE BUSINESS LOGIC — READ ONLY
+# The following paths are LOCKED. CC agents may READ but must NOT MODIFY
+# without explicit human approval through the PR review process.
+
+# Core O-Skill (business logic primitives)
+app/ext/oskill.py
+app/ext/oskill_ghost_clustering.py
+app/ext/oskill_*.py
+
+# Core O-Service (engine orchestration)
+app/ext/oservi.py
+app/ext/oservi_lifecycle.py
+app/ext/oservi_ghost_engine.py
+app/ext/oservi_*.py
+
+# Core O-Modul (transactional modules)
+app/ext/omodul/__init__.py
+app/ext/omodul/ignite_ghost_node.py
+app/ext/omodul/commission_new_location.py
+app/ext/omodul/create_crowd_intent.py
+app/ext/omodul_*.py
+
+# Core Schema (database DDL)
+app/ext/schema.py
+
+# Core Auth
+app/auth.py
+
+# Core Routing
+app/routers.py
+app/main.py
+
+# Core Inventory & Orders (Phase 1-7)
+app/inventory/*.py
+app/orders/*.py
+app/payments/*.py
+
+# ⚠️ 封板指令
+# Tag: v1.0.0-ghost-ignition
+# Date: 2026-08-03
+# Authority: 架构师
+#
+# 从此 Tag 起，CC 对上述路径仅有只读权限。
+# 任何修改必须通过:
+#   1. 创建 feature 分支
+#   2. 提交 Pull Request
+#   3. 至少 1 名人类工程师 Review 通过
+#   4. CI 测试全部通过 (328 tests, 0 failures)
+#
+# 违反此规则的提交将被 git hook 拒绝。
