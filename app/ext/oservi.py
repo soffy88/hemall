@@ -1438,7 +1438,7 @@ def build_competitor_spider_engine(
     # 每次 tick 落一行抓取状态 (Phase 7 Task 2 汇报口径: 真实请求数/解析数/
     # 有价数/入库数)，看板/日志直接核对爬虫是不是在空转。
     async def spider_tick_logged(**_: Any) -> dict[str, Any]:
-        result = await spider_tick(**_: Any)
+        result = await spider_tick()
         logger.info(
             "spider engine tick: scanned_variants=%s scanned_locations=%s calls=%s "
             "parsed=%s priced=%s written=%s",
@@ -1691,7 +1691,7 @@ def build_wechat_cert_rotation_engine(pool: Any, settings: Settings) -> CronSche
     cert_rotation_tick.__name__ = "cert_rotation_tick"
 
     async def cert_rotation_tick_logged(**_: Any) -> dict[str, Any]:
-        result = await cert_rotation_tick(**_: Any)
+        result = await cert_rotation_tick()
         logger.info("wechat cert rotation tick: %s", result)
         return result
 
