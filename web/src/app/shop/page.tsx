@@ -1,35 +1,42 @@
 'use client';
 
+/**
+ * /shop — 生鲜日用超市主页 (对标小象超市)
+ *
+ * 整个 shop 就是生鲜日用品类：
+ *   - 顶部搜索栏 + 分类胶囊条 (9 大分类横向滚动)
+ *   - 2 列商品网格: 真实图片 (shelf_image_url, emoji 兜底) + 名称 + 规格 +
+ *     划线价 + 现价 + 库存预警 + 加购
+ *   - ⚡ 极速抢入口: 附近微仓位置 Feed (不同模式, 保留为快捷入口)
+ */
+
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api-client';
-import { formatMoney } from '@/lib/format';
-import { getSelectedRegion } from '@/lib/region-store';
 import { productIcon, productGradient } from '@/lib/product-visual';
-import type { StorefrontProduct } from '@/types/api';
+import { useToast } from '@/components/Toast';
+import type { GroceryCategory, StorefrontProduct } from '@/types/api';
 
-type SortMode = 'default' | 'price_asc' | 'price_desc';
+// 分类图标映射 (后端只存 name/slug，图标前端映射)
+const CATEGORY_ICONS: Record<string, string> = {
+  vegetables: '🥬', fruits: '🍎', 'meat-eggs': '🥩', 'grain-oil': '🌾',
+  'dairy-bakery': '🥛', frozen: '🧊', snacks: '🍫', drinks: '🥤', daily: '🧻',
+};
 
 export default function ShopPage() {
+  const showToast = useToast();
   const [products, setProducts] = useState<StorefrontProduct[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeCat, setActiveCat] = useState<string>('all');
   const [search, setSearch] = useState('');
-  const [minPrice, setMinPrice] = useState('');
-  const [maxPrice, setMaxPrice] = useState('');
-  const [sort, setSort] = useState<SortMode>('default');
-  const [hotPicks, setHotPicks] = useState<StorefrontProduct[]>([]);
 
   async function load() {
     setLoading(true);
     try {
-      const data = await api.storeProducts({
-        search: search || undefined,
-        min_price: minPrice ? Math.round(Number(minPrice) * 100) : undefined,
-        max_price: maxPrice ? Math.round(Number(maxPrice) * 100) : undefined,
-      });
+      const data = await api.storeProducts({ limit: 200 });
       setProducts(data);
     } catch (e: any) {
-      console.error(e);
+      showToast(e.message || '加载失败');
     } finally {
       setLoading(false);
     }
@@ -37,207 +44,219 @@ export default function ShopPage() {
 
   useEffect(() => { load(); }, []);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [hot, catalog] = await Promise.all([
-          api.storeRecommendHot(8),
-          api.storeProducts({ limit: 200 }),
-        ]);
-        const byId = new Map(catalog.map((p) => [p.id, p]));
-        const resolved = hot.data.products
-          .map((r) => byId.get(r.product_id))
-          .filter((p): p is StorefrontProduct => Boolean(p));
-        setHotPicks(resolved);
-      } catch (e: any) {
-        console.error(e);
+  // 聚合分类 (按 category_id + 后端返回的分类名/图标映射)
+  const categories: GroceryCategory[] = useMemo(() => {
+    const map = new Map<string, GroceryCategory>();
+    for (const p of products) {
+      if (!p.category_id) continue;
+      if (!map.has(p.category_id)) {
+        const slug = p.category_slug ?? p.category_id;
+        map.set(p.category_id, {
+          id: p.category_id,
+          name: p.category_name ?? '分类',
+          slug,
+          icon: CATEGORY_ICONS[slug] ?? '🛒',
+          count: 0,
+        });
       }
-    })();
-  }, []);
-
-  const sortedProducts = useMemo(() => {
-    if (sort === 'default') return products;
-    const copy = [...products];
-    copy.sort((a, b) => {
-      const pa = a.min_price_cents ?? 0;
-      const pb = b.min_price_cents ?? 0;
-      return sort === 'price_asc' ? pa - pb : pb - pa;
+      map.get(p.category_id)!.count++;
+    }
+    // 保持 9 大分类的展示顺序
+    const order = Object.keys(CATEGORY_ICONS);
+    return Array.from(map.values()).sort((a, b) => {
+      const ia = order.indexOf(a.slug);
+      const ib = order.indexOf(b.slug);
+      if (ia === -1 && ib === -1) return 0;
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
     });
-    return copy;
-  }, [products, sort]);
+  }, [products]);
+
+  const filtered = useMemo(() => {
+    // 整个 shop 就是生鲜日用: 只显示有分类的商品 (数码等无分类不进超市视图)
+    let list = products.filter((p) => p.category_id);
+    if (activeCat !== 'all') {
+      list = list.filter((p) => p.category_id === activeCat);
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((p) => p.title.toLowerCase().includes(q));
+    }
+    return [...list].sort((a, b) => (a.min_price_cents ?? 0) - (b.min_price_cents ?? 0));
+  }, [products, activeCat, search]);
+
+  // 取商品首图 (batch.shelf_image_url → 第一个 media_assets → 兜底 emoji)
+  function productImage(p: StorefrontProduct): string | null {
+    const v = p.variants?.[0];
+    const b = v?.batches?.[0];
+    if (b?.shelf_image_url) return b.shelf_image_url;
+    if (b?.media_assets?.length) return b.media_assets[0];
+    return null;
+  }
+
+  // 取商品划线价 (variant.reference_price_cents 优先)
+  function referencePrice(p: StorefrontProduct): number | null {
+    const v = p.variants?.[0];
+    return v?.reference_price_cents ?? null;
+  }
+
+  function specOf(p: StorefrontProduct): string {
+    const ov = p.variants?.[0]?.option_values;
+    if (ov && typeof ov === 'object') {
+      const spec = (ov as Record<string, string>)['规格'];
+      if (spec) return spec;
+    }
+    return '';
+  }
+
+  function addToCart(p: StorefrontProduct) {
+    showToast(`已加入购物车: ${p.title}`);
+  }
 
   return (
-    <div>
-      {/* Hero */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-600 to-teal-600 text-white px-8 py-12 mb-10">
-        <div className="relative z-10 max-w-lg">
-          <h1 className="text-3xl font-bold tracking-tight">好物商城，一站买齐</h1>
-          <p className="mt-2 text-emerald-50/90">生鲜日用 · 数码好物，实时库存，多区域配送。</p>
-        </div>
-        <div className="pointer-events-none absolute -right-6 -bottom-10 text-[160px] opacity-20 select-none">🛍️</div>
-      </div>
-
-      {/* 生鲜日用超市入口 (对标小象超市) */}
-      <div className="mb-3">
-        <Link
-          href="/shop/market"
-          className="flex items-center justify-between rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-500 to-cyan-500 px-5 py-4 text-white shadow-lg transition-transform active:scale-[0.99]"
-        >
-          <div>
-            <div className="text-base font-black" style={{ fontSize: 22, fontWeight: 800 }}>
-              🥬 生鲜日用超市
-            </div>
-            <div className="text-xs text-emerald-50/90 font-medium">
-              9 大分类 · 蔬菜水果肉禽蛋 · 粮油乳品冷冻 · 真实价格
-            </div>
+    <div className="min-h-screen bg-gray-50">
+      {/* 顶部搜索栏 */}
+      <div className="sticky top-0 z-30 bg-emerald-700 px-4 pb-3 pt-4 shadow-lg">
+        <div className="flex items-center gap-2">
+          <div className="flex-1 rounded-full bg-white/95 px-4 py-2.5">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="🔍 搜索生鲜日用"
+              className="w-full bg-transparent text-[15px] outline-none"
+            />
           </div>
-          <span className="rounded-full bg-white/25 px-4 py-2 text-sm font-extrabold">
-            逛逛 →
-          </span>
-        </Link>
-      </div>
-
-      {/* 极速商城入口 (Phase 9: 扫码即买零层级交互) */}
-      <div className="mb-6">
-        <Link
-          href="/shop/feed"
-          className="flex items-center justify-between rounded-2xl bg-gradient-to-r from-red-600 via-orange-500 to-amber-500 px-5 py-4 text-white shadow-lg transition-transform active:scale-[0.99]"
-        >
-          <div>
-            <div className="text-base font-black" style={{ fontSize: 22, fontWeight: 800 }}>
-              ⚡ 极速商城
-            </div>
-            <div className="text-xs text-orange-100 font-medium">
-              附近微仓直供 · 暴降大卡 · 一键抢购
-            </div>
-          </div>
-          <span className="rounded-full bg-white/25 px-4 py-2 text-sm font-extrabold">
-            抢 →
-          </span>
-        </Link>
-      </div>
-
-      {/* Hot picks */}
-      {hotPicks.length > 0 && (
-        <section className="mb-10">
-          <h2 className="text-lg font-bold text-gray-900 mb-3">🔥 人气好物</h2>
-          <div className="flex gap-4 overflow-x-auto pb-2 -mx-1 px-1">
-            {hotPicks.map((p) => (
-              <Link
-                key={p.id}
-                href={`/shop/products/${p.id}`}
-                className="group shrink-0 w-44 bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition"
-              >
-                <div className={`aspect-square bg-gradient-to-br ${productGradient(p.id)} flex items-center justify-center text-4xl`}>
-                  {productIcon(p.title)}
-                </div>
-                <div className="p-3">
-                  <h3 className="text-sm font-medium text-gray-900 truncate group-hover:text-emerald-700 transition">
-                    {p.title}
-                  </h3>
-                  <div className="text-sm font-bold text-emerald-700 mt-1">
-                    {formatMoney(p.min_price_cents, getSelectedRegion()?.currency)}
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-6 items-end bg-white border border-gray-200 rounded-xl p-4">
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">搜索</label>
-          <input
-            type="text"
-            placeholder="搜索商品..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && load()}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-48"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">最低价</label>
-          <input
-            type="number"
-            placeholder="¥"
-            value={minPrice}
-            onChange={(e) => setMinPrice(e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-24"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">最高价</label>
-          <input
-            type="number"
-            placeholder="¥"
-            value={maxPrice}
-            onChange={(e) => setMaxPrice(e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-24"
-          />
-        </div>
-        <button onClick={load} className="px-4 py-2 bg-emerald-700 text-white rounded-lg text-sm hover:bg-emerald-800 transition">
-          筛选
-        </button>
-        <div className="ml-auto">
-          <label className="block text-xs text-gray-500 mb-1">排序</label>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortMode)}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+          <Link
+            href="/shop/feed"
+            className="shrink-0 rounded-full bg-amber-400 px-4 py-2.5 text-sm font-black text-emerald-900 active:scale-95"
           >
-            <option value="default">默认排序</option>
-            <option value="price_asc">价格从低到高</option>
-            <option value="price_desc">价格从高到低</option>
-          </select>
+            ⚡ 极速抢
+          </Link>
+        </div>
+
+        {/* 分类胶囊条 (横向滚动) */}
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <button
+            type="button"
+            onClick={() => setActiveCat('all')}
+            className={`shrink-0 rounded-full px-4 py-2 text-[13px] font-bold transition ${
+              activeCat === 'all'
+                ? 'bg-white text-emerald-700'
+                : 'bg-emerald-800/60 text-emerald-50'
+            }`}
+          >
+            🛒 全部 {filtered.length}
+          </button>
+          {categories.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setActiveCat(c.id)}
+              className={`shrink-0 rounded-full px-4 py-2 text-[13px] font-bold transition ${
+                activeCat === c.id
+                  ? 'bg-white text-emerald-700'
+                  : 'bg-emerald-800/60 text-emerald-50'
+              }`}
+            >
+              {c.icon} {c.name} {c.count}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Product Grid */}
-      {loading ? (
-        <div className="text-gray-500 py-12 text-center">加载中...</div>
-      ) : sortedProducts.length === 0 ? (
-        <div className="text-gray-400 py-12 text-center">暂无商品</div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {sortedProducts.map((p) => {
-            const lowStock = p.total_stock > 0 && p.total_stock <= 10;
-            return (
-              <Link
-                key={p.id}
-                href={`/shop/products/${p.id}`}
-                className="group bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg hover:-translate-y-0.5 transition"
-              >
-                <div className={`relative aspect-[4/3] bg-gradient-to-br ${productGradient(p.id)} flex items-center justify-center`}>
-                  <span className="text-4xl">{productIcon(p.title)}</span>
-                  {lowStock && (
-                    <span className="absolute top-2 right-2 text-[11px] font-semibold bg-amber-500 text-white rounded-full px-2 py-0.5">
-                      仅剩 {p.total_stock} 件
-                    </span>
-                  )}
-                </div>
-                <div className="p-4">
-                  <h3 className="font-semibold text-gray-900 group-hover:text-emerald-700 transition">
-                    {p.title}
-                  </h3>
-                  {p.description && (
-                    <p className="text-sm text-gray-500 mt-1 line-clamp-2">{p.description}</p>
-                  )}
-                  <div className="flex items-center justify-between mt-3">
-                    <span className="text-lg font-bold text-emerald-700">{formatMoney(p.min_price_cents, getSelectedRegion()?.currency)}</span>
-                    <span className="text-xs text-gray-400">{p.total_stock} 件可售</span>
+      {/* 商品网格 */}
+      <div className="mx-auto max-w-md px-3 pb-24 pt-3">
+        {loading ? (
+          <div className="flex justify-center py-16">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-emerald-600 border-t-transparent" />
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="py-16 text-center">
+            <div className="mb-2 text-5xl">🥬</div>
+            <p className="text-gray-500">该分类暂无商品</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            {filtered.map((p) => {
+              const img = productImage(p);
+              const ref = referencePrice(p);
+              const retail = p.min_price_cents ?? 0;
+              const stock = p.total_stock ?? 0;
+              const spec = specOf(p);
+              return (
+                <div
+                  key={p.id}
+                  className="group overflow-hidden rounded-2xl bg-white shadow-sm transition hover:shadow-md"
+                >
+                  {/* 图片区 */}
+                  <Link href={`/shop/products/${p.id}`} className="block">
+                    <div className="relative aspect-square w-full overflow-hidden">
+                      {img ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={img}
+                          alt={p.title}
+                          loading="lazy"
+                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <div className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${productGradient(p.id)}`}>
+                          <span className="text-5xl">{productIcon(p.title)}</span>
+                        </div>
+                      )}
+                      {stock <= 5 && stock > 0 && (
+                        <span className="absolute left-2 top-2 rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-black text-white">
+                          仅剩{stock}
+                        </span>
+                      )}
+                      {stock === 0 && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-sm font-black text-white">
+                          售罄
+                        </div>
+                      )}
+                    </div>
+                  </Link>
+
+                  {/* 信息区 */}
+                  <div className="p-2.5">
+                    <Link href={`/shop/products/${p.id}`} className="block">
+                      <h3 className="truncate text-[13px] font-semibold text-gray-800">
+                        {p.title}
+                      </h3>
+                      {spec && <div className="mt-0.5 text-[11px] text-gray-400">{spec}</div>}
+                    </Link>
+                    <div className="mt-1.5 flex items-baseline gap-1.5">
+                      <span
+                        className="font-black text-emerald-700"
+                        style={{ fontSize: 22, fontWeight: 800 }}
+                      >
+                        ¥{(retail / 100).toFixed(2)}
+                      </span>
+                      {ref && ref > retail && (
+                        <span className="text-[11px] text-gray-400 line-through">
+                          ¥{(ref / 100).toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => addToCart(p)}
+                      disabled={stock === 0}
+                      className="mt-2 w-full rounded-xl bg-emerald-600 py-2 text-sm font-bold text-white transition active:scale-95 disabled:bg-gray-200 disabled:text-gray-400"
+                    >
+                      {stock === 0 ? '已售罄' : '+ 加入购物车'}
+                    </button>
                   </div>
-                  {p.variants && p.variants.length > 1 && (
-                    <div className="text-xs text-gray-400 mt-1">{p.variants.length} 种规格可选</div>
-                  )}
                 </div>
-              </Link>
-            );
-          })}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
