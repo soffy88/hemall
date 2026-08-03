@@ -16,6 +16,7 @@ from app.ext.agent_gateway import (
     _extract_int,
     _extract_money,
     _extract_title,
+    _COMMAND_ENGINE,
     discover_tools,
     find_tool,
     route_command,
@@ -70,6 +71,13 @@ class TestExtractors:
 
 
 class TestRouteCommand:
+    def test_engine_contract_rules_default(self):
+        # 设计约定: 命令层默认永远是规则引擎 (LLM 是可选叠加, 不替换)
+        assert _COMMAND_ENGINE == "rules"
+        r = route_command("上架 丹东草莓 19.9元 30件")
+        assert r["engine"] == "rules"
+        assert route_command("随便说说")["engine"] == "rules"
+
     def test_route_上架(self):
         r = route_command("上架 丹东草莓 19.9元 30件")
         assert r["kind"] == "list_product"

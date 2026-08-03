@@ -879,16 +879,20 @@ async def agent_command(
     """自然语言命令: 手机发指令 (如"上架 西红柿 19.9 元 30 件")。
 
     规则意图匹配 → 自动提取参数 → 执行工具；返回路由 + 执行结果。
-    LLM 就绪后可替换为 tool-calling 编排 (与 /admin/agent-chat 同构)。
+    设计约定: 规则引擎永远是默认 (HEMALL_COMMAND_ENGINE=rules, 零依赖/可审计),
+    LLM 只作为可选叠加 (外部 Agent 走 /agent/execute 或以后接第二引擎), 不替换。
     """
-    from .ext.agent_gateway import execute_command
+    from .ext.agent_gateway import _COMMAND_ENGINE, execute_command
 
-    return await execute_command(
+    result = await execute_command(
         body.text,
         pool=_pool(request),
         out_root=_ext_bespoke_output_dir(request, "agent_command"),
         principal=principal,
     )
+    # 设计约定: 命令层默认规则引擎 (LLM 是可选叠加, 永不替换) — 响应统一带 engine
+    result.setdefault("engine", _COMMAND_ENGINE)
+    return result
 
 
 @ext_bespoke_router.post("/agent/ingest")

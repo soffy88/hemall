@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,6 +130,15 @@ async def execute_tool(
 # 然后由 execute_command 编排器按各 omodul 的真实 Input schema 组装参数
 # (缺 ID 的按商品名/最新记录从库解析), 避免"路由到工具但参数对不上"的断链。
 # LLM tool-calling 就绪后, 同一份 schema 可由 Hermes/Cindy 直接驱动。
+#
+# ── 设计约定: 规则引擎是默认, LLM 是可选 (永不替换) ────────────────
+# 店主偏好"能传视频、能上架商品就够了"的简单可靠路径; 复杂说法留给
+# Hermes/Cindy 等外部 Agent 走 /agent/execute (由 LLM 自己决策工具调用)。
+# 因此命令层默认永远是规则引擎 (零依赖/零成本/可审计), 绝不因引入 LLM
+# 而替换它。HEMALL_COMMAND_ENGINE 预留切换位: 若未来某部署想给手机指挥台
+# 加 LLM 理解, 只能作为"第二引擎"叠加, 且未配置时自动回退 rules。
+
+_COMMAND_ENGINE: str = os.environ.get("HEMALL_COMMAND_ENGINE", "rules").lower()
 
 
 #: 命令意图表: 关键词 → 命令种类
@@ -239,6 +249,7 @@ def route_command(text: str) -> dict[str, Any]:
                 return {
                     "kind": kind,
                     "tool": _KIND_TOOL[kind],
+                    "engine": _COMMAND_ENGINE,
                     "entities": {
                         "title": _extract_title(text),
                         "money_cents": _extract_money(text),
@@ -249,7 +260,7 @@ def route_command(text: str) -> dict[str, Any]:
                     "confidence": 0.8,
                     "matched_keyword": kw,
                 }
-    return {"kind": None, "tool": None, "entities": {}, "confidence": 0.0, "matched_keyword": None}
+    return {"kind": None, "tool": None, "engine": _COMMAND_ENGINE, "entities": {}, "confidence": 0.0, "matched_keyword": None}
 
 
 # ── 编排器: 实体 → 真实 omodul 参数 (缺 ID 从库解析) ─────────────────
@@ -364,6 +375,7 @@ async def execute_command(
         return {
             "status": "unrouted",
             "text": text,
+            "engine": routed["engine"],
             "hint": "未能理解命令，试试: 上架 / 调价 / 补货 / 结算 / 退款 / 下架 / 广播",
         }
 

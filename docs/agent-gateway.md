@@ -163,4 +163,9 @@ Hermes/Cindy 等 Agent ──┼─→  /agent/* (Agent Gateway, ADMIN JWT)
   接新业务能力零改动 (新 omodul 自动出现在 /agent/tools)。
 - 命令层是规则引擎 (可插拔 LLM tool-calling)；Hermes/Cindy 走
   `/agent/execute` 时是它们自己编排，命令层只服务手机指挥台。
+- **设计约定 (店主定): 规则引擎是默认, LLM 是可选, 永不替换。**
+  手机指挥台保持"能传视频、能上架商品"的简单可靠路径 (零依赖/零成本/
+  可审计, 每步 decision_trail)；要 LLM 理解时, 由外部 Agent (Hermes/Cindy)
+  经 `/agent/execute` 决策, 或未来把 `HEMALL_COMMAND_ENGINE` 配成第二引擎
+  (未配置时自动回退 rules, 不影响现有命令)。
 - 测试: `tests/test_phase95_agent_gateway.py` (27 用例)。
