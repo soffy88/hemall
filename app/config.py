@@ -58,6 +58,9 @@ class Settings(BaseSettings):
 
     # ── omodul 输出 (decision_trail / report 落盘) ─────────────────────
     output_root: Path = Path("./var/omodul_output")
+    # 根日志级别 (INFO/WARNING/DEBUG)。引擎 tick 状态日志 (爬虫/证书轮换)
+    # 依赖它不被 WARNING 默认值吞掉。
+    log_level: str = "INFO"
 
     # ── provider 装配 (obase.ProviderRegistry generic category) ────────
     # 规范名须与 bootstrap 注册名一致: payment/fulfillment="manual", search/notification="log", tax="flat"

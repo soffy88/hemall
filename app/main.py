@@ -409,6 +409,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """构建 FastAPI 应用。"""
+    # gunicorn 启动路径 (生产) 不走 __main__ 的 basicConfig, root logger 默认
+    # WARNING——引擎 tick 状态日志 (spider/证书轮换等 INFO 级) 会被吞。这里统一
+    # 按 Settings.log_level 配置, 开发/生产日志口径一致。
+    logging.basicConfig(level=get_settings().log_level.upper())
+
     app = FastAPI(
         title="hemall commerce backend",
         version=__version__,
