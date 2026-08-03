@@ -52,7 +52,9 @@ phase2 = [
     "elasticsearch>=8.12",
     "redis>=5.0",
     "firebase-admin>=6.0",
-    "apns2>=0.7",
+    # apns2 已于 2025-02 移除: 2020 年后未维护, 其 hyper 0.7 钉死
+    # hyperframe<4.0, 与 Py3.12 下 h2 4.x (hyperframe>=6) 根本冲突,
+    # 无法共存; push/providers.py 对 apns2 缺失做了优雅降级 (APNs disabled)。
 ]
 
 [tool.uv.sources]
