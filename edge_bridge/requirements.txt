@@ -1,0 +1,4 @@
+# clearnode-iot-bridge — 独立外挂依赖 (与 hemall 主干完全隔离)
+paho-mqtt>=2.0
+httpx>=0.27
+pydantic>=2.0

@@ -20,6 +20,9 @@ Dockerfile.prod
 docker-compose*.yml
 .dockerignore
 
+# Phase 10: IoT 边缘网桥独立外挂域——不进主干镜像 (有自己的 Dockerfile/依赖)
+edge_bridge/
+
 # Data & output
 var/omodul_output/
 var/shots/

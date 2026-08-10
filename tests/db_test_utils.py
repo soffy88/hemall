@@ -45,30 +45,41 @@ async def cleanup_db_test_rows(pool: Any) -> None:
     子表先行：凡 FK 指向 批次/节点/变体/商品/顾客/订单 的引用行全部清掉，
     再删主表。所有 DELETE 都带表存在性守卫——不同环境缺个别扩展表不炸。
     """
-    batches = (
-        "SELECT id FROM inventory_batch WHERE "
-        + " OR ".join(f"batch_no LIKE '{p}'" for p in BATCH_PATTERNS)
+    batches = "SELECT id FROM inventory_batch WHERE " + " OR ".join(
+        f"batch_no LIKE '{p}'" for p in BATCH_PATTERNS
     )
     locations = (
         "SELECT id FROM stock_location WHERE name IN ("
         + ", ".join(f"'{n}'" for n in LOCATION_NAMES)
         + ")"
     )
-    variants = (
-        "SELECT id FROM product_variant WHERE "
-        + " OR ".join(f"sku_code LIKE '{p}'" for p in VARIANT_PATTERNS)
+    variants = "SELECT id FROM product_variant WHERE " + " OR ".join(
+        f"sku_code LIKE '{p}'" for p in VARIANT_PATTERNS
     )
-    products = (
-        "SELECT id FROM product WHERE "
-        + " OR ".join(f"slug LIKE '{p}'" for p in PRODUCT_PATTERNS)
+    products = "SELECT id FROM product WHERE " + " OR ".join(
+        f"slug LIKE '{p}'" for p in PRODUCT_PATTERNS
     )
-    customers = (
-        "SELECT id FROM customer WHERE "
-        + " OR ".join(f"email LIKE '{p}'" for p in CUSTOMER_PATTERNS)
+    customers = "SELECT id FROM customer WHERE " + " OR ".join(
+        f"email LIKE '{p}'" for p in CUSTOMER_PATTERNS
     )
     orders = f"SELECT id FROM customer_order WHERE customer_id IN ({customers})"
 
     async with pool.acquire() as conn:
+        # 0. Phase 10 IoT 账本 (FK 批次; 按测试命名约定清) ——先于批次主表删除。
+        await _delete(
+            conn,
+            "hardware_event",
+            f"WHERE batch_id IN ({batches}) OR tote_id LIKE 'tote-%'",
+        )
+        await _delete(
+            conn,
+            "hardware_shelf",
+            f"WHERE batch_id IN ({batches}) OR node_id LIKE 'n-iot-%'",
+        )
+        await _delete(
+            conn, "hardware_gate", "WHERE node_id LIKE 'n-iot-%' OR gate_id LIKE 'g-%'"
+        )
+
         # 1. 批次/订单/顾客/变体/商品的直接子表 (先子后父)
         await _delete(
             conn,
@@ -120,10 +131,16 @@ async def cleanup_db_test_rows(pool: Any) -> None:
             f"WHERE tote_id IN (SELECT id FROM tote WHERE current_location_id IN ({locations}))",
         )
         await _delete(conn, "tote", f"WHERE current_location_id IN ({locations})")
-        await _delete(conn, "host_dividend_ledger", f"WHERE location_id IN ({locations})")
+        await _delete(
+            conn, "host_dividend_ledger", f"WHERE location_id IN ({locations})"
+        )
         await _delete(conn, "bounty_post", f"WHERE target_location_id IN ({locations})")
-        await _delete(conn, "digital_lord_contract", f"WHERE location_id IN ({locations})")
-        await _delete(conn, "product_safety_stock", f"WHERE location_id IN ({locations})")
+        await _delete(
+            conn, "digital_lord_contract", f"WHERE location_id IN ({locations})"
+        )
+        await _delete(
+            conn, "product_safety_stock", f"WHERE location_id IN ({locations})"
+        )
 
         # 3. 变体/商品/顾客子表
         await _delete(conn, "price_list_item", f"WHERE variant_id IN ({variants})")

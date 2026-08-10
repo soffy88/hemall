@@ -343,6 +343,66 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
         ],
     ),
+    # ── Phase 10: IoT 边缘网桥防腐层 (ACL) 账本 ──────────────────────
+    # clearnode-iot-bridge 网桥把物理世界 (MQTT: 重力货架 pick / 闸口称重)
+    # 翻译成结构化 HTTP 指令打进主干；这三张表是主干侧唯一的硬件痕迹。
+    # 主干不碰 MQTT/QoS/断线重连——那是网桥域的职责，这里只认标准 payload。
+    #
+    # hardware_event: 硬件事件账本 (pick/gate)。message_id 由网桥生成、
+    # UNIQUE 约束物理防重——网桥重试/重发不会让同一物理事件被处理两次。
+    # batch_id/qty_delta 是网桥 payload 提纯后的商业字段，供闸口对账状态机
+    # 直接 SUM 算期望重量。
+    (
+        "hardware_event",
+        [
+            ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+            ("message_id", "VARCHAR(64) NOT NULL UNIQUE"),
+            ("event_type", "VARCHAR(20) NOT NULL"),  # 'pick' | 'gate'
+            ("node_id", "VARCHAR(32)"),
+            ("shelf_id", "VARCHAR(32)"),
+            ("tote_id", "VARCHAR(32)"),
+            ("batch_id", "UUID REFERENCES inventory_batch(id)"),
+            ("qty_delta", "INT DEFAULT 0"),
+            ("unit_weight_grams", "INT DEFAULT 0"),
+            ("payload", "JSONB"),
+            ("status", "VARCHAR(20) DEFAULT 'processed'"),  # processed|orphan|duplicate
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+        ],
+    ),
+    # hardware_shelf: 物理货架位 → 商业批次映射 (网桥 payload 只有 node/shelf
+    # 坐标，商业归属 (哪个批次、单件多重) 由主干侧维护，网桥不感知)。
+    # (node_id, shelf_id) 复合唯一约束见 _ensure_hardware_shelf_unique_index。
+    (
+        "hardware_shelf",
+        [
+            ("shelf_id", "VARCHAR(32) NOT NULL"),
+            ("node_id", "VARCHAR(32) NOT NULL"),
+            ("batch_id", "UUID REFERENCES inventory_batch(id) NOT NULL"),
+            ("unit_weight_grams", "INT NOT NULL"),
+            ("status", "VARCHAR(20) DEFAULT 'active'"),
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+        ],
+    ),
+    # hardware_gate: 闸口对账状态机。expected_weight = tare + 该 tote 在
+    # 上次放行后所有 pick 事件累加的 qty*unit；reconcile 时与 raw 比较。
+    # 状态流转: idle → (pick 累计) → reconcile → pass(重置 tare/放行) |
+    # recheck(黄灯复核) | block(红灯拦截)。
+    (
+        "hardware_gate",
+        [
+            ("gate_id", "VARCHAR(32) PRIMARY KEY"),
+            ("node_id", "VARCHAR(32)"),
+            ("tote_id", "VARCHAR(32)"),
+            ("tare_weight_grams", "INT NOT NULL DEFAULT 0"),
+            ("expected_weight_grams", "INT NOT NULL DEFAULT 0"),
+            ("tolerance_grams", "INT NOT NULL DEFAULT 20"),
+            ("last_raw_weight_grams", "INT"),
+            ("last_pass_at", "TIMESTAMPTZ"),
+            ("status", "VARCHAR(20) DEFAULT 'idle'"),  # idle|recheck|blocked
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+            ("updated_at", "TIMESTAMPTZ"),
+        ],
+    ),
 ]
 
 _INDEXES: list[tuple[str, str, str]] = [
@@ -376,6 +436,14 @@ _INDEXES: list[tuple[str, str, str]] = [
     ("digital_lord_contract", "idx_digital_lord_status", "location_id, status"),
     # Phase 9: 购物车 TTL 锁的可用量校验 + 过期清扫都用 (batch_id, locked_until)
     ("cart_lock", "idx_cart_lock_batch", "batch_id, locked_until"),
+    # Phase 9 (补天): Feed 流按批次快速拉取战报 (含 24h 窗口过滤 → created_at)。
+    # 该索引在 v1.1.0 封板时遗漏，Phase 10 补回。
+    ("batch_battle_report", "idx_battle_report_batch", "batch_id, created_at"),
+    # Phase 10: 闸口对账状态机按 tote 聚合 pick 事件算期望重量；孤儿队列
+    # 按 node/shelf 盘点。
+    ("hardware_event", "idx_hardware_event_tote", "tote_id, created_at"),
+    ("hardware_event", "idx_hardware_event_orphan", "node_id, shelf_id, status"),
+    ("hardware_gate", "idx_hardware_gate_tote", "tote_id"),
 ]
 
 
@@ -550,6 +618,22 @@ async def ensure_ext_schema(pool: PgPool) -> None:
     await _ensure_price_benchmark_raw_item_name_column(pool)
     await _ensure_channel_broadcast_unique_index(pool)
     await _ensure_affiliate_contract_unique_index(pool)
+    await _ensure_hardware_shelf_unique_index(pool)
+
+
+async def _ensure_hardware_shelf_unique_index(pool: PgPool) -> None:
+    """CREATE UNIQUE INDEX IF NOT EXISTS——同一物理货架位只能绑一个批次。
+
+    obase.persistence.ddl.ensure_index 不支持 UNIQUE，跟
+    _ensure_channel_broadcast_unique_index 同套路单独写幂等 DDL。
+    (node_id, shelf_id) 是硬件侧唯一的物理坐标，重复绑定会让 pick 事件的
+    商业归属歧义 (同一货架位两个批次，qty_delta 算到谁头上？)。
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'CREATE UNIQUE INDEX IF NOT EXISTS "idx_hardware_shelf_node_shelf" '
+            'ON "public"."hardware_shelf" (node_id, shelf_id)'
+        )
 
 
 async def _ensure_affiliate_contract_unique_index(pool: PgPool) -> None:

@@ -29,6 +29,7 @@ from .ext.agent_gateway import (
     execute_tool,
     ingest_media,
 )
+from .ext.hardware_webhook import router as hardware_webhook_router
 from .ext.oskill import (
     compute_batch_affinity_scores,
     find_nearest_location,
@@ -1014,6 +1015,10 @@ _EXT_BESPOKE_PUBLIC_PATHS = {
     "/store/pickup-ticket",
     "/growth/douyin_callback",
     "/store/batches/{batch_id}/battle-reports",
+    # Phase 10: IoT 边桥防腐层端点 (自带 HARDWARE_SECRET Bearer 鉴权，
+    # 按公开路径纳入限流防刷——防的是网桥侧凭据泄露后的刷量，不是登录)。
+    "/ext/hardware/webhook/pick",
+    "/ext/hardware/webhook/gate-reconcile",
 }
 
 
@@ -1038,6 +1043,7 @@ def build_router() -> APIRouter:
     router.include_router(storefront_router)
     router.include_router(admin_read_router)
     router.include_router(ext_bespoke_router)
+    router.include_router(hardware_webhook_router)
 
     for spec in all_endpoint_specs():
         router.add_api_route(

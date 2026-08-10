@@ -95,7 +95,7 @@ def compute_delivery_sla(
         {"shipping_type": "wave"|"express"|"pickup", "promised_at": datetime,
          "lead_minutes": int, "compensation_cents": int}
     """
-    from datetime import datetime, timedelta, time as dtime
+    from datetime import timedelta
 
     if paid_at is None:
         paid_at = now
@@ -124,7 +124,7 @@ def compute_delivery_sla(
 
 def _next_wave_at(now: Any) -> Any:
     """下一班车时间：当天 10:00/16:00 之后最近的一个波次点。"""
-    from datetime import datetime, timedelta, time as dtime
+    from datetime import timedelta
 
     for hour in WAVE_SCHEDULE_HOURS:
         candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
@@ -1223,4 +1223,90 @@ def calculate_battle_report_reward(has_image: bool) -> int:
     if has_image:
         reward += _BATTLE_REPORT_IMAGE_BONUS_CENTS
     return reward
+
+
+# ── Phase 10: IoT 边桥防腐层的物理→商业算子 ─────────────────────────────
+# 纯内存计算，把重力传感器的原始读数翻译成商业决策。网桥 (MQTT 域) 不感知
+# 商业语义，主干 (hemall) 不感知 MQTT——这些函数是两者在数值层面的咬合点。
+
+
+def compute_cart_delta(delta_weight_grams: int, unit_weight_grams: int) -> int:
+    """重力货架读数的增量 → 购物车数量增量 (可负：顾客把货放回)。
+
+    ESP32 重力货架上报 delta_weight (拿走为负、放回为正)，单件标准重
+    unit_weight 来自 hardware_shelf 映射。qty = round(delta / unit)——
+    称重有噪声，round 到最近整数件，不累积小数。
+
+    Args:
+        delta_weight_grams: 重量变化 (克)，可负。
+        unit_weight_grams: 单件标准重 (克)，必须为正。
+
+    Returns:
+        数量增量 (整数，可负)。
+
+    Raises:
+        ValueError: unit_weight_grams 非正。
+    """
+    if unit_weight_grams <= 0:
+        raise ValueError("compute_cart_delta: unit_weight_grams must be positive")
+    return int(round(delta_weight_grams / unit_weight_grams))
+
+
+def decide_gate_reconcile(
+    raw_weight_grams: int, expected_weight_grams: int, tolerance_grams: int
+) -> str:
+    """闸口对账裁决：实测重量 vs 期望重量 (tare + 已拣货累计)，三档判决。
+
+    - |raw - expected| <= tolerance → "pass"   (绿：对账一致，放行)
+    - <= tolerance * 2                          → "recheck" (黄：超差但可复核)
+    - 否则                                      → "block"   (红：对不上，拦截)
+
+    Args:
+        raw_weight_grams: 闸口实测重量 (克)。
+        expected_weight_grams: 期望重量 (克)。
+        tolerance_grams: 公差 (克)，非负。
+
+    Returns:
+        "pass" / "recheck" / "block"。
+
+    Raises:
+        ValueError: tolerance_grams 为负。
+    """
+    if tolerance_grams < 0:
+        raise ValueError("decide_gate_reconcile: tolerance_grams must be non-negative")
+
+    deviation = abs(raw_weight_grams - expected_weight_grams)
+    if deviation <= tolerance_grams:
+        return "pass"
+    if deviation <= tolerance_grams * 2:
+        return "recheck"
+    return "block"
+
+
+def compute_tare_adjustment(
+    raw_weight_grams: int, expected_weight_grams: int, max_tare_drift_grams: int
+) -> int:
+    """放行后的皮重漂移补偿：把残差吸收进 tare，但封顶防单次大幅跳变。
+
+    对账一致 (pass) 时 raw 与 expected 的微小残差来自托盘/筐体本身的物理
+    漂移 (温差、残留)。把残差 clamp 到 [-max_tare_drift, +max_tare_drift]
+    后并入 tare——闸口长期不用人工校零。
+
+    Args:
+        raw_weight_grams: 实测重量 (克)。
+        expected_weight_grams: 期望重量 (克)。
+        max_tare_drift_grams: 单次允许的最大皮重调整 (克)，非负。
+
+    Returns:
+        皮重调整量 (克，可负)，绝对值不超过 max_tare_drift_grams。
+
+    Raises:
+        ValueError: max_tare_drift_grams 为负。
+    """
+    if max_tare_drift_grams < 0:
+        raise ValueError(
+            "compute_tare_adjustment: max_tare_drift_grams must be non-negative"
+        )
+    drift = raw_weight_grams - expected_weight_grams
+    return round(max(-max_tare_drift_grams, min(max_tare_drift_grams, drift)))
 

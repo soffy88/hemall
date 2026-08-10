@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # 生产环境必须用 HEMALL_WEBHOOK_SECRET 覆盖，与抖音/支付网关侧配置一致。
     webhook_secret: str = "dev-webhook-secret-change-me"
 
+    # ── Phase 10: IoT 边桥防腐层专属密钥 (网桥 Bearer 凭据) ───────────
+    # clearnode-iot-bridge (edge_bridge/) 调 /ext/hardware/webhook/* 时携带
+    # Authorization: Bearer <此值>。与顾客/admin JWT 完全正交，机器对机器。
+    hardware_secret: str = "dev-hardware-secret-change-me"
+
     # ── 补天计划 Task 2 / P0 冲刺: 真实收款网关 (微信 Native / Stripe) ──
     # provider: manual | wechat | stripe。沙盒/生产无缝切换 = 改这一个变量 +
     # 对应密钥，bootstrap 按此注册；真实密钥缺失时诚实回退 manual。

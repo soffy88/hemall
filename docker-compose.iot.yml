@@ -1,0 +1,41 @@
+# Phase 10: IoT 边缘网桥独立外挂编排 (docker compose 扩展文件)
+#
+# 不修改原有的 docker-compose.yml——用扩展编排文件把 EMQX 中间件 +
+# clearnode-iot-bridge 网桥注入与主干同一项目网络 (合并后所有服务共享
+# compose 默认网络 <project>_default；主干服务名是 app，不是 hemall-api——
+# 这是相对 SPEC 模板的唯一适配点)。
+#
+# 用法:
+#   HARDWARE_SECRET=<与 hemall 的 HEMALL_HARDWARE_SECRET 一致> \
+#     docker compose -f docker-compose.yml -f docker-compose.iot.yml up -d
+
+services:
+  # 1. 轻量开源 MQTT Broker (物理硬件入口)
+  emqx:
+    image: emqx:5.3
+    container_name: hemall-emqx
+    ports:
+      - "1883:1883"    # 物理车库硬件 MQTT 端口
+      - "18083:18083"  # EMQX Dashboard (admin/public)
+    restart: unless-stopped
+
+  # 2. 独立外挂网桥 (MQTT → HTTP 防腐层)
+  iot-bridge:
+    build:
+      context: ./edge_bridge
+    container_name: hemall-iot-bridge
+    environment:
+      - MQTT_BROKER=emqx
+      - HEMALL_API_URL=http://app:8000/ext/hardware/webhook
+      - HARDWARE_SECRET=${HARDWARE_SECRET:?set HARDWARE_SECRET in .env}
+      - DLQ_PATH=/data/dlq.sqlite
+      - LOG_LEVEL=INFO
+    volumes:
+      - bridge-dlq:/data   # 死信队列持久化：网桥重启不丢硬件事件
+    depends_on:
+      - emqx
+      - app                 # 必须等主干启动
+    restart: unless-stopped
+
+volumes:
+  bridge-dlq:
