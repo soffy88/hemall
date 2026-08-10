@@ -55,6 +55,7 @@ async def ensure_redis_connected(redis_url: str) -> None:
     global _redis_connected
     try:
         import redis.asyncio as redis
+
         client = redis.from_url(redis_url)
         await client.ping()
         await client.close()
@@ -68,6 +69,7 @@ async def ensure_redis_connected(redis_url: str) -> None:
 async def get_redis_connection(redis_url: str) -> Any:
     """获取 Redis 连接 (简单封装，实际应用中应使用连接池)。"""
     import redis.asyncio as redis
+
     return redis.from_url(redis_url)
 
 
@@ -102,6 +104,12 @@ def get_current_user(
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
+    if payload.get("typ") == "customer":
+        # 顾客 token (get_current_customer 签发, typ=customer) 不能当员工/管理员
+        # 主体使用——否则任何登录顾客都能过 /admin/* 与 /agent/* 鉴权 (越权)。
+        raise HTTPException(
+            status_code=401, detail="customer token not valid for staff endpoints"
+        )
     return {
         "user_id": payload.get("sub"),
         "email": payload.get("email"),

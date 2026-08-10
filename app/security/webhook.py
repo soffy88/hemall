@@ -66,9 +66,7 @@ def verify_hmac_sha256(
     if not signature or not secret:
         return False
 
-    expected = hmac.new(
-        secret.encode("utf-8"), payload, hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature.lower(), expected):
         return False
 
@@ -84,15 +82,37 @@ def verify_hmac_sha256(
         cache = _seen_nonces if _seen_nonces is not None else _NONCE_CACHE
         if nonce in cache:
             return False
-        if len(cache) >= _NONCE_MAX:
-            cache.clear()
         cache.add(nonce)
 
     return True
 
 
-#: 进程内 nonce 去重集 (简单 LRU：满则整体清空，见 verify_hmac_sha256)。
-_NONCE_CACHE: set[str] = set()
+class _BoundedNonceCache:
+    """有界 FIFO 去重集：容量满后逐个淘汰最旧 nonce (而非整体清空)。
+
+    整体 clear() 会让所有刚见过、仍在 ±300s 重放窗口内的 nonce 一次性
+    失忆、可被重放；逐个淘汰只丢最老的一个, 绝大多数仍在窗口内的 nonce
+    继续受去重保护。dict 自 3.7 起保证插入序, 借它实现 O(1) FIFO。
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = maxsize
+        self._data: dict[str, None] = {}
+
+    def __contains__(self, nonce: str) -> bool:
+        return nonce in self._data
+
+    def add(self, nonce: str) -> None:
+        if len(self._data) >= self._maxsize:
+            self._data.pop(next(iter(self._data)))
+        self._data[nonce] = None
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+#: 进程内 nonce 去重集 (有界 FIFO，见 _BoundedNonceCache)。
+_NONCE_CACHE = _BoundedNonceCache(_NONCE_MAX)
 
 
 class WebhookSignatureMiddleware:

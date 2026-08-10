@@ -19,10 +19,11 @@ Phase 0 新增:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +63,7 @@ from .risk.router import router as risk_router
 from .ai_assistant.router import router as ai_router
 from .ai_assistant.models import AIConfig
 from .ai_assistant.service import AIAssistantService
+
 # Phase 8 Task 2: LLM 智能体运维中枢
 from .ext.admin_agent_chat import router as agent_chat_router
 
@@ -298,14 +300,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("RiskEngine init failed: %s", exc)
 
-    # Phase 3: 初始化分析服务
-    try:
-        _app_state.analytics_service = AnalyticsService(settings.clickhouse_url)
-        if app.state.pool is not None:
-            await _app_state.analytics_service.initialize(app.state.pool)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("AnalyticsService init failed: %s", exc)
-
     # Phase 3: 初始化国际化服务
     try:
         _app_state.translation_manager = TranslationManager()
@@ -314,7 +308,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("i18n services init failed: %s", exc)
 
-    # Phase 4+: 初始化 AI 助手服务
+    metrics_task: asyncio.Task | None = None
+    try:
+        app.state.pool, metrics_task = await init_db(settings)
+    except Exception as exc:  # noqa: BLE001 - DB 不可达不阻止应用启动
+        logger.warning(
+            "database unavailable at startup; DB-backed endpoints will return 503: %s",
+            exc,
+        )
+        app.state.pool = None
+
+    # Phase 0: 更新全局状态供 health 模块访问
+    _app_state.pool = app.state.pool
+
+    # Phase 3: 初始化分析服务 (依赖 app.state.pool, 须在 init_db 之后)
+    try:
+        _app_state.analytics_service = AnalyticsService(settings.clickhouse_url)
+        if app.state.pool is not None:
+            await _app_state.analytics_service.initialize(app.state.pool)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AnalyticsService init failed: %s", exc)
+
+    # Phase 4+: 初始化 AI 助手服务 (依赖 app.state.pool, 须在 init_db 之后)
     try:
         ai_config = AIConfig(
             provider=settings.ai_provider,
@@ -333,18 +348,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _app_state.ai_service.initialize(app.state.pool)
     except Exception as exc:  # noqa: BLE001
         logger.warning("AI Assistant Service init failed: %s", exc)
-
-    try:
-        app.state.pool = await init_db(settings)
-    except Exception as exc:  # noqa: BLE001 - DB 不可达不阻止应用启动
-        logger.warning(
-            "database unavailable at startup; DB-backed endpoints will return 503: %s",
-            exc,
-        )
-        app.state.pool = None
-
-    # Phase 0: 更新全局状态供 health 模块访问
-    _app_state.pool = app.state.pool
 
     # Phase 3: 用真实商城目录数据灌入推荐引擎 (否则 /recommend/* 一直返回空列表)
     if app.state.pool is not None and _app_state.recommend_service is not None:
@@ -383,6 +386,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if oservi is not None:
         oservi.stop()
         logger.info("ext oservi cron engines stopped (best-effort)")
+
+    if metrics_task is not None:
+        metrics_task.cancel()
 
     pool = getattr(app.state, "pool", None)
     if pool is not None:
@@ -442,7 +448,7 @@ def create_app() -> FastAPI:
     app.add_middleware(MetricsMiddleware)
     app.add_middleware(LoggingMiddleware)
 
-# Phase 0 Week 2: 审计日志中间件 (记录写操作到数据库)
+    # Phase 0 Week 2: 审计日志中间件 (记录写操作到数据库)
     app.add_middleware(AuditMiddleware)
 
     # 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (最后添加 = 最外层网关)。
@@ -488,7 +494,9 @@ def create_app() -> FastAPI:
     # 实际保存路径: <output_root>/ext_bespoke/agent_ingest/agent_ingest/<user>/<file>
     ingest_root = settings.output_root / "ext_bespoke" / "agent_ingest" / "agent_ingest"
     ingest_root.mkdir(parents=True, exist_ok=True)
-    app.mount("/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest")
+    app.mount(
+        "/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest"
+    )
 
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)

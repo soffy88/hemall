@@ -116,11 +116,15 @@ def _require_admin(request: Request) -> None:
     token = auth_header.removeprefix("Bearer ")
     cfg = request.app.state.config
     try:
-        CryptoUtil.jwt_decode(
+        payload = CryptoUtil.jwt_decode(
             token=token, secret=cfg.jwt_secret, algorithm=cfg.jwt_algorithm
         )
     except Exception:
         raise HTTPException(401, "invalid token")
+    if payload.get("typ") == "customer":
+        # 顾客 token 不能当管理员主体使用 (跟 get_current_user 同一道校验，
+        # 防止任何登录顾客的 token 越权访问 /admin/* 读端点)。
+        raise HTTPException(401, "customer token not valid for admin endpoints")
 
 
 def _pool(request: Request) -> Any:
@@ -478,7 +482,9 @@ async def get_nearby_feed(
     lat: float,
     lon: float,
     limit: int = Query(50, ge=1, le=100),
-    customer_id: str | None = Query(None, description="已登录顾客 id (零登录可省略，省略时 user_system_balance=0)"),
+    customer_id: str | None = Query(
+        None, description="已登录顾客 id (零登录可省略，省略时 user_system_balance=0)"
+    ),
 ):
     """位置 Feed 流 v9.0 (BFF 做市量化契约)：“人找货”到“地理位置找货”的彻底反转。
 
@@ -506,7 +512,12 @@ async def get_nearby_feed(
         )
     if not locations:
         return {
-            "location_context": {"node_id": None, "node_name": None, "distance_meters": None, "user_system_balance": 0},
+            "location_context": {
+                "node_id": None,
+                "node_name": None,
+                "distance_meters": None,
+                "user_system_balance": 0,
+            },
             "feed_items": [],
             "nearest_location": None,
             "batches": [],
@@ -528,7 +539,9 @@ async def get_nearby_feed(
             )
             user_system_balance = int(bal_row or 0)
 
-    safety_cutoff = datetime.now(UTC) + timedelta(hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS)
+    safety_cutoff = datetime.now(UTC) + timedelta(
+        hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS
+    )
     async with pool.acquire() as conn:
         batches = await conn.fetch(
             "SELECT b.id, b.variant_id, b.retail_price_cents, b.stock_qty, "
@@ -623,7 +636,9 @@ async def get_nearby_feed(
             velocity_by_batch.get(str(enriched["id"]), 0)
         )
         # 可用量 = 物理库存 - 结算期硬锁
-        available = int(enriched.get("stock_qty") or 0) - int(enriched.get("reserved_qty") or 0)
+        available = int(enriched.get("stock_qty") or 0) - int(
+            enriched.get("reserved_qty") or 0
+        )
         enriched["stock_qty"] = max(0, available)
         feed_items.append(build_feed_item(enriched))
 
@@ -647,9 +662,13 @@ async def get_nearby_feed(
                 "title": row["title"],
                 "sku_code": row["sku_code"],
                 "retail_price_cents": row["retail_price_cents"],
-                "stock_qty": max(0, int(row["stock_qty"]) - int(row.get("reserved_qty") or 0)),
+                "stock_qty": max(
+                    0, int(row["stock_qty"]) - int(row.get("reserved_qty") or 0)
+                ),
                 "expiration_time": (
-                    row["expiration_time"].isoformat() if row["expiration_time"] else None
+                    row["expiration_time"].isoformat()
+                    if row["expiration_time"]
+                    else None
                 ),
                 "video_url": row["video_url"],
                 "location_name": row["location_name"],
@@ -774,9 +793,9 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
     pool = _pool(request)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            'SELECT o.id, o.status, o.grand_total_cents '
+            "SELECT o.id, o.status, o.grand_total_cents "
             'FROM "customer_order" o '
-            'WHERE o.id = $1',
+            "WHERE o.id = $1",
             body.order_id,
         )
     if row is None:

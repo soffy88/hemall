@@ -63,9 +63,7 @@ def register_providers(settings: Settings) -> None:
     # (wechat/stripe) 平行替换：build_payment_gateway 按 HEMALL_PAYMENT_GATEWAY_PROVIDER
     # 装配，密钥缺失诚实回退 manual；始终保留 manual 名兼容旧调用点。
     gateway_provider, gateway = build_payment_gateway(settings)
-    reg.register_generic(
-        "payment_gateway", gateway_provider, gateway, replace=True
-    )
+    reg.register_generic("payment_gateway", gateway_provider, gateway, replace=True)
     if gateway_provider != "manual":
         reg.register_generic(
             "payment_gateway", "manual", ManualPaymentGateway(), replace=True
@@ -89,8 +87,12 @@ def register_providers(settings: Settings) -> None:
     )
 
 
-async def init_db(settings: Settings) -> PgPool:
+async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
     """创建命名连接池并幂等建齐商务表。DB 不可达时向上抛, 由调用方决定降级。
+
+    返回 (pool, metrics_task) —— 后台指标更新任务的引用交回调用方, 使其能在
+    应用关停时显式 cancel (否则 lifespan 结束后这个 while True 循环永远不退,
+    进程内泄漏一个协程任务)。
 
     并发保护: 生产环境 gunicorn 多 worker 同时启动时, 每个 worker 都会执行
     schema 初始化。PostgreSQL 的 CREATE TABLE IF NOT EXISTS 在并发场景下存在
@@ -118,36 +120,46 @@ async def init_db(settings: Settings) -> PgPool:
             from .security.audit import AUDIT_LOG_DDL
             from .payments.models import PAYMENT_SESSION_DDL
 
-            await _ensure_security_payment_schema(pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL)
+            await _ensure_security_payment_schema(
+                pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL
+            )
 
             # Phase 1: 库存管理表结构
             from .inventory.models import STOCK_MOVEMENT_DDL
+
             await _ensure_inventory_schema(pool, STOCK_MOVEMENT_DDL)
 
             # Phase 1: 订单生命周期表结构
             from .orders.models import ORDER_LIFECYCLE_DDL
+
             await _ensure_order_lifecycle_schema(pool, ORDER_LIFECYCLE_DDL)
         finally:
             await lock_conn.execute("SELECT pg_advisory_unlock($1)", SCHEMA_LOCK_ID)
-    
+
     # Phase 0: 更新 DB 连接池指标
     async def update_metrics():
         while True:
             try:
-                used = len(pool._used_connections) if hasattr(pool, '_used_connections') else 0
-                update_db_pool_metrics(settings.pg_pool_name, settings.pg_pool_max, used)
+                used = (
+                    len(pool._used_connections)
+                    if hasattr(pool, "_used_connections")
+                    else 0
+                )
+                update_db_pool_metrics(
+                    settings.pg_pool_name, settings.pg_pool_max, used
+                )
             except Exception as e:
                 logger.warning("Failed to update DB pool metrics: %s", e)
             await asyncio.sleep(10)  # 每 10 秒更新一次
-    
+
     # 启动后台任务更新指标
-    asyncio.create_task(update_metrics())
-    
+    metrics_task = asyncio.create_task(update_metrics())
+
     logger.info(
         "database pool '%s' ready; commerce + ext schema ensured",
         settings.pg_pool_name,
     )
-    return pool
+    return pool, metrics_task
 
 
 async def _ensure_hemall_local_schema(pool: PgPool) -> None:
