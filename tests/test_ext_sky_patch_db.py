@@ -37,16 +37,40 @@ async def cn_pool():
     reg.register_generic("payment", "manual", ManualPaymentProvider(), replace=True)
     reg.register_generic("payout", "manual", ManualPayoutProvider(), replace=True)
     reg.register_generic("notification", "log", LogNotificationProvider(), replace=True)
+    # 竞对爬虫引擎默认用 provider 名 "layered" (见 oservi.build_competitor_spider_
+    # engine)，这里把同一个 ManualSpiderProvider 实例同时注册到 manual/layered
+    # 两个名字下——set_results 覆写的是实例内部状态，无论引擎按哪个名字取都能
+    # 命中同一份注入结果。
     spider = ManualSpiderProvider()
     reg.register_generic("spider", "manual", spider, replace=True)
+    reg.register_generic("spider", "layered", spider, replace=True)
 
     pool = await PgPool.create(
         name="hemall_skypatch_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
+    from db_test_utils import cleanup_db_test_rows
+
+    await cleanup_db_test_rows(pool)
     await ensure_ext_schema(pool)
     pool._test_spider = spider  # type: ignore[attr-defined]
     yield pool
     await pool.close()
+
+
+async def _spider_scan_budget(pool) -> int:
+    """按当前库规模计算爬虫引擎单 tick 扫描预算 (节点 × SKU + 余量)。
+
+    共享 TEST_PG_DSN 上其他套件也会累积节点/商品；把 max_calls_per_tick 设成
+    现存全部 active 节点 × 全部 active 变体，保证本次注入的坐标无论如何都会
+    被扫到，测试与数据库年龄解耦。
+    """
+    async with pool.acquire() as conn:
+        counts = await conn.fetchrow(
+            "SELECT "
+            "(SELECT count(*) FROM stock_location WHERE status = 'active') AS locs, "
+            "(SELECT count(*) FROM product_variant WHERE status = 'active') AS vars"
+        )
+    return int(counts["locs"]) * int(counts["vars"]) + 10
 
 
 async def _make_variant(
@@ -63,7 +87,10 @@ async def _make_variant(
             lon,
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,$2,$3,'active') RETURNING id",
+            # 竞对爬虫引擎只扫 product.status='published' 的商品 (商城口径，见
+            # oservi.build_competitor_spider_engine 的注释)——测试种数据用 active
+            # 会永远扫 0 个 SKU。
+            "INSERT INTO product (id, title, slug, status) VALUES ($1,$2,$3,'published') RETURNING id",
             uuid7(),
             title,
             f"skypatch-slug-{uuid7()}",
@@ -118,8 +145,12 @@ async def _nearby_feed(pool, *, lat: float, lon: float, limit: int = 50) -> dict
     class _FakeRequest:
         def __init__(self, pool):
             self.app = type("App", (), {"state": type("S", (), {"pool": pool})()})()
+            # 路由处理函数读 x-device-id 做行为序列加权——空 dict 等价于无设备。
+            self.headers: dict[str, str] = {}
 
-    return await get_nearby_feed(_FakeRequest(pool), lat=lat, lon=lon, limit=limit)
+    return await get_nearby_feed(
+        _FakeRequest(pool), lat=lat, lon=lon, limit=limit, customer_id=None
+    )
 
 
 # ── Task 2.1: 位置 Feed ────────────────────────────────────────────────────
@@ -165,9 +196,7 @@ async def test_nearby_feed_returns_only_safe_active_batches(cn_pool):
 
 
 @pytest.mark.asyncio
-async def test_scrap_batch_inventory_zeroes_stock(cn_pool):
-    from pathlib import Path
-
+async def test_scrap_batch_inventory_zeroes_stock(cn_pool, tmp_path):
     from app.ext.omodul.scrap_batch_inventory import (
         ScrapBatchInventoryConfig,
         ScrapBatchInventoryInput,
@@ -187,7 +216,7 @@ async def test_scrap_batch_inventory_zeroes_stock(cn_pool):
     result = await scrap_batch_inventory(
         ScrapBatchInventoryConfig(),
         ScrapBatchInventoryInput(batch_id=batch_id, reason="expired"),
-        Path("/tmp/skypatch-trail"),
+        tmp_path,  # decision_trail 落盘目录——必须已存在，omodul 不负责 mkdir
         pool=cn_pool,
     )
     assert result["status"] == "completed"
@@ -204,9 +233,7 @@ async def test_scrap_batch_inventory_zeroes_stock(cn_pool):
 
 
 @pytest.mark.asyncio
-async def test_scrap_batch_inventory_idempotent(cn_pool):
-    from pathlib import Path
-
+async def test_scrap_batch_inventory_idempotent(cn_pool, tmp_path):
     from app.ext.omodul.scrap_batch_inventory import (
         ScrapBatchInventoryConfig,
         ScrapBatchInventoryInput,
@@ -225,13 +252,13 @@ async def test_scrap_batch_inventory_idempotent(cn_pool):
     first = await scrap_batch_inventory(
         ScrapBatchInventoryConfig(),
         ScrapBatchInventoryInput(batch_id=batch_id),
-        Path("/tmp/skypatch-trail"),
+        tmp_path,
         pool=cn_pool,
     )
     second = await scrap_batch_inventory(
         ScrapBatchInventoryConfig(),
         ScrapBatchInventoryInput(batch_id=batch_id),
-        Path("/tmp/skypatch-trail"),
+        tmp_path,
         pool=cn_pool,
     )
     assert first["status"] == "completed"
@@ -254,7 +281,8 @@ async def test_inventory_decay_engine_scraps_expired(cn_pool):
     )
 
     engine = build_inventory_decay_engine(cn_pool, settings=Settings())
-    result = await engine.run_once()
+    # run_once 返回每个 task 的结果列表 (CronSchedulerEngine 契约)，取第 0 个。
+    result = (await engine.run_once())[0]
     assert any(b["batch_id"] == batch_id for b in result["scrapped"])
 
     async with cn_pool.acquire() as conn:
@@ -268,9 +296,7 @@ async def test_inventory_decay_engine_scraps_expired(cn_pool):
 
 
 @pytest.mark.asyncio
-async def test_trigger_initial_probe_workflow(cn_pool):
-    from pathlib import Path
-
+async def test_trigger_initial_probe_workflow(cn_pool, tmp_path):
     from app.ext.omodul.trigger_initial_probe_workflow import (
         TriggerInitialProbeWorkflowConfig,
         TriggerInitialProbeWorkflowInput,
@@ -284,7 +310,7 @@ async def test_trigger_initial_probe_workflow(cn_pool):
     result = await trigger_initial_probe_workflow(
         TriggerInitialProbeWorkflowConfig(),
         TriggerInitialProbeWorkflowInput(batch_id=batch_id, initial_price=3500),
-        Path("/tmp/skypatch-trail"),
+        tmp_path,
         pool=cn_pool,
     )
     assert result["status"] == "completed"
@@ -306,7 +332,7 @@ async def test_trigger_initial_probe_workflow(cn_pool):
     again = await trigger_initial_probe_workflow(
         TriggerInitialProbeWorkflowConfig(),
         TriggerInitialProbeWorkflowInput(batch_id=batch_id, initial_price=3000),
-        Path("/tmp/skypatch-trail"),
+        tmp_path,
         pool=cn_pool,
     )
     assert again["status"] == "failed"
@@ -320,7 +346,10 @@ async def test_competitor_spider_engine_writes_price_benchmark(cn_pool):
     from app.ext.oservi import build_competitor_spider_engine
 
     lat, lon = round(random.uniform(10, 50), 6), round(random.uniform(100, 130), 6)
-    loc_id, var_id, title = await _make_variant(cn_pool, lat=lat, lon=lon)
+    # 唯一标题：同文件其他测试都用默认"土鸡蛋"，引擎会扫到全部 土鸡蛋 variant；
+    # 用随机标题保证注入条目只命中本测试自己的 variant，行级断言才确定。
+    title = f"spider-测试商品-{random.randint(10000, 99999)}"
+    loc_id, var_id, _ = await _make_variant(cn_pool, lat=lat, lon=lon, title=title)
 
     cn_pool._test_spider.set_results(
         lat=lat,
@@ -332,18 +361,32 @@ async def test_competitor_spider_engine_writes_price_benchmark(cn_pool):
         ],
     )
 
-    engine = build_competitor_spider_engine(cn_pool, radius_km=5)
-    result = await engine.run_once()
-    assert result["written"] == 2
+    engine = build_competitor_spider_engine(
+        cn_pool,
+        radius_km=5,
+        # 预算按当前库实际规模动态给足，保证注入坐标必被扫到。
+        max_calls_per_tick=await _spider_scan_budget(cn_pool),
+    )
+    result = (await engine.run_once())[0]
+    # 引擎全局扫描 (本文件前面几个测试也种了节点/SKU)，不赌精确计数，
+    # 只断言注入的 2 条都至少入库一次。
+    assert result["written"] >= 2
 
     async with cn_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT variant_id, source_type, raw_price_cents, raw_unit, "
-            "normalized_price_per_unit FROM price_benchmark WHERE source_type = 'spider' "
-            "ORDER BY captured_at DESC LIMIT 2"
+            "normalized_price_per_unit FROM price_benchmark "
+            "WHERE source_type = 'spider' AND variant_id = $1 "
+            "ORDER BY captured_at DESC LIMIT 1",
+            var_id,
         )
-    matched = {str(r["variant_id"]) == var_id for r in rows}
-    assert any(matched)  # 标题匹配的条目带上了真 variant FK
-    for row in rows:
-        assert row["source_type"] == "spider"
-        assert row["normalized_price_per_unit"] is not None  # 500g/1kg 都能归一化
+    # 标题匹配的条目带上了真 variant FK；500g/1kg 都能归一化。
+    assert len(rows) == 1
+    assert rows[0]["normalized_price_per_unit"] is not None
+    # 未匹配条目 (不相关商品) 同样如实入库，variant_id 留 NULL。
+    async with cn_pool.acquire() as conn:
+        null_count = await conn.fetchval(
+            "SELECT count(*) FROM price_benchmark "
+            "WHERE source_type = 'spider' AND variant_id IS NULL"
+        )
+    assert null_count >= 1

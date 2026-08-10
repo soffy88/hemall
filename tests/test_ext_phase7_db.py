@@ -43,6 +43,9 @@ async def cn_pool():
     pool = await PgPool.create(
         name="hemall_phase7_test", dsn=TEST_DSN, min_size=1, max_size=5
     )
+    from db_test_utils import cleanup_db_test_rows
+
+    await cleanup_db_test_rows(pool)
     await ensure_ext_schema(pool)
     pool._test_spider = spider  # type: ignore[attr-defined]
     yield pool
@@ -68,22 +71,28 @@ async def _make_variant(
             title,
             f"phase7-slug-{uuid7()}",
         )
+        # product_variant 没有 title 列 (共享 schema 只有 sku_code)——标题挂在
+        # product 上，这里不插不存在的列。sku 用完整 uuid 去横线，避免 uuid7
+        # 前 8 位是毫秒时间戳导致的同毫秒碰撞。
         variant_id = await conn.fetchval(
-            "INSERT INTO product_variant (id, product_id, sku_code, title, status) "
-            "VALUES ($1,$2,$3,$4,'active') RETURNING id",
+            "INSERT INTO product_variant (id, product_id, sku_code, status) "
+            "VALUES ($1,$2,$3,'active') RETURNING id",
             uuid7(),
             prod_id,
-            f"SKU-{uuid7().hex[:8].upper()}",
-            title,
+            f"SKU-{uuid7().replace('-', '')}",
         )
+        # inventory_batch 的批次号列名是 batch_no (不是 batch_code)；video_url
+        # NOT NULL 必须给值。
         batch_id = await conn.fetchval(
             "INSERT INTO inventory_batch (id, variant_id, location_id, supplier_id, "
-            "batch_code, stock_qty, reserved_qty, retail_price_cents, expiration_time, status) "
-            "VALUES ($1,$2,$3,NULL,$4,$5,0,$6,$7,'active') RETURNING id",
+            "batch_no, video_url, cost_price_cents, stock_qty, reserved_qty, "
+            "retail_price_cents, expiration_time, status) "
+            "VALUES ($1,$2,$3,NULL,$4,'https://video.example/b.mp4',$5,$6,0,$7,$8,'active') RETURNING id",
             uuid7(),
             variant_id,
             loc_id,
-            f"BATCH-{uuid7().hex[:8].upper()}",
+            f"BATCH-{uuid7().replace('-', '')}",
+            500,
             10,
             9900,
             datetime.now(UTC) + timedelta(days=30),
@@ -97,13 +106,15 @@ async def _insert_order(pool, product_ids: list[str]) -> str:
 
     async with pool.acquire() as conn:
         cust_id = await conn.fetchval(
-            "INSERT INTO customer (id, email, first_name, last_name, status) "
-            "VALUES ($1,$2,'p7','p7','active') RETURNING id",
+            # 共享 schema 的 customer 用 name/phone 单列，没有 first_name/last_name。
+            "INSERT INTO customer (id, email, name, status) "
+            "VALUES ($1,$2,'p7','active') RETURNING id",
             uuid7(),
             f"p7-{uuid7()}@test.dev",
         )
         order_id = await conn.fetchval(
-            "INSERT INTO customer_order (id, customer_id, status, currency_code, region_code, "
+            # 货币列名是 currency (不是 currency_code)。
+            "INSERT INTO customer_order (id, customer_id, status, currency, region_code, "
             "shipping_cents, tax_cents, grand_total_cents) "
             "VALUES ($1,$2,'paid','cny','cn-east',0,0,10000) RETURNING id",
             uuid7(),
@@ -117,15 +128,15 @@ async def _insert_order(pool, product_ids: list[str]) -> str:
                 "SELECT id FROM inventory_batch WHERE variant_id = $1 LIMIT 1",
                 variant_id,
             )
+            # order_line_item 只有 order_id/batch_id + 价格快照，没有
+            # product_id/variant_id 列 (商品归属走 inventory_batch.variant_id)。
             await conn.execute(
                 "INSERT INTO order_line_item (id, order_id, batch_id, quantity, "
-                "unit_price_cents, line_total_cents, product_id, variant_id) "
-                "VALUES ($1,$2,$3,1,1000,1000,$4,$5)",
+                "unit_price_cents, line_total_cents) "
+                "VALUES ($1,$2,$3,1,1000,1000)",
                 uuid7(),
                 order_id,
                 batch_id,
-                pid,
-                variant_id,
             )
         return str(order_id)
 
@@ -169,12 +180,13 @@ async def test_affinity_feed_boosts_related_product(cn_pool):
         )
         cooccurrence_rows = await conn.fetch(
             "WITH recent AS ( "
-            "  SELECT oli.order_id, ib.product_id "
+            "  SELECT oli.order_id, pv.product_id "
             '  FROM "order_line_item" oli '
             '  JOIN "inventory_batch" ib ON ib.id = oli.batch_id '
+            '  JOIN "product_variant" pv ON pv.id = ib.variant_id '
             '  JOIN "customer_order" o ON o.id = oli.order_id '
             "  WHERE o.created_at > NOW() - INTERVAL '90 days' "
-            "  GROUP BY oli.order_id, ib.product_id "
+            "  GROUP BY oli.order_id, pv.product_id "
             ") "
             "SELECT a.product_id AS left_id, b.product_id AS right_id, COUNT(*) AS n "
             "FROM recent a JOIN recent b ON a.order_id = b.order_id "
@@ -204,6 +216,22 @@ async def test_affinity_feed_boosts_related_product(cn_pool):
     )
 
 
+async def _spider_scan_budget(pool) -> int:
+    """按当前库规模计算爬虫引擎单 tick 扫描预算 (节点 × SKU + 余量)。
+
+    共享 TEST_PG_DSN 上其他套件也会累积节点/商品；把 max_calls_per_tick 设成
+    现存全部 active 节点 × 全部 active 变体，保证本次注入的坐标无论如何都会
+    被扫到，测试与数据库年龄解耦。
+    """
+    async with pool.acquire() as conn:
+        counts = await conn.fetchrow(
+            "SELECT "
+            "(SELECT count(*) FROM stock_location WHERE status = 'active') AS locs, "
+            "(SELECT count(*) FROM product_variant WHERE status = 'active') AS vars"
+        )
+    return int(counts["locs"]) * int(counts["vars"]) + 10
+
+
 async def test_spider_engine_layered_writes_price_benchmark(cn_pool):
     """layered provider 覆写注入 → 引擎归一化 → price_benchmark 真实入库。"""
     from app.ext.oservi import build_competitor_spider_engine
@@ -211,24 +239,42 @@ async def test_spider_engine_layered_writes_price_benchmark(cn_pool):
     pool = cn_pool
     prod, variant, batch = await _make_variant(pool, title="雪花牛肉800g")
     spider = pool._test_spider  # type: ignore[attr-defined]
-    spider.set_results(
-        lat=31.0,
-        lon=121.0,
-        radius_km=5,
-        results=[
-            {
-                "item": "雪花牛肉800g 家庭装",
-                "price": 45.9,
-                "unit": "800g",
-                "store": "测试超市",
-            }
-        ],
+    item = {
+        "item": "雪花牛肉800g 家庭装",
+        "price": 45.9,
+        "unit": "800g",
+        "store": "测试超市",
+    }
+    # 给全部 active 微仓坐标都注入覆写：引擎会扫到种子仓 (上海/北京/广州) 等
+    # 非测试节点，它们的坐标没有覆写会让 layered provider 走真实 HTTP 抓取
+    # (慢/不可靠)——全部覆写后引擎只走内存分支，测试与网络解耦。
+    async with pool.acquire() as conn:
+        active_locs = await conn.fetch(
+            "SELECT lat, lng FROM stock_location "
+            "WHERE status = 'active' AND lat IS NOT NULL AND lng IS NOT NULL"
+        )
+    for loc in active_locs:
+        spider.set_results(
+            lat=float(loc["lat"]),
+            lon=float(loc["lng"]),
+            radius_km=5,
+            results=[item],
+        )
+    engine = build_competitor_spider_engine(
+        pool,
+        spider_provider="layered",
+        # 引擎全局扫描全部 active 微仓 × 全部 SKU，默认 200 次调用预算可能
+        # 扫不到本次注入坐标 (共享库有其他套件累积的节点)——预算按当前库
+        # 实际规模动态给足，保证注入坐标必被扫到，跟数据库年龄无关。
+        max_calls_per_tick=await _spider_scan_budget(pool),
     )
-    engine = build_competitor_spider_engine(pool, spider_provider="layered")
     result = (await engine.run_once())[0]
-    assert result["parsed"] == 1
-    assert result["priced"] == 1
-    assert result["written"] == 1
+    # 引擎是全局扫描 (同文件前面几个测试种下的商品/节点也会被扫到)——断言
+    # "注入的条目至少被解析/定价/入库一次"，不赌精确计数；真正校验归一化
+    # 正确性的是下面的 price_benchmark 行级断言。
+    assert result["parsed"] >= 1
+    assert result["priced"] >= 1
+    assert result["written"] >= 1
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(

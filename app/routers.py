@@ -597,12 +597,13 @@ async def get_nearby_feed(
             if user_products:
                 cooccurrence_rows = await conn.fetch(
                     "WITH recent AS ( "
-                    "  SELECT oli.order_id, ib.product_id "
+                    "  SELECT oli.order_id, pv.product_id "
                     '  FROM "order_line_item" oli '
                     '  JOIN "inventory_batch" ib ON ib.id = oli.batch_id '
+                    '  JOIN "product_variant" pv ON pv.id = ib.variant_id '
                     '  JOIN "customer_order" o ON o.id = oli.order_id '
                     "  WHERE o.created_at > $1 "
-                    "  GROUP BY oli.order_id, ib.product_id "
+                    "  GROUP BY oli.order_id, pv.product_id "
                     ") "
                     "SELECT a.product_id AS left_id, b.product_id AS right_id, COUNT(*) AS n "
                     "FROM recent a JOIN recent b ON a.order_id = b.order_id "

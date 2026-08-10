@@ -29,7 +29,8 @@ def db_client(monkeypatch):
     app = create_app()
     with TestClient(app) as c:
         # 确认 DB 真的连上, 否则跳过 (而非误报失败)
-        if c.get("/health").json()["database"] != "up":
+        db_health = c.get("/health/ready").json()["checks"]["database"]["status"]
+        if db_health != "up":
             pytest.skip("database not reachable at TEST_PG_DSN")
         yield c
     get_settings.cache_clear()
