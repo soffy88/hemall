@@ -7,7 +7,11 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from .ext.oskill import compute_batch_dynamic_rating
 
 
 async def list_products(
@@ -1020,6 +1024,107 @@ async def list_ext_douyin_conversion_logs(pool: Any) -> list[dict]:
             """
         )
         return [_row_to_dict(r) for r in rows]
+
+
+async def get_batch_battle_report_summary(pool: Any, batch_id: str) -> dict | None:
+    """批次真实履约战报聚合 (Phase 9 补天)：nearby-feed 战报卡的读接口数据源。
+
+    SPEC UI 层映射的"同城履约战报卡片"全部字段都在这里算好，前端不做聚合：
+    24 小时内真实战报数 / 新鲜度拟合 (平均新鲜度指数映射到 0-100) / 动态评分
+    (情感极性经 oskill.compute_batch_dynamic_rating 贝叶斯平滑成 0-100) /
+    核心特征关键词 (跨战报共现计数，取 Top3) / 最近带图实拍 (滚动缩略图条)。
+
+    Args:
+        pool: obase.persistence.PgPool。
+        batch_id: 批次 UUID。
+
+    Returns:
+        聚合 dict；批次不存在时返回 None (调用方据此 404)。
+    """
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            'SELECT 1 FROM "inventory_batch" WHERE id = $1', batch_id
+        )
+        if exists is None:
+            return None
+        rows = await conn.fetch(
+            'SELECT id, freshness_index, sentiment_polarity, keywords, '
+            "raw_image_url, created_at "
+            'FROM "batch_battle_report" WHERE batch_id = $1 '
+            "AND status = 'published' ORDER BY created_at DESC",
+            batch_id,
+        )
+
+    total = len(rows)
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    recent_24h = [r for r in rows if r["created_at"] and r["created_at"] > cutoff]
+
+    # 新鲜度拟合：平均新鲜度指数 (0-1) → 0-100 百分比。全空返回 None 语义 (前端显
+    # 示"暂无战报"，不假装有个 0 分拟合)。
+    freshness_values = [float(r["freshness_index"]) for r in rows if r["freshness_index"] is not None]
+    freshness_fit_pct = round(sum(freshness_values) / len(freshness_values) * 100) if freshness_values else None
+
+    # 动态评分：按时间正序逐条贝叶斯平滑 (rows 是 DESC，反着折叠)。
+    rating, count = 0.0, 0
+    for r in reversed(rows):
+        if r["sentiment_polarity"] is None:
+            continue
+        rating, count = compute_batch_dynamic_rating(
+            rating, count, float(r["sentiment_polarity"])
+        )
+    dynamic_rating = rating if count else None
+
+    # 核心特征：跨战报关键词共现计数，取 Top3。
+    keyword_counts: Counter[str] = Counter()
+    for r in rows:
+        if not r["keywords"]:
+            continue
+        for kw in r["keywords"]:
+            if isinstance(kw, str) and kw.strip():
+                keyword_counts[kw.strip()] += 1
+    top_keywords = [
+        {"keyword": kw, "count": n}
+        for kw, n in keyword_counts.most_common(3)
+    ]
+
+    # 最近带图实拍 (滚动缩略图条)：只取有 raw_image_url 的前 3 条。
+    recent_images = [
+        r["raw_image_url"]
+        for r in rows
+        if r["raw_image_url"]
+    ][:3]
+
+    recent_reports = [
+        {
+            "report_id": str(r["id"]),
+            "freshness_index": (
+                float(r["freshness_index"]) if r["freshness_index"] is not None else None
+            ),
+            "sentiment_polarity": (
+                float(r["sentiment_polarity"])
+                if r["sentiment_polarity"] is not None
+                else None
+            ),
+            "keywords": r["keywords"] or [],
+            "image_url": r["raw_image_url"],
+            "created_at": (
+                r["created_at"].isoformat() if r["created_at"] else None
+            ),
+        }
+        for r in rows[:5]
+    ]
+
+    return {
+        "batch_id": str(batch_id),
+        "report_count_24h": len(recent_24h),
+        "report_count_total": total,
+        "freshness_fit_pct": freshness_fit_pct,
+        "dynamic_rating": dynamic_rating,
+        "top_keywords": top_keywords,
+        "recent_images": recent_images,
+        "recent_reports": recent_reports,
+    }
+
 
 
 def _row_to_dict(row: Any) -> dict:

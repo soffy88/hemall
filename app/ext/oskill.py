@@ -1142,3 +1142,85 @@ def rerank_feed_by_affinity(
     for b in scored:
         b.pop("_feed_index", None)
     return scored
+
+
+# ── Phase 9 (补天): 战报声誉与贡献激励算子 ────────────────────────────────
+# 全自动战报式评价体系的 oskill 层：纯内存计算，把新产生的战报融入批次的
+# 动态特征池 (贝叶斯平滑) 与算力金发奖 (不看好坏，只看是否带图)。
+
+
+def compute_batch_dynamic_rating(
+    current_rating: float, current_count: int, new_polarity: float
+) -> tuple[float, int]:
+    """贝叶斯平滑算子：把单条情感极性 (-1.0 到 1.0) 融入批次累计评分 (0-100)。
+
+    避免单一极端评价直接毁掉一个批次——新极性先映射到 0-100 常规可视化评分，
+    再按历史条数加权平均 (历史评分持有更高的惯性权重：样本越多，单条新战报
+    能撬动的幅度越小)。这是纯增量的滚动平均，累计评分可以一直挂在内存/DB
+    快照上，不必每次全量重算。
+
+    Args:
+        current_rating: 批次当前累计动态评分 [0, 100]，无战报时为 0。
+        current_count: 已参与累计的战报条数，非负。
+        new_polarity: 新战报的情感极性 [-1.0, 1.0]，-1 为愤怒，1 为极度满意。
+
+    Returns:
+        (新累计评分 [0, 100], 新累计条数)。
+
+    Raises:
+        ValueError: current_rating 超出 [0, 100]，current_count 为负，或
+            new_polarity 超出 [-1, 1]。
+    """
+    if not 0 <= current_rating <= 100:
+        raise ValueError(
+            "compute_batch_dynamic_rating: current_rating must be within [0, 100]"
+        )
+    if current_count < 0:
+        raise ValueError(
+            "compute_batch_dynamic_rating: current_count must be non-negative"
+        )
+    if not -1.0 <= new_polarity <= 1.0:
+        raise ValueError(
+            "compute_batch_dynamic_rating: new_polarity must be within [-1, 1]"
+        )
+
+    # 情感极性 (-1.0 到 1.0) 映射到常规的可视化评分 (0 到 100 分制)。
+    normalized_new_score = (new_polarity + 1.0) / 2.0 * 100.0
+
+    # 给历史评分更高的惯性权重 (贝叶斯平滑)。
+    if current_count == 0:
+        return (round(normalized_new_score, 2), 1)
+
+    new_avg = (
+        (current_rating * current_count) + normalized_new_score
+    ) / (current_count + 1)
+    return (round(new_avg, 2), current_count + 1)
+
+
+#: 战报基础奖励 (分)。SPEC 写死：文本战报 0.2 元。
+_BATTLE_REPORT_BASE_REWARD_CENTS = 20
+#: 带图战报追加奖励 (分)。SPEC 写死：有图加 0.3 元。
+_BATTLE_REPORT_IMAGE_BONUS_CENTS = 30
+
+
+def calculate_battle_report_reward(has_image: bool) -> int:
+    """贡献激励算子：系统为高质量战报付费 (最高 50 分 = 0.5 元算力金)。
+
+    SPEC 原文的函数签名多带了一个 ``sentiment_polarity: float`` 参数，但函数体
+    从头到尾没用过它——这里删掉，不为了跟 SPEC 字面签名一致保留一个没有任何
+    作用的入参 (跟 compute_mercenary_bounty_rate 删掉死参数 current_price 是
+    同一个取舍)。删掉它的业务理由正是 SPEC 自己要的：不以"好评"为奖励条件，
+    真实的差评同样有价值 (帮系统排雷)，差评战报也照发基础奖励，只按是否带图
+    加钱。
+
+    Args:
+        has_image: 战报是否附带实拍图。
+
+    Returns:
+        算力金奖励 (分)：20 + (30 if has_image else 0)，封顶 50。
+    """
+    reward = _BATTLE_REPORT_BASE_REWARD_CENTS
+    if has_image:
+        reward += _BATTLE_REPORT_IMAGE_BONUS_CENTS
+    return reward
+

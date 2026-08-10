@@ -360,6 +360,140 @@ async def ext_llm_generate_text(
     return await p.generate_text(system_prompt=system_prompt, user_prompt=user_prompt)
 
 
+# ── Phase 9 (补天): 多模态战报提纯 (UGC → 量化物理特征) ─────────────────────
+# 把用户杂乱的吐槽/实拍照片，转化为高维向量 (freshness_index) 和极性常数
+# (sentiment_polarity) + 关键词标签。真实场景接 GPT-4o 等多模态模型；本仓库
+# 无凭据环境走 ManualLLMProvider (可 set_response 覆写)，覆写缺失时由
+# _fallback_battle_report_parser 规则解析兜底，保证任何输入都能产出结构化结果。
+
+_BATTLE_REPORT_SYSTEM_PROMPT = """
+你是一个无情的生鲜质检员。请分析用户的文字和图片，输出 JSON:
+{
+  "freshness_index": (0.0 到 1.0，0为腐败，1为刚摘),
+  "sentiment_polarity": (-1.0 到 1.0，-1为愤怒，1为极度满意),
+  "keywords": ["2到3个描述词"]
+}
+只输出 JSON，不要输出任何其他内容。
+"""
+
+#: 规则兜底解析用的正/负向情感与新鲜度线索词。跟 ManualLLMProvider 的
+#: 占位文案配合：mock 生成不了 JSON 时，靠这些词从原文里榨出可解释的量化值。
+_POSITIVE_CUES = ("好吃", "新鲜", "甜", "脆", "嫩", "香", "满意", "不错", "回购", "大", "赞", "好")
+_NEGATIVE_CUES = ("烂", "坏", "酸", "苦", "变质", "发霉", "不新鲜", "差", "难吃", "失望", "臭", "焉", "蔫")
+_FRESH_CUES = ("新鲜", "刚摘", "水灵", "脆", "嫩", "多汁", "现摘")
+_STALE_CUES = ("烂", "坏", "变质", "发霉", "不新鲜", "软趴", "出水", "异味")
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _fallback_battle_report_parser(text: str) -> dict[str, Any]:
+    """确定性规则解析：LLM 返回非 JSON (mock 占位/网络异常) 时的兜底。
+
+    纯函数、可复现：按正/负向线索词的命中次数折算情感极性，新鲜度在
+    sentiment 基础上按新鲜/腐败线索词微调，关键词取命中的线索词 (封顶 3 个)。
+    任意文本 (含空文本) 都能产出合法范围内的结构化结果，不会炸。
+
+    "不新鲜" 这类否定前缀 (不+正向词) 不算正向命中——"不新鲜" 里的 "新鲜"
+    是正被否定的事实，不是顾客在夸它。
+    """
+    text = text or ""
+
+    def _pos_hit(cue: str) -> bool:
+        return cue in text and f"不{cue}" not in text
+
+    neg_hits = sum(1 for cue in _NEGATIVE_CUES if cue in text)
+    pos_hits = sum(1 for cue in _POSITIVE_CUES if _pos_hit(cue))
+
+    if neg_hits > pos_hits:
+        sentiment = _clamp(-0.3 * neg_hits, -1.0, 1.0)
+    elif pos_hits > 0:
+        sentiment = _clamp(0.3 * pos_hits, -1.0, 1.0)
+    else:
+        sentiment = 0.0  # 无信号：中性，不瞎猜
+
+    fresh_hits = sum(1 for cue in _FRESH_CUES if cue in text)
+    stale_hits = sum(1 for cue in _STALE_CUES if cue in text)
+    freshness = _clamp(0.5 + sentiment * 0.3 + fresh_hits * 0.1 - stale_hits * 0.25, 0.0, 1.0)
+
+    keywords: list[str] = []
+    for cue in _POSITIVE_CUES + _NEGATIVE_CUES:
+        if cue in text and cue not in keywords:
+            if cue in _POSITIVE_CUES and f"不{cue}" in text:
+                continue  # 只出现在否定语境里的正向词不入选
+            keywords.append(cue)
+        if len(keywords) >= 3:
+            break
+
+    return {
+        "freshness_index": round(freshness, 2),
+        "sentiment_polarity": round(sentiment, 2),
+        "keywords": keywords,
+    }
+
+
+def _normalize_battle_report_json(raw: str, *, text: str) -> dict[str, Any]:
+    """把 LLM 返回的 JSON 字符串清洗成物理特征字典：类型/范围钳制 + 关键词封顶。
+
+    freshness_index 钳到 [0, 1]、sentiment_polarity 钳到 [-1, 1] (DECIMAL(3,2)
+    列只能装两位小数，先 round 再入库)；keywords 只取字符串且最多 3 个。
+    解析失败/字段缺失/类型不对一律走规则兜底，不让脏 JSON 污染账本。
+    """
+    import json
+
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("battle report JSON must be an object")
+    except Exception:
+        return _fallback_battle_report_parser(text)
+
+    try:
+        freshness = float(data.get("freshness_index"))
+        sentiment = float(data.get("sentiment_polarity"))
+    except (TypeError, ValueError):
+        return _fallback_battle_report_parser(text)
+
+    keywords_raw = data.get("keywords") or []
+    keywords = [str(k) for k in keywords_raw if isinstance(k, (str, int, float))]
+    if not keywords:
+        keywords = _fallback_battle_report_parser(text)["keywords"]
+
+    return {
+        "freshness_index": round(_clamp(freshness, 0.0, 1.0), 2),
+        "sentiment_polarity": round(_clamp(sentiment, -1.0, 1.0), 2),
+        "keywords": keywords[:3],
+    }
+
+
+async def ext_vlm_parse_battle_report(
+    provider: str, *, text: str, image_url: str | None = None
+) -> dict[str, Any]:
+    """极简原子：把用户战报 (文字 + 可选实拍图) 提纯成结构化物理评估。
+
+    调用视觉/语言大模型 (如 GPT-4o)，强制输出 JSON；如果只有文本，退化为
+    LLM 情感分析；如果有图，把图 URL 拼进上下文做交叉验证 (真实 provider 的
+    多模态输入由 provider 实现自行处理)。模型返回非 JSON 或字段越界时，
+    _normalize_battle_report_json 兜底钳制/规则解析，保证返回值永远是
+    {"freshness_index" [0,1], "sentiment_polarity" [-1,1], "keywords" <=3}。
+    """
+    from obase.provider_registry import ProviderRegistry
+
+    p = ProviderRegistry.get().generic("llm", provider)
+    user_prompt = f"Text: {text or ''}"
+    if image_url:
+        user_prompt += f"\nImage: {image_url}"
+    else:
+        user_prompt += "\nImage: (无)"
+
+    raw = await p.generate_text(
+        system_prompt=_BATTLE_REPORT_SYSTEM_PROMPT, user_prompt=user_prompt
+    )
+    return _normalize_battle_report_json(raw, text=text or "")
+
+
+
 async def ext_wechat_channel_publish(
     provider: str, *, video_url: str, copy_text: str, mp_path: str, access_token: str
 ) -> dict[str, Any]:

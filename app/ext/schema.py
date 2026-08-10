@@ -312,6 +312,37 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("expires_at", "TIMESTAMPTZ"),
         ],
     ),
+    # ── Phase 9 (补天): 批次战报账本 (全自动战报式评价体系) ─────────────
+    # 取代传统 5 星评价：战报死死锚定在 batch_id + order_id 上，彻底杜绝
+    # 云评价和刷单。SPEC 原表名 batch_battle_reports (复数)——沿用本模块统一
+    # 改造约定 (supplier/tote/crowd_intent/... 全部单数) 改成单数
+    # batch_battle_report，防重不靠表名靠 order_id 的 UNIQUE 物理约束：一单
+    # 只能产生一份战报，重复提交由数据库唯一约束兜底拒绝。id 用 UUID
+    # (uuid7 标准格式)，不再用 SPEC 里 VARCHAR(32) 的手拼确定性 ID——防重由
+    # order_id 唯一约束保证，主键不需要确定性；user_id 指向共享 customer
+    # (SPEC 里写的 user_profiles 不存在，系统余额 system_balance 在
+    # customer 表，跟 reward_crowdsourced_benchmark_workflow 同一张表)。
+    (
+        "batch_battle_report",
+        [
+            ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+            ("batch_id", "UUID REFERENCES inventory_batch(id) NOT NULL"),
+            # 物理防刷：一单只能产生一次战报 (UNIQUE)。
+            ("order_id", "UUID REFERENCES customer_order(id) NOT NULL UNIQUE"),
+            ("user_id", "UUID REFERENCES customer(id) NOT NULL"),
+            # 原始多模态输入 (Raw Inputs)
+            ("raw_text", "TEXT"),
+            ("raw_image_url", "VARCHAR(255)"),
+            # VLM/LLM 提纯后的量化特征 (Quantified Features)
+            ("freshness_index", "DECIMAL(3,2)"),     # 新鲜度指数 (0.00 - 1.00)
+            ("sentiment_polarity", "DECIMAL(3,2)"),  # 情感极性 (-1.00 到 1.00)
+            ("keywords", "JSONB"),                   # 提取的关键标签 ["脆甜", "个头大"]
+            # 引擎反馈
+            ("reward_granted", "INT DEFAULT 0"),     # 给予的算力金奖励 (分)
+            ("status", "VARCHAR(20) DEFAULT 'published'"),
+            ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
+        ],
+    ),
 ]
 
 _INDEXES: list[tuple[str, str, str]] = [

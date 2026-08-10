@@ -982,6 +982,28 @@ async def ext_douyin_callback(
     return JSONResponse(status_code=status_code, content=jsonable_encoder(result))
 
 
+# ── Phase 9 (补天): 全自动战报式评价体系 ───────────────────────────────
+# 取代 5 星评价。POST /store/submit_battle_report_workflow (声明式 registry)
+# 负责写战报 + 发算力金；这里提供读接口，供前端渲染批次的真实履约战报卡片。
+
+
+@ext_bespoke_router.get("/store/batches/{batch_id}/battle-reports")
+async def get_batch_battle_reports(batch_id: str, request: Request):
+    """批次真实履约战报 (Phase 9 补天读接口闭环)。
+
+    返回该批次全部真实战报的量化聚合 (queries.get_batch_battle_report_summary)：
+    24 小时内战报数 / 新鲜度拟合 / 动态评分 / 核心关键词 / 最近带图实拍。
+    数据只来自 batch_battle_report 账本——每条都锚定一个真实已履约订单，
+    不存在任何脱离交易凭证的"云评价"。
+
+    公开端点 (零登录扫码即买，评价展示同理)，纳入限流防刷。
+    """
+    summary = await queries.get_batch_battle_report_summary(_pool(request), batch_id)
+    if summary is None:
+        raise HTTPException(404, "batch not found")
+    return summary
+
+
 #: 补天计划 Task 1.2: ext 手写公开端点 (供限流中间件推导路径集合)。
 _EXT_BESPOKE_PUBLIC_PATHS = {
     "/marketing/reward_crowdsourced_benchmark_workflow",
@@ -991,6 +1013,7 @@ _EXT_BESPOKE_PUBLIC_PATHS = {
     "/store/cart/lock",
     "/store/pickup-ticket",
     "/growth/douyin_callback",
+    "/store/batches/{batch_id}/battle-reports",
 }
 
 

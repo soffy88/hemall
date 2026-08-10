@@ -96,6 +96,10 @@ DOMAINS: dict[str, list[str]] = {
         "bind_digital_lord_contract_workflow",
         "record_douyin_conversion_workflow",
     ],
+    # Phase 9 (补天): 全自动战报式评价体系。战报提交是顾客侧自助操作
+    # (零登录扫码即买，评价同理)，公开无需 admin；读端点
+    # GET /store/batches/{batch_id}/battle-reports 手写在 app/routers.py。
+    "store": ["submit_battle_report_workflow"],
 }
 
 #: 仓管/结算/处罚/仲裁执行/播报侧需要 admin Bearer JWT；不在这个集合里的
