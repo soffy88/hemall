@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..deps import get_pool, get_settings
+from ..deps import get_current_user, get_pool, get_settings
 from .alipay import AlipayOrderRequest, AlipayProvider
 from .models import (
     PaymentProvider,
@@ -81,6 +81,8 @@ class RefundRequest(BaseModel):
 async def create_payment(
     body: CreatePaymentRequest,
     request: Request,
+    # 鉴权先于取池解析, 否则 DB 不可达时匿名请求会先撞 503 而非 401。
+    _principal: dict = Depends(get_current_user),
     pool: Any = Depends(get_pool),
 ) -> CreatePaymentResponse:
     """创建支付会话 → 获取支付二维码/链接。"""
@@ -181,6 +183,7 @@ async def create_payment(
 @router.get("/query/{payment_id}", response_model=PaymentQueryResponse)
 async def query_payment(
     payment_id: str,
+    _principal: dict = Depends(get_current_user),
     pool: Any = Depends(get_pool),
 ) -> PaymentQueryResponse:
     """查询支付状态。"""
@@ -210,6 +213,7 @@ async def query_payment(
 @router.post("/refund")
 async def refund_payment(
     body: RefundRequest,
+    _principal: dict = Depends(get_current_user),
     pool: Any = Depends(get_pool),
 ) -> dict[str, Any]:
     """申请退款。"""
@@ -302,6 +306,44 @@ async def refund_payment(
     }
 
 
+async def _settle_payment_and_order(
+    pool: Any, session_id: str, transaction_id: str | None
+) -> None:
+    """支付成功回调的统一收尾：标记 payment_session 为 paid 且推进对应订单。
+
+    幂等：仅当会话仍是 pending 时才翻转并推进订单 (RETURNING 拿 order_id);
+    重复通知拿不到行 → 不重复确认订单。订单已非可确认态时只记日志不报错
+    (避免回调因订单侧状态而失败, 让网关反复重推)。
+    """
+    if pool is None:
+        return
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE payment_session SET status = 'paid', provider_trade_no = $1, "
+            "updated_at = NOW() WHERE id = $2 AND status = 'pending' RETURNING order_id",
+            transaction_id,
+            session_id,
+        )
+    if row is None or not row.get("order_id"):
+        return
+
+    from ..orders.models import InvalidOrderTransitionError
+    from ..orders.service import OrderNotFoundError, OrderService
+
+    try:
+        await OrderService(pool).confirm_order(
+            str(row["order_id"]), payment_intent_id=transaction_id
+        )
+    except (InvalidOrderTransitionError, OrderNotFoundError) as exc:
+        logger.info(
+            "payment settled but order %s not confirmed (state/exists): %s",
+            row["order_id"],
+            exc,
+        )
+    except Exception as exc:  # noqa: BLE001 - 回调侧订单推进失败不应连累验签成功语义
+        logger.warning("order confirm on payment notify failed: %s", exc)
+
+
 @router.post("/wechat/notify")
 async def wechat_pay_notify(request: Request) -> dict[str, str]:
     """微信支付回调通知处理。"""
@@ -321,19 +363,10 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
         out_trade_no = notify.get("out_trade_no") or notify.get("transaction_id")
         success = notify.get("trade_state") == "SUCCESS"
         if success and out_trade_no:
-            try:
-                pool = getattr(request.app.state, "pool", None)
-                if pool is not None:
-                    async with pool.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE payment_session SET status = 'paid', "
-                            "provider_trade_no = $1, updated_at = NOW() "
-                            "WHERE id = $2 AND status = 'pending'",
-                            notify.get("transaction_id"),
-                            out_trade_no,
-                        )
-            except Exception as exc:
-                logger.warning("wechat notify DB update failed: %s", exc)
+            pool = getattr(request.app.state, "pool", None)
+            await _settle_payment_and_order(
+                pool, out_trade_no, notify.get("transaction_id")
+            )
         return {"code": "SUCCESS", "message": "ok"}
 
     notify = await _wechat_provider.handle_notify(headers, body)
@@ -341,20 +374,10 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="invalid notify")
 
     if notify.is_success:
-        # 更新支付会话状态
-        try:
-            pool = getattr(request.app.state, "pool", None)
-            if pool is not None:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE payment_session SET status = 'paid', "
-                        "provider_trade_no = $1, updated_at = NOW() "
-                        "WHERE id = $2 AND status = 'pending'",
-                        notify.transaction_id,
-                        notify.out_trade_no,
-                    )
-        except Exception as exc:
-            logger.warning("wechat notify DB update failed: %s", exc)
+        pool = getattr(request.app.state, "pool", None)
+        await _settle_payment_and_order(
+            pool, notify.out_trade_no, notify.transaction_id
+        )
 
     return {"code": "SUCCESS", "message": "ok"}
 
@@ -370,18 +393,7 @@ async def alipay_notify(request: Request) -> str:
         return "fail"
 
     if notify.is_success:
-        try:
-            pool = getattr(request.app.state, "pool", None)
-            if pool is not None:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE payment_session SET status = 'paid', "
-                        "provider_trade_no = $1, updated_at = NOW() "
-                        "WHERE id = $2 AND status = 'pending'",
-                        notify.trade_no,
-                        notify.out_trade_no,
-                    )
-        except Exception as exc:
-            logger.warning("alipay notify DB update failed: %s", exc)
+        pool = getattr(request.app.state, "pool", None)
+        await _settle_payment_and_order(pool, notify.out_trade_no, notify.trade_no)
 
     return "success"

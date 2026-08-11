@@ -18,10 +18,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..config import Settings
-from ..deps import get_settings
+from ..deps import get_current_user, get_settings
 from .engine import RiskEngine, RiskEvent, RiskRule
 
-router = APIRouter(prefix="/risk", tags=["risk"])
+# 风控管理 API：改规则、看/裁决审核队列 —— 后台风控台专用，一律要求员工 JWT。
+router = APIRouter(
+    prefix="/risk", tags=["risk"], dependencies=[Depends(get_current_user)]
+)
 logger = logging.getLogger("hemall.risk.router")
 
 
@@ -63,9 +66,17 @@ async def list_rules(
     engine: RiskEngine = Depends(get_risk_engine),
 ) -> dict[str, Any]:
     """获取风控规则列表。"""
-    rules = [{"rule_id": r.rule_id, "name": r.name, "category": r.category.value,
-              "condition": r.condition, "score": r.score, "enabled": r.enabled}
-             for r in engine._rules]
+    rules = [
+        {
+            "rule_id": r.rule_id,
+            "name": r.name,
+            "category": r.category.value,
+            "condition": r.condition,
+            "score": r.score,
+            "enabled": r.enabled,
+        }
+        for r in engine._rules
+    ]
     return {"data": rules}
 
 

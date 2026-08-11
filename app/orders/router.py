@@ -8,10 +8,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ..deps import get_pool
+from ..deps import get_current_user, get_pool
 from .models import OrderStatus
 
-router = APIRouter(prefix="/orders", tags=["orders"])
+# 后台/员工订单管理 API。顾客自己的订单走 /store/*(get_current_customer);
+# 这里列全量订单 (含地址 PII)、驱动履约状态机, 一律要求员工 JWT。
+router = APIRouter(
+    prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)]
+)
 
 logger = logging.getLogger("hemall.orders.router")
 
@@ -91,9 +95,17 @@ async def get_order(
 
     return {
         "order": order.model_dump(mode="json"),
-        "items": [dict(id=str(i["id"]), quantity=i["quantity"], unit_price_cents=i["unit_price_cents"],
-                       line_total_cents=i["line_total_cents"], product_id=i.get("product_id"),
-                       variant_id=i.get("variant_id")) for i in items],
+        "items": [
+            dict(
+                id=str(i["id"]),
+                quantity=i["quantity"],
+                unit_price_cents=i["unit_price_cents"],
+                line_total_cents=i["line_total_cents"],
+                product_id=i.get("product_id"),
+                variant_id=i.get("variant_id"),
+            )
+            for i in items
+        ],
     }
 
 

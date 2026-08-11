@@ -9,9 +9,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ..deps import get_pool
+from ..deps import get_current_user, get_pool
 
-router = APIRouter(prefix="/inventory", tags=["inventory"])
+# 后台库存管理 API：预留/扣减/入库/盘点直接改动可售库存 (可超卖或清空)，
+# 一律要求员工 JWT。零登录商城只读展示走 /store/products。
+router = APIRouter(
+    prefix="/inventory", tags=["inventory"], dependencies=[Depends(get_current_user)]
+)
 
 logger = logging.getLogger("hemall.inventory.router")
 

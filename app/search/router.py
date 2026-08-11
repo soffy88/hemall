@@ -18,12 +18,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..config import Settings
-from ..deps import get_settings
+from ..deps import get_current_user, get_settings
 from .client import ElasticsearchClient
 from .models import SearchQueryParams
 from .service import SearchService
 
-router = APIRouter(prefix="/search", tags=["search"])
+# 后台搜索运维 API：重建索引 (sync)、删索引、看内部统计。顾客商城搜索走
+# /store/products，不经此处，故一律要求员工 JWT。
+router = APIRouter(
+    prefix="/search", tags=["search"], dependencies=[Depends(get_current_user)]
+)
 logger = logging.getLogger("hemall.search.router")
 
 
@@ -58,7 +62,9 @@ async def search_products(
     price_max: int | None = Query(None, ge=0, description="最高价格 (分)"),
     min_rating: float | None = Query(None, ge=0, le=5, description="最低评分"),
     in_stock_only: bool = Query(False, description="仅显示有货"),
-    sort_by: str = Query("relevance", pattern="^(relevance|price_newest|sold_desc|rating)$"),
+    sort_by: str = Query(
+        "relevance", pattern="^(relevance|price_newest|sold_desc|rating)$"
+    ),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, description="每页条数"),

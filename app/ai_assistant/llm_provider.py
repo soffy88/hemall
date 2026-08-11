@@ -40,6 +40,9 @@ class LLMResponse:
     usage: dict[str, int] = field(default_factory=dict)
     model: str = ""
     latency_ms: float = 0.0
+    #: 原生 function calling 触发的工具调用 (OpenAI 格式: 每项含 function.name /
+    #: function.arguments)。无工具调用 (或 provider 不支持) 时为 None。
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class LLMProvider(ABC):
@@ -71,6 +74,24 @@ class LLMProvider(ABC):
     async def embed(self, text: str) -> list[float]:
         """文本向量化。"""
         ...
+
+    async def chat_with_tools(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """带工具 (function calling) 的对话。
+
+        默认降级实现：不支持原生工具调用的 provider 忽略 tools、直接作答
+        (tool_calls=None)，调用方据此走"无工具直答"分支——绝不因缺能力而 500。
+        支持原生工具调用的 provider (如 OpenAI) 覆盖本方法。
+        """
+        return await self.chat(
+            messages, temperature=temperature, max_tokens=max_tokens, **kwargs
+        )
 
 
 class OpenAIProvider(LLMProvider):
@@ -120,12 +141,15 @@ class OpenAIProvider(LLMProvider):
         """OpenAI Chat Completion API。"""
         await self._ensure_client()
 
+        # 调用方可用 model= 覆盖模型；从 kwargs 摘出避免与下方 model= 重复传参。
+        model = kwargs.pop("model", None) or self._model_name
+
         if not self._client:
             return LLMResponse(
                 content="[SANDBOX] OpenAI not configured. This is a simulated response.",
                 finish_reason="stop",
                 usage={"prompt_tokens": 0, "completion_tokens": 0},
-                model=self._model_name,
+                model=model,
             )
 
         import time
@@ -133,7 +157,7 @@ class OpenAIProvider(LLMProvider):
         start = time.time()
         try:
             response = await self._client.chat.completions.create(
-                model=self._model_name,
+                model=model,
                 messages=[m.to_openai_format() for m in messages],
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -146,8 +170,12 @@ class OpenAIProvider(LLMProvider):
                 content=choice.message.content or "",
                 finish_reason=choice.finish_reason or "stop",
                 usage={
-                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                    "prompt_tokens": response.usage.prompt_tokens
+                    if response.usage
+                    else 0,
+                    "completion_tokens": response.usage.completion_tokens
+                    if response.usage
+                    else 0,
                 },
                 model=response.model,
                 latency_ms=latency,
@@ -158,6 +186,70 @@ class OpenAIProvider(LLMProvider):
                 content=f"[ERROR] LLM request failed: {exc}",
                 finish_reason="error",
                 model=self._model_name,
+            )
+
+    async def chat_with_tools(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """OpenAI 原生 function calling。
+
+        tools 为 {name, description, parameters} 列表 (ToolDefinition.model_dump)，
+        此处包装成 OpenAI tools schema。返回的 tool_calls 保持 OpenAI 结构
+        (含 function.name / function.arguments)，供调用方按名派发执行。
+        """
+        await self._ensure_client()
+        model = kwargs.pop("model", None) or self._model_name
+
+        if not self._client:
+            # 无 key: 退化为无工具直答, 让上层走 "no tool_calls" 分支 (不 500)。
+            return LLMResponse(
+                content="[SANDBOX] OpenAI not configured. This is a simulated response.",
+                finish_reason="stop",
+                model=model,
+                tool_calls=None,
+            )
+
+        openai_tools = [{"type": "function", "function": t} for t in tools]
+        try:
+            response = await self._client.chat.completions.create(
+                model=model,
+                messages=[m.to_openai_format() for m in messages],
+                tools=openai_tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+            choice = response.choices[0]
+            raw_calls = choice.message.tool_calls or []
+            tool_calls = [
+                {
+                    "id": c.id,
+                    "type": "function",
+                    "function": {
+                        "name": c.function.name,
+                        "arguments": c.function.arguments,
+                    },
+                }
+                for c in raw_calls
+            ] or None
+            return LLMResponse(
+                content=choice.message.content or "",
+                finish_reason=choice.finish_reason or "stop",
+                model=response.model,
+                tool_calls=tool_calls,
+            )
+        except Exception as exc:
+            logger.error("OpenAI chat_with_tools error: %s", exc)
+            return LLMResponse(
+                content=f"[ERROR] LLM tool call failed: {exc}",
+                finish_reason="error",
+                model=model,
+                tool_calls=None,
             )
 
     async def chat_stream(
@@ -252,11 +344,14 @@ class AnthropicProvider(LLMProvider):
     ) -> LLMResponse:
         await self._ensure_client()
 
+        # 调用方可用 model= 覆盖；摘出避免与下方 model= 重复传参。
+        model = kwargs.pop("model", None) or self._model_name
+
         if not self._client:
             return LLMResponse(
                 content="[SANDBOX] Anthropic not configured.",
                 finish_reason="stop",
-                model=self._model_name,
+                model=model,
             )
 
         import time
@@ -269,7 +364,7 @@ class AnthropicProvider(LLMProvider):
             system_prompt = system_msgs[0].content if system_msgs else ""
 
             response = await self._client.messages.create(
-                model=self._model_name,
+                model=model,
                 system=system_prompt,
                 messages=[{"role": m.role, "content": m.content} for m in chat_msgs],
                 temperature=temperature,
@@ -290,7 +385,9 @@ class AnthropicProvider(LLMProvider):
             )
         except Exception as exc:
             logger.error("Anthropic chat error: %s", exc)
-            return LLMResponse(content=f"[ERROR] {exc}", finish_reason="error", model=self._model_name)
+            return LLMResponse(
+                content=f"[ERROR] {exc}", finish_reason="error", model=self._model_name
+            )
 
     async def chat_stream(
         self,
@@ -381,7 +478,9 @@ class LocalLLMProvider(LLMProvider):
             )
         except Exception as exc:
             logger.error("Local LLM error: %s", exc)
-            return LLMResponse(content=f"[ERROR] {exc}", finish_reason="error", model=self._model_name)
+            return LLMResponse(
+                content=f"[ERROR] {exc}", finish_reason="error", model=self._model_name
+            )
 
     async def chat_stream(
         self,
@@ -409,7 +508,9 @@ class LocalLLMProvider(LLMProvider):
                         import json
 
                         chunk = json.loads(line[6:])
-                        if chunk.get("choices") and chunk["choices"][0].get("delta", {}).get("content"):
+                        if chunk.get("choices") and chunk["choices"][0].get(
+                            "delta", {}
+                        ).get("content"):
                             yield chunk["choices"][0]["delta"]["content"]
         except Exception as exc:
             logger.error("Local LLM stream error: %s", exc)

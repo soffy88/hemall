@@ -22,12 +22,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ..config import Settings
-from ..deps import get_settings
+from ..deps import get_current_user, get_settings
 from .knowledge import FAQItem, KnowledgeBase, KnowledgeCategory
 from .models import AIResponse, ChatRequest, ProductDescriptionRequest, ProductQuestion
 from .service import AIAssistantService
 
-router = APIRouter(prefix="/ai", tags=["ai"])
+# AI 助手端点全程调 LLM (烧钱)，无鉴权即敞口刷账单。顾客前端未接此路由 (走
+# /store)，故一律要求员工 JWT；将来若要面向顾客，应加顾客 token + 限流的专用变体。
+router = APIRouter(prefix="/ai", tags=["ai"], dependencies=[Depends(get_current_user)])
 logger = logging.getLogger("hemall.ai.router")
 
 
@@ -54,7 +56,9 @@ def get_ai_service(
 
     app_state = get_app_state()
     if not hasattr(app_state, "ai_service") or app_state.ai_service is None:
-        raise HTTPException(status_code=503, detail="AI Assistant Service not initialized")
+        raise HTTPException(
+            status_code=503, detail="AI Assistant Service not initialized"
+        )
     return app_state.ai_service
 
 
@@ -164,6 +168,7 @@ async def delete_session(
 
 
 # ── 知识库端点 ────────────────────────────────────────────────────
+
 
 @router.post("/knowledge/add")
 async def add_knowledge(

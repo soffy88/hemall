@@ -12,11 +12,21 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - LOG_LEVEL=INFO
-      - DATABASE_URL=postgresql://hemall:hemall@postgres:5432/hemall
-      - REDIS_URL=redis://redis:6379/0
+      # Settings 只读 HEMALL_* 前缀 (app/config.py)。以下变量名必须带前缀,
+      # 否则会被静默忽略并回退到源码内的开发默认值。
+      - HEMALL_ENVIRONMENT=production
+      - HEMALL_LOG_LEVEL=INFO
+      - HEMALL_PG_DSN=postgresql://hemall:hemall@postgres:5432/hemall
+      - HEMALL_REDIS_URL=redis://redis:6379/0
       - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - JWT_SECRET_KEY=your-super-secret-jwt-key-change-in-production
+      # ↓ 必须在部署时用真实强随机值覆盖 (下面是占位; HEMALL_ENVIRONMENT=production
+      #   时启动会校验非默认值, 见 Settings.validate_production_security)。
+      - HEMALL_JWT_SECRET=${HEMALL_JWT_SECRET:?set a strong random jwt secret}
+      - HEMALL_WEBHOOK_SECRET=${HEMALL_WEBHOOK_SECRET:?set the webhook HMAC secret}
+      - HEMALL_HARDWARE_SECRET=${HEMALL_HARDWARE_SECRET:?set the edge-bridge bearer secret}
+      # Fernet PII 加密密钥 (无前缀, 经 os.getenv 读取)。缺失时每次重启换新 key,
+      # 已加密数据将无法解密——production 启动会因此被拒绝。
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set a stable Fernet key}
       - GUNICORN_WORKERS=4
       - GUNICORN_TIMEOUT=30
     depends_on:

@@ -156,7 +156,12 @@ class TestInventoryRoutes:
         inventory_paths = [p for p in paths if p.startswith("/inventory")]
         assert len(inventory_paths) >= 8
 
-    def test_reserve_stock_validation(self, client):
+    def test_inventory_requires_auth(self, client):
+        """后台库存端点无员工 JWT 一律 401。"""
+        r = client.post("/inventory/reserve", json={"product_id": "p1"})
+        assert r.status_code == 401
+
+    def test_reserve_stock_validation(self, client, auth_headers):
         """测试预留库存请求体校验。"""
         r = client.post(
             "/inventory/reserve",
@@ -165,11 +170,12 @@ class TestInventoryRoutes:
                 "quantity": -1,  # 负数应被 Pydantic 拒绝
                 "location_id": "loc1",
             },
+            headers=auth_headers,
         )
         # 无 DB 时返回 503 (正常), 有 DB 且 Pydantic 校验失败返回 422
         assert r.status_code in (422, 503)
 
-    def test_receive_stock_validation(self, client):
+    def test_receive_stock_validation(self, client, auth_headers):
         """测试入库请求体校验。"""
         # quantity 为负数应被 Pydantic 拒绝
         r = client.post(
@@ -180,10 +186,11 @@ class TestInventoryRoutes:
                 "quantity": -5,
                 "location_id": "loc1",
             },
+            headers=auth_headers,
         )
         assert r.status_code in (422, 503)
 
-    def test_set_safety_threshold_validation(self, client):
+    def test_set_safety_threshold_validation(self, client, auth_headers):
         """测试安全库存阈值校验。"""
         r = client.put(
             "/inventory/safety-threshold",
@@ -192,5 +199,6 @@ class TestInventoryRoutes:
                 "location_id": "loc1",
                 "threshold": -1,  # 负数应被 Pydantic 拒绝
             },
+            headers=auth_headers,
         )
         assert r.status_code in (422, 503)

@@ -17,11 +17,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..config import Settings
-from ..deps import get_settings
+from ..deps import get_current_user, get_settings
 from .models import PushNotification, PushPlatform, PushPriority
 from .service import PushManager
 
-router = APIRouter(prefix="/push", tags=["push"])
+# 后台/内部推送管理 API：注册设备、群发推送 (可烧钱/刷屏) 一律要求员工 JWT。
+# 容器存活探针走 /health/live，不依赖此处的 /push/health。
+router = APIRouter(
+    prefix="/push", tags=["push"], dependencies=[Depends(get_current_user)]
+)
 logger = logging.getLogger("hemall.push.router")
 
 
@@ -69,7 +73,9 @@ async def send_notification(
     mgr: PushManager = Depends(get_push_manager),
 ) -> dict[str, Any]:
     """通过模板发送推送通知到用户的所有设备。"""
-    result = await mgr.send_notification("user-test", template_id, substitutions, priority)
+    result = await mgr.send_notification(
+        "user-test", template_id, substitutions, priority
+    )
     return {
         "status": "sent",
         "total": result.total,

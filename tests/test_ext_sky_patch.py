@@ -52,9 +52,7 @@ def test_webhook_timestamp_replay_window_rejected():
     payload = b"payload"
     stale = str(int(time.time()) - 3600)
     sig = _sign(payload, "s3cret")
-    assert (
-        verify_hmac_sha256(payload, sig, "s3cret", timestamp=stale) is False
-    )
+    assert verify_hmac_sha256(payload, sig, "s3cret", timestamp=stale) is False
 
 
 def test_webhook_fresh_timestamp_accepted():
@@ -106,14 +104,15 @@ def test_token_bucket_refills_over_time():
     assert bucket.allow() == (True, 0.0)  # 补桶后恢复放行
 
 
-def test_limiter_keys_by_ip_and_device():
+def test_limiter_keys_by_ip_only():
+    # 桶键只认服务端认定的对端 IP; 客户端可控的头绝不参与, 否则可轮换绕过限流。
     limiter = TokenBucketRateLimiter(capacity=1, refill_per_sec=0.0)
-    assert limiter.key_for("1.2.3.4", "dev-1") == "1.2.3.4:dev-1"
-    assert limiter.key_for("1.2.3.4", None) == "1.2.3.4:anon"
-    # 同一 IP 不同设备额度独立：第一台耗尽后第二台仍可放行。
-    assert limiter.allow("1.2.3.4:dev-1") == (True, 0.0)
-    assert limiter.allow("1.2.3.4:dev-1") == (False, 0.0)
-    assert limiter.allow("1.2.3.4:dev-2") == (True, 0.0)
+    assert limiter.key_for("1.2.3.4") == "1.2.3.4"
+    # 同一 IP 共享同一个桶: 第一次耗尽后同 IP 后续请求 (无论换什么头) 都被拒。
+    assert limiter.allow("1.2.3.4") == (True, 0.0)
+    assert limiter.allow("1.2.3.4") == (False, 0.0)
+    # 不同 IP 额度独立。
+    assert limiter.allow("5.6.7.8") == (True, 0.0)
 
 
 def test_limiter_public_path_set_derivation():
@@ -121,7 +120,8 @@ def test_limiter_public_path_set_derivation():
     # 补天计划新增的公开端点必须在集合里 (限流防刷覆盖)。
     assert "/store/nearby-feed" in paths
     assert "/growth/douyin_callback" in paths
-    assert "/aftersales/submit_rma_claim" in paths
+    # submit_rma_claim 已改为顾客鉴权 (身份/信誉/归属服务端认定), 不再是零登录公开面。
+    assert "/aftersales/submit_rma_claim" not in paths
     # Admin Ops 端点不在公开集合里。
     assert "/supply-chain/create_inventory_batch" not in paths
     assert "/marketing/trigger_initial_probe_workflow" not in paths
@@ -132,33 +132,39 @@ def test_limiter_public_path_set_derivation():
 
 def test_payment_gateway_prepay_shape():
     gateway = ManualPaymentGateway()
-    result = asyncio.run(gateway.prepay(
-        out_trade_no="order_123",
-        total_fee_cents=2500,
-        description="测试订单",
-        notify_url="https://mall.sxueji.com/payments/wechat/notify",
-    ))
+    result = asyncio.run(
+        gateway.prepay(
+            out_trade_no="order_123",
+            total_fee_cents=2500,
+            description="测试订单",
+            notify_url="https://mall.sxueji.com/payments/wechat/notify",
+        )
+    )
     assert result["status"] == "pending"
     assert result["code_url"].startswith("weixin://")
     assert result["prepay_id"]
     # 幂等：同 out_trade_no 重复下单返回同一单。
-    again = asyncio.run(gateway.prepay(
-        out_trade_no="order_123",
-        total_fee_cents=2500,
-        description="测试订单",
-        notify_url="x",
-    ))
+    again = asyncio.run(
+        gateway.prepay(
+            out_trade_no="order_123",
+            total_fee_cents=2500,
+            description="测试订单",
+            notify_url="x",
+        )
+    )
     assert again["code_url"] == result["code_url"]
 
 
 def test_payment_gateway_refund_shape():
     gateway = ManualPaymentGateway()
-    result = asyncio.run(gateway.refund(
-        out_trade_no="order_123",
-        out_refund_no="refund_1",
-        refund_fee_cents=500,
-        reason="customer return",
-    ))
+    result = asyncio.run(
+        gateway.refund(
+            out_trade_no="order_123",
+            out_refund_no="refund_1",
+            refund_fee_cents=500,
+            reason="customer return",
+        )
+    )
     assert result["status"] == "success"
     assert result["refund_id"]
 
@@ -166,16 +172,24 @@ def test_payment_gateway_refund_shape():
 def test_payment_gateway_rejects_negative_amounts():
     gateway = ManualPaymentGateway()
     with pytest.raises(ValueError):
-        asyncio.run(gateway.prepay(out_trade_no="o", total_fee_cents=0, description="", notify_url=""))
+        asyncio.run(
+            gateway.prepay(
+                out_trade_no="o", total_fee_cents=0, description="", notify_url=""
+            )
+        )
     with pytest.raises(ValueError):
-        asyncio.run(gateway.refund(out_trade_no="o", out_refund_no="r", refund_fee_cents=-1))
+        asyncio.run(
+            gateway.refund(out_trade_no="o", out_refund_no="r", refund_fee_cents=-1)
+        )
 
 
 def test_payment_gateway_stripe_prepay_shape():
     gateway = ManualPaymentGateway()
-    result = asyncio.run(gateway.stripe_prepay(
-        out_trade_no="order_s", total_fee_cents=990, description="草莓批次"
-    ))
+    result = asyncio.run(
+        gateway.stripe_prepay(
+            out_trade_no="order_s", total_fee_cents=990, description="草莓批次"
+        )
+    )
     assert result["payment_intent_id"].startswith("pi_mock_")
     assert result["client_secret"]
 
@@ -203,16 +217,19 @@ def test_find_nearest_location_empty_raises():
 
 def test_shelf_life_safe():
     now = datetime.now(UTC)
-    assert is_shelf_life_safe(None, now=now, margin_hours=2.0) is True  # 无过期时间=长期品
     assert (
-        is_shelf_life_safe(now + timedelta(hours=5), now=now, margin_hours=2.0)
-        is True
+        is_shelf_life_safe(None, now=now, margin_hours=2.0) is True
+    )  # 无过期时间=长期品
+    assert (
+        is_shelf_life_safe(now + timedelta(hours=5), now=now, margin_hours=2.0) is True
     )
     assert (
-        is_shelf_life_safe(now + timedelta(hours=1), now=now, margin_hours=2.0)
+        is_shelf_life_safe(now + timedelta(hours=1), now=now, margin_hours=2.0) is False
+    )
+    assert (
+        is_shelf_life_safe(now - timedelta(minutes=1), now=now, margin_hours=2.0)
         is False
     )
-    assert is_shelf_life_safe(now - timedelta(minutes=1), now=now, margin_hours=2.0) is False
 
 
 # ── Task 2.2 / 3.1: 新 omodul 注册 (registry 接线) ──────────────────────

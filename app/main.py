@@ -248,6 +248,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     app.state.config = settings
 
+    # 安全基线 (fail-closed): production 下裸用开发默认密钥 / 缺 ENCRYPTION_KEY 直接拒启动。
+    # development/staging 无操作，不影响本地/CI。
+    settings.validate_production_security()
+
     # Phase 0: 设置链路追踪 (在 lifespan 中调用，此时 app 已构建完毕)
     try:
         setup_tracing(app, service_name="hemall-backend")
@@ -458,6 +462,7 @@ def create_app() -> FastAPI:
         TokenBucketRateLimitMiddleware,
         public_paths=public_zero_login_paths(),
         path_prefixes={"/store/"},
+        trusted_proxy_hops=settings.ratelimit_trusted_proxy_hops,
     )
 
     # 补天计划 Task 1.1: Webhook 验签装甲 (最外层)——抖音/支付回调在 ASGI 层

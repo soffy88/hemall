@@ -5,8 +5,11 @@
 
 实现形态是纯 ASGI 中间件：只对显式传入的公开路径集合生效 (路径集合由
 main.py 从 registry 的 require_auth=False 端点 + 手写公开端点推导，admin/
-内部端点不在集合里，不受影响)，按 (client_ip, x-device-id) 二元组做桶键——
-同一设备换 IP 或同一 IP 多个设备都不会共享额度。
+内部端点不在集合里，不受影响)，按服务端认定的对端 IP 做桶键。
+
+安全要点：桶键绝不掺入客户端可控的头 (如 X-Device-Id)——否则攻击者只需
+轮换该头即可为自己无限开桶绕过限流, 并撑爆桶表触发全量清空。部署在可信
+反代之后时, 由中间件解析可信 XFF (trusted_proxy_hops) 还原真实对端 IP。
 
 桶语义：
     capacity = 60  (突发容忍：60 个令牌)
@@ -36,6 +39,21 @@ DEFAULT_CAPACITY = 60
 DEFAULT_REFILL_PER_SEC = 1.0
 #: 桶表上限，防内存无限增长 (超出后整体清空重建，宁可丢限流状态不可 OOM)。
 _MAX_BUCKETS = 100_000
+
+
+def _real_client_ip(xff: str | None, peer_ip: str, trusted_hops: int) -> str:
+    """从可信反代注入的 X-Forwarded-For 解析真实对端 IP。
+
+    XFF 形如 "client, proxy1, proxy2" (左→右: 最初客户端 → 每一跳追加)。反代
+    自己的一跳是最右; 往左数 trusted_hops 跳即真实客户端。列表比可信跳数短
+    (被伪造/缺失) 时回退到 ASGI 对端 peer_ip, 不轻信任何客户端提供的值。
+    """
+    if not xff:
+        return peer_ip
+    parts = [p.strip() for p in xff.split(",") if p.strip()]
+    if len(parts) < trusted_hops:
+        return peer_ip
+    return parts[-trusted_hops]
 
 
 class TokenBucket:
@@ -91,9 +109,14 @@ class TokenBucketRateLimiter:
         """对 key 尝试取令牌。返回 (放行?, 拒绝时等待秒数)。"""
         return self._bucket_for(key).allow()
 
-    def key_for(self, client_ip: str, device_id: str | None) -> str:
-        """限流键：IP + Device_ID 二元组。无 Device_ID 时退化为纯 IP。"""
-        return f"{client_ip}:{device_id or 'anon'}"
+    def key_for(self, client_ip: str) -> str:
+        """限流键：仅用服务端认定的对端 IP。
+
+        绝不把客户端可控的头 (如 X-Device-Id) 掺进键——否则攻击者只需轮换该头
+        即可为自己无限开桶, 彻底绕过限流 (顺带撑爆桶表触发全量清空)。IP 由 ASGI
+        scope 认定; 若部署在可信反代之后, 由中间件解析可信 XFF 得到真实对端。
+        """
+        return client_ip
 
 
 class TokenBucketRateLimitMiddleware:
@@ -119,11 +142,16 @@ class TokenBucketRateLimitMiddleware:
         path_prefixes: set[str] | None = None,
         capacity: int = DEFAULT_CAPACITY,
         refill_per_sec: float = DEFAULT_REFILL_PER_SEC,
+        trusted_proxy_hops: int = 0,
     ) -> None:
         self.app = app
         self.public_paths = public_paths or set()
         self.path_prefixes = path_prefixes or set()
         self.limiter = TokenBucketRateLimiter(capacity, refill_per_sec)
+        # >0 时信任前置反代注入的 X-Forwarded-For, 取倒数第 trusted_proxy_hops 跳
+        # 作为真实对端 IP (跳数 = 自己到公网之间可信反代的层数)。0 = 直连, 只认
+        # ASGI 对端。切勿在无可信反代时开启——XFF 客户端可伪造。
+        self.trusted_proxy_hops = trusted_proxy_hops
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -143,8 +171,11 @@ class TokenBucketRateLimitMiddleware:
         }
         client = scope.get("client") or ("unknown", 0)
         client_ip = client[0] if isinstance(client, (tuple, list)) else str(client)
-        device_id = headers.get("x-device-id") or None
-        key = self.limiter.key_for(client_ip, device_id)
+        if self.trusted_proxy_hops > 0:
+            client_ip = _real_client_ip(
+                headers.get("x-forwarded-for"), client_ip, self.trusted_proxy_hops
+            )
+        key = self.limiter.key_for(client_ip)
 
         allowed, retry_after = self.limiter.allow(key)
         if not allowed:

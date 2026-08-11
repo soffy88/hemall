@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from . import queries
 from .auth import router as auth_router
-from .deps import get_current_user
+from .deps import get_current_customer, get_current_user
 from .events import fire_event
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
 from .ext.feed_quant import build_feed_item, normalize_velocity
@@ -37,6 +37,7 @@ from .ext.oskill import (
 )
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
+from .storefront import _owns_order
 from .storefront import router as storefront_router
 
 
@@ -418,28 +419,50 @@ async def ext_reward_crowdsourced_benchmark(
 
 
 class _SubmitRmaClaimRequest(BaseModel):
+    # 身份与信誉分绝不由客户端自报 (否则可冒名 + 自封 trust=100 骗自动退款)——
+    # user_id 取自顾客 token, user_trust_score/route_risk 由服务端从库里认定。
     order_id: str
     batch_id: str
-    user_id: str
     evidence_image_url: str
-    user_trust_score: int
-    route_risk: float = 0.0
 
 
 @ext_bespoke_router.post("/aftersales/submit_rma_claim")
 async def ext_submit_rma_claim(
-    body: _SubmitRmaClaimRequest, request: Request
+    body: _SubmitRmaClaimRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
 ) -> JSONResponse:
-    """公开端点 (顾客自助报案)：拉起 autonomous_triage_engine 的 on_signal
-    分发，SPEC §5 描述的"注入 vlm_assess_damage → evaluate_claim_credibility
-    → execute_liability_routing_workflow"全自动仲裁链路的 HTTP 入口。
+    """顾客自助报案：拉起 autonomous_triage_engine 的 on_signal 分发，SPEC §5
+    "vlm_assess_damage → evaluate_claim_credibility → execute_liability_routing_
+    workflow" 全自动仲裁链路的 HTTP 入口。
+
+    安全基线 (与 /store/customers/me/claims 一致)：要求顾客 JWT；user_id 取自
+    token；校验 order_id 归属；user_trust_score 由服务端查库认定——三者都不信客户端。
     """
     oservi = getattr(request.app.state, "ext_oservi", None)
     if oservi is None:
         raise HTTPException(503, "ext background engines not ready")
 
+    pool = _pool(request)
+    customer_id = principal["customer_id"]
+    if not await _owns_order(pool, customer_id, body.order_id):
+        raise HTTPException(404, "order not found")
+
+    async with pool.acquire() as conn:
+        trust_score = await conn.fetchval(
+            'SELECT base_trust_score FROM "customer" WHERE id = $1', customer_id
+        )
+
     dispatch_result = await oservi.autonomous_triage.dispatch(
-        "rma.claim_submitted", body.model_dump()
+        "rma.claim_submitted",
+        {
+            "order_id": body.order_id,
+            "batch_id": body.batch_id,
+            "user_id": customer_id,
+            "evidence_image_url": body.evidence_image_url,
+            "user_trust_score": trust_score if trust_score is not None else 80,
+            "route_risk": 0.0,
+        },
     )
     if dispatch_result["errors"]:
         return JSONResponse(status_code=422, content=jsonable_encoder(dispatch_result))
@@ -1008,7 +1031,8 @@ async def get_batch_battle_reports(batch_id: str, request: Request):
 #: 补天计划 Task 1.2: ext 手写公开端点 (供限流中间件推导路径集合)。
 _EXT_BESPOKE_PUBLIC_PATHS = {
     "/marketing/reward_crowdsourced_benchmark_workflow",
-    "/aftersales/submit_rma_claim",
+    # /aftersales/submit_rma_claim 已改为顾客鉴权 (身份/信誉/归属服务端认定),
+    # 不再属零登录公开面, 故移出此集合。
     "/supply-chain/suppliers/lookup",
     "/store/nearby-feed",
     "/store/cart/lock",

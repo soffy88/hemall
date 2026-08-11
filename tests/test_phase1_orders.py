@@ -86,11 +86,15 @@ class TestOrderStateMachine:
     def test_invalid_cancelled_to_confirmed(self):
         """终态不能恢复"""
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition("o1", OrderStatus.CANCELLED, OrderStatus.CONFIRMED)
+            validate_order_transition(
+                "o1", OrderStatus.CANCELLED, OrderStatus.CONFIRMED
+            )
 
     def test_invalid_completed_to_cancelled(self):
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition("o1", OrderStatus.COMPLETED, OrderStatus.CANCELLED)
+            validate_order_transition(
+                "o1", OrderStatus.COMPLETED, OrderStatus.CANCELLED
+            )
 
     def test_invalid_refunded_to_pending(self):
         with pytest.raises(InvalidOrderTransitionError):
@@ -99,12 +103,16 @@ class TestOrderStateMachine:
     def test_invalid_delivered_to_confirmed(self):
         """不能回退"""
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition("o1", OrderStatus.DELIVERED, OrderStatus.CONFIRMED)
+            validate_order_transition(
+                "o1", OrderStatus.DELIVERED, OrderStatus.CONFIRMED
+            )
 
     def test_invalid_processing_to_delivered(self):
         """不能跳过打包/发货"""
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition("o1", OrderStatus.PROCESSING, OrderStatus.DELIVERED)
+            validate_order_transition(
+                "o1", OrderStatus.PROCESSING, OrderStatus.DELIVERED
+            )
 
     def test_invalid_pending_to_returning(self):
         """未发货不能退货"""
@@ -113,7 +121,9 @@ class TestOrderStateMachine:
 
     def test_invalid_confirmed_to_returning(self):
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition("o1", OrderStatus.CONFIRMED, OrderStatus.RETURNING)
+            validate_order_transition(
+                "o1", OrderStatus.CONFIRMED, OrderStatus.RETURNING
+            )
 
     # ── 终态测试 ────────────────────────────────────────────────
 
@@ -145,7 +155,7 @@ class TestOrderSnapshot:
             status=OrderStatus.PENDING,
             grand_total_cents=1299,
         )
-        assert order.grand_total_yuan == Decimal('12.99')
+        assert order.grand_total_yuan == Decimal("12.99")
 
     def test_is_terminal(self):
         for status in TERMINAL_STATUSES:
@@ -184,7 +194,9 @@ class TestOrderRoutes:
 
         paths = app.openapi()["paths"]
         order_paths = [p for p in paths if p.startswith("/orders")]
-        assert len(order_paths) >= 8, f"expected >=8 order paths, got {len(order_paths)}"
+        assert len(order_paths) >= 8, (
+            f"expected >=8 order paths, got {len(order_paths)}"
+        )
 
         expected_routes = [
             "/orders/",
@@ -200,25 +212,33 @@ class TestOrderRoutes:
         for route in expected_routes:
             assert route in paths, f"missing order route: {route}"
 
-    def test_confirm_order_validation(self, client):
+    def test_orders_require_auth(self, client):
+        """后台订单端点无员工 JWT 一律 401。"""
+        r = client.post("/orders/test-id/confirm", json={})
+        assert r.status_code == 401
+
+    def test_confirm_order_validation(self, client, auth_headers):
         """测试确认订单请求体校验。"""
         # 无 DB 时返回 503
         r = client.post(
             "/orders/test-id/confirm",
             json={"payment_intent_id": "pay-123"},
+            headers=auth_headers,
         )
         assert r.status_code in (404, 503)  # 404 (order not found) or 503 (no DB)
 
-    def test_cancel_order_validation(self, client):
+    def test_cancel_order_validation(self, client, auth_headers):
         r = client.post(
             "/orders/test-id/cancel",
             json={"reason": "changed mind"},
+            headers=auth_headers,
         )
         assert r.status_code in (404, 503)
 
-    def test_ship_order_validation(self, client):
+    def test_ship_order_validation(self, client, auth_headers):
         r = client.post(
             "/orders/test-id/ship",
             json={"tracking_number": "SF123456", "carrier": "顺丰"},
+            headers=auth_headers,
         )
         assert r.status_code in (404, 503)
