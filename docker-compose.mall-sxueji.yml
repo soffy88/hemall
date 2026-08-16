@@ -20,10 +20,18 @@ services:
       # Redis
       HEMALL_REDIS_URL: redis://redis:6379/0
       # JWT & Security
+      # production 触发 Settings.validate_production_security(): 弱默认密钥/缺
+      # ENCRYPTION_KEY/默认 pg 凭据 → 拒绝启动 (app/config.py)。
+      HEMALL_ENVIRONMENT: ${HEMALL_ENVIRONMENT:?set production (or development/staging for non-prod)}
       HEMALL_JWT_SECRET: ${HEMALL_JWT_SECRET}
       HEMALL_JWT_ALGORITHM: HS256
       HEMALL_JWT_EXPIRES_MINUTES: 1440
       HEMALL_ANON_SALT: ${HEMALL_ANON_SALT}
+      # Webhook HMAC / 边缘网桥 Bearer (公开默认值在生产校验中被拒)
+      HEMALL_WEBHOOK_SECRET: ${HEMALL_WEBHOOK_SECRET:?set a strong webhook HMAC secret}
+      HEMALL_HARDWARE_SECRET: ${HEMALL_HARDWARE_SECRET:?set a strong edge-bridge bearer secret}
+      # Fernet PII 加密密钥 (无前缀, 经 os.getenv 读取; 必须稳定, 换 key 丢历史数据)
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set a stable Fernet key}
       # CORS - Allow only mall.sxueji.com
       HEMALL_CORS_ORIGINS: '["https://mall.sxueji.com","https://www.mall.sxueji.com"]'
       # Output directory

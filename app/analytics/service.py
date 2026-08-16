@@ -108,29 +108,33 @@ class AnalyticsService:
         logger.info("AnalyticsService initialized")
 
     async def _create_analytics_tables(self) -> None:
-        """创建分析用物化视图 (PostgreSQL)。"""
-        ddl = """
-        CREATE TABLE IF NOT EXISTS analytics_sales_daily (
-            date DATE NOT NULL,
-            gmv_cents BIGINT DEFAULT 0,
-            order_count INT DEFAULT 0,
-            user_count INT DEFAULT 0,
-            aov_cents BIGINT DEFAULT 0,
-            PRIMARY KEY (date)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-        CREATE TABLE IF NOT EXISTS analytics_product_ranking (
-            product_id VARCHAR(36) NOT NULL,
-            product_name VARCHAR(255) NOT NULL,
-            period VARCHAR(20) NOT NULL,
-            sold_count INT DEFAULT 0,
-            gmv_cents BIGINT DEFAULT 0,
-            rank_pos INT NOT NULL,
-            PRIMARY KEY (product_id, period)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        """
+        """创建分析用表 (PostgreSQL 方言; asyncpg 单次 execute 只接受单条语句)。"""
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS analytics_sales_daily (
+                date DATE NOT NULL,
+                gmv_cents BIGINT DEFAULT 0,
+                order_count INT DEFAULT 0,
+                user_count INT DEFAULT 0,
+                aov_cents BIGINT DEFAULT 0,
+                PRIMARY KEY (date)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS analytics_product_ranking (
+                product_id VARCHAR(36) NOT NULL,
+                product_name VARCHAR(255) NOT NULL,
+                period VARCHAR(20) NOT NULL,
+                sold_count INT DEFAULT 0,
+                gmv_cents BIGINT DEFAULT 0,
+                rank_pos INT NOT NULL,
+                PRIMARY KEY (product_id, period)
+            )
+            """,
+        ]
         async with self._pool.acquire() as conn:
-            await conn.execute(ddl)
+            for ddl in statements:
+                await conn.execute(ddl)
 
     async def get_sales_summary(
         self, start_date: str, end_date: str, granularity: TimeGranularity = TimeGranularity.DAY

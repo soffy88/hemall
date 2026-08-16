@@ -54,30 +54,37 @@ class EventStore:
             logger.warning("EventStore init failed: %s", exc)
 
     async def _create_tables(self) -> None:
-        """创建事件表和快照表 DDL。"""
-        ddl = """
-        CREATE TABLE IF NOT EXISTS event_store (
-            event_id        VARCHAR(36) PRIMARY KEY,
-            event_type      VARCHAR(100) NOT NULL,
-            aggregate_id    VARCHAR(36) NOT NULL,
-            aggregate_type  VARCHAR(50) NOT NULL,
-            version         INT UNSIGNED NOT NULL,
-            data            JSONB NOT NULL,
-            occurred_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_aggregate (aggregate_id, version)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-        CREATE TABLE IF NOT EXISTS snapshots (
-            aggregate_id    VARCHAR(36) PRIMARY KEY,
-            aggregate_type  VARCHAR(50) NOT NULL,
-            version         INT UNSIGNED NOT NULL,
-            state           JSONB NOT NULL,
-            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        """
+        """创建事件表和快照表 DDL (PostgreSQL 方言; asyncpg 单次 execute 只接受单条语句)。"""
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS event_store (
+                event_id        VARCHAR(36) PRIMARY KEY,
+                event_type      VARCHAR(100) NOT NULL,
+                aggregate_id    VARCHAR(36) NOT NULL,
+                aggregate_type  VARCHAR(50) NOT NULL,
+                version         INT NOT NULL,
+                data            JSONB NOT NULL,
+                occurred_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_event_store_aggregate
+                ON event_store (aggregate_id, version)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS snapshots (
+                aggregate_id    VARCHAR(36) PRIMARY KEY,
+                aggregate_type  VARCHAR(50) NOT NULL,
+                version         INT NOT NULL,
+                state           JSONB NOT NULL,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ]
         async with self._pool.acquire() as conn:
-            await conn.execute(ddl)
+            for ddl in statements:
+                await conn.execute(ddl)
 
     async def append_events(self, events: list[DomainEvent]) -> int:
         """追加事件到存储 (事务性)。"""

@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     # ── 分析 (ClickHouse; 缺省时降级为 PostgreSQL 查询) ────────────────
     clickhouse_url: str = ""
 
+    # ── 事件溯源 (CQRS event store; 每 N 个版本创建一次快照) ──────────
+    event_snapshot_threshold: int = 10
+
     # ── 生产环境安全基线 (fail-closed) ─────────────────────────────────
 
     def validate_production_security(self) -> None:
