@@ -1,0 +1,37 @@
+version: 1
+agent: hemal-monitor
+project: hemal
+root: /home/soffy/projects/hemal
+
+checks:
+  code_health:
+    frequency: daily
+    commands:
+      - "cd /home/soffy/projects/hemal && ruff check app/ --output-format json"
+      - "cd /home/soffy/projects/hemal && ruff format --check app/"
+  test_coverage:
+    frequency: daily
+    commands:
+      - "cd /home/soffy/projects/hemal && pytest tests/ -q --tb=short"
+  deployment_status:
+    frequency: daily
+    commands:
+      - "cd /home/soffy/projects/hemal && git status --short"
+      - "cd /home/soffy/projects/hemal && git log --oneline -5"
+  weekly_audit:
+    frequency: weekly
+    commands:
+      - "cd /home/soffy/projects/hemal && ruff check app/ --statistics"
+      - "cd /home/soffy/projects/hemal && pytest tests/ -v --tb=short"
+
+schedules:
+  daily: "0 9 * * *"
+  weekly: "30 9 * * 1"
+  timezone: UTC
+
+policy:
+  concurrency: 1
+  missing_configuration: BLOCKED
+  p1_immediate_escalation: true
+  deduplicate_alerts: true
+  secrets_in_logs: false
