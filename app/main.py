@@ -219,6 +219,10 @@ class AppState:
     payment_router: LocalizedPaymentRouter | None = None
     # Phase 4+
     ai_service: AIAssistantService | None = None
+    # Eventsourcing (CQRS)
+    event_store: Any = None
+    projector_registry: Any = None
+    event_bus: Any = None
 
 
 _app_state = AppState()
@@ -324,6 +328,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Phase 0: 更新全局状态供 health 模块访问
     _app_state.pool = app.state.pool
+
+    # Eventsourcing: DB 可用时初始化 EventStore，否则路由层诚实降级 503/空态。
+    if app.state.pool is not None:
+        try:
+            from .eventsourcing.service import EventBus, EventStore, ProjectorRegistry
+
+            _store = EventStore(settings)
+            await _store.initialize(app.state.pool)
+            _registry = ProjectorRegistry()
+            _bus = EventBus(_store, _registry)
+            _app_state.event_store = _store
+            _app_state.projector_registry = _registry
+            _app_state.event_bus = _bus
+            app.state.event_store = _store
+            app.state.projector_registry = _registry
+            app.state.event_bus = _bus
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EventStore init failed (eventsourcing degraded): %s", exc)
 
     # Phase 3: 初始化分析服务 (依赖 app.state.pool, 须在 init_db 之后)
     try:

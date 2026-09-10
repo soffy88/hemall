@@ -223,9 +223,13 @@ class WeChatPayProvider:
     def _verify_notify_signature(
         headers: dict[str, str], body: bytes, platform_cert: str
     ) -> bool:
-        """验证回调通知签名 (生产环境实现)。"""
-        # TODO: 使用微信平台证书验签
-        timestamp = headers.get("wechatpay-timestamp", "")
-        nonce = headers.get("wechatpay-nonce", "")
-        signature = headers.get("wechatpay-signature", "")
-        return bool(timestamp and nonce and signature)
+        """验证回调通知签名 (生产环境实现)。
+
+        fail-closed 存根：真实验签走 app.ext.payment_gateways
+        WechatPayNativeGateway.verify_callback（RSA+AES-GCM）。
+        此遗留方法永不返回 True，避免误接生产。
+        """
+        logger.warning(
+            "legacy wechat _verify_notify_signature called — fail-closed (use WechatPayNativeGateway)"
+        )
+        return False

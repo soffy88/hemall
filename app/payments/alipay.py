@@ -204,8 +204,11 @@ class AlipayProvider:
 
     @staticmethod
     def _verify_notify_signature(params: dict[str, str], alipay_public_key: str) -> bool:
-        """验证异步通知签名 (生产环境实现)。"""
-        # TODO: 使用支付宝公钥验签
-        sign = params.get("sign", "")
-        sign_type = params.get("sign_type", "")
-        return bool(sign and sign_type == "RSA2")
+        """验证异步通知签名 (生产环境实现)。
+
+        fail-closed 存根：未接支付宝公钥验签，永不返回 True。
+        """
+        logger.warning(
+            "legacy alipay _verify_notify_signature called — fail-closed"
+        )
+        return False

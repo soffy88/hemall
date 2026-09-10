@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from decimal import Decimal
@@ -167,7 +168,7 @@ async def create_payment(
                 body.order_id,
                 amount_cents,
                 body.provider.value,
-                '{"description": "' + (body.description or "") + '"}',
+                json.dumps({"description": body.description or ""}, ensure_ascii=False),
             )
     except Exception as exc:
         logger.warning("payment session DB write failed (non-fatal): %s", exc)
@@ -241,6 +242,8 @@ async def refund_payment(
     # 调用退款
     refund_amount = body.refund_amount or Decimal(row["amount"]) / 100
     refund_amount_cents = int(refund_amount * 100)
+    if refund_amount_cents <= 0 or refund_amount_cents > int(row["amount"]):
+        raise HTTPException(status_code=400, detail="invalid refund_amount")
 
     provider = row["provider"]
     settings = get_settings()
@@ -369,6 +372,9 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
             )
         return {"code": "SUCCESS", "message": "ok"}
 
+    # 遗留沙箱路径：生产环境拒绝，避免内存态订单被伪造回调标 paid。
+    if settings.environment.lower() == "production":
+        raise HTTPException(status_code=403, detail="sandbox notify disabled in production")
     notify = await _wechat_provider.handle_notify(headers, body)
     if notify is None:
         raise HTTPException(status_code=400, detail="invalid notify")
@@ -385,6 +391,8 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
 @router.post("/alipay/notify")
 async def alipay_notify(request: Request) -> str:
     """支付宝异步通知处理。"""
+    if get_settings().environment.lower() == "production":
+        return "fail"
     form = await request.form()
     params = dict(form)
 
