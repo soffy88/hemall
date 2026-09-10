@@ -73,6 +73,10 @@ class EventStore:
                 ON event_store (aggregate_id, version)
             """,
             """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_event_store_agg_version
+                ON event_store (aggregate_id, version)
+            """,
+            """
             CREATE TABLE IF NOT EXISTS snapshots (
                 aggregate_id    VARCHAR(36) PRIMARY KEY,
                 aggregate_type  VARCHAR(50) NOT NULL,
@@ -87,26 +91,31 @@ class EventStore:
                 await conn.execute(ddl)
 
     async def append_events(self, events: list[DomainEvent]) -> int:
-        """追加事件到存储 (事务性)。"""
+        """追加事件到存储 (事务性，(aggregate_id, version) 唯一约束做乐观锁)。"""
         if not self._initialized:
             return 0
 
         inserted = 0
-        async with self._pool.transaction() as conn:
-            for event in events:
-                d = event.to_dict()
-                sql = """
-                    INSERT INTO event_store 
-                    (event_id, event_type, aggregate_id, aggregate_type, version, data, occurred_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                """
-                await conn.execute(
-                    sql,
-                    d["event_id"], d["event_type"], d["aggregate_id"],
-                    d["aggregate_type"], d["version"], str(d["data"]),
-                    d["occurred_at"].isoformat(),
-                )
-                inserted += 1
+        try:
+            async with self._pool.transaction() as conn:
+                for event in events:
+                    d = event.to_dict()
+                    sql = """
+                        INSERT INTO event_store 
+                        (event_id, event_type, aggregate_id, aggregate_type, version, data, occurred_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """
+                    await conn.execute(
+                        sql,
+                        d["event_id"], d["event_type"], d["aggregate_id"],
+                        d["aggregate_type"], d["version"], str(d["data"]),
+                        d["occurred_at"].isoformat(),
+                    )
+                    inserted += 1
+        except Exception as exc:
+            # 唯一约束冲突 = 并发写同一版本（乐观锁命中），向上传递由调用方重试。
+            logger.warning("append_events failed (likely version conflict): %s", exc)
+            raise
 
         # 检查是否需要创建快照
         if len(events) >= 1:

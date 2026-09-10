@@ -59,10 +59,10 @@ spec:
         envFrom:
         - secretRef:
             name: {{ .Release.Name }}-secrets
-        # 健康检查
+        # 健康检查：liveness 只看进程存活，readiness 看依赖就绪
         livenessProbe:
           httpGet:
-            path: {{ .Values.api.healthCheck }}
+            path: {{ .Values.api.livenessCheck | default "/health/live" }}
             port: 8000
           initialDelaySeconds: {{ .Values.api.livenessThreshold }}
           periodSeconds: 10

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from ..deps import get_settings
 
@@ -51,12 +51,13 @@ async def health_live() -> dict[str, str]:
 
 @router.get("/ready")
 async def health_ready(
+    response: Response,
     settings: Any = Depends(get_settings),
 ) -> dict[str, Any]:
     """就绪探针 (readiness probe) — 依赖就绪才可接收流量。
 
     Kubernetes 用此判断是否加入 Service 负载均衡。
-    降级策略：DB/Redis 不可用时返回 degraded (非 500)，允许流量但客户端需处理降级。
+    降级策略：DB/Redis 不可用时返 503 + degraded，K8s/网关据此摘流。
     """
     # 延迟导入，避免与 main.py 的循环导入
     from ..main import get_app_state
@@ -77,6 +78,8 @@ async def health_ready(
     if redis_result["status"] == "down":
         overall_status = "degraded"
 
+    if overall_status != "healthy":
+        response.status_code = 503
     return {
         "status": overall_status,
         "version": state.version,

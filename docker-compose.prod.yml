@@ -16,7 +16,7 @@ services:
       # 否则会被静默忽略并回退到源码内的开发默认值。
       - HEMALL_ENVIRONMENT=production
       - HEMALL_LOG_LEVEL=INFO
-      - HEMALL_PG_DSN=postgresql://hemall:hemall@postgres:5432/hemall
+      - HEMALL_PG_DSN=postgresql://hemall:${POSTGRES_PASSWORD:?set a strong postgres password}@postgres:5432/hemall
       - HEMALL_REDIS_URL=redis://redis:6379/0
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       # ↓ 必须在部署时用真实强随机值覆盖 (下面是占位; HEMALL_ENVIRONMENT=production
@@ -47,6 +47,14 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
 
   # PostgreSQL 数据库
   postgres:
@@ -54,7 +62,7 @@ services:
     environment:
       - POSTGRES_DB=hemall
       - POSTGRES_USER=hemall
-      - POSTGRES_PASSWORD=hemall
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set a strong postgres password}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
@@ -138,7 +146,7 @@ services:
   grafana:
     image: grafana/grafana-enterprise:10.2.0
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:?set a strong grafana password}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning

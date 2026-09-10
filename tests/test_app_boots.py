@@ -13,8 +13,10 @@ def test_health_returns_ok(client):
     assert body["status"] == "alive"
 
     r = client.get("/health/ready")
-    assert r.status_code == 200
+    # 依赖缺失时 503 + degraded，K8s/网关据此摘流（P0-3）。
+    assert r.status_code == 503
     body = r.json()
+    assert body["status"] == "degraded"
     assert body["version"] == "0.1.0"
     # 无 Postgres 的环境里 database 应为 down (优雅降级), 但端点仍响应
     assert body["checks"]["database"]["status"] == "down"

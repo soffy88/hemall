@@ -7,7 +7,7 @@ api:
   replicas: 3
   image:
     repository: hemall/backend
-    tag: latest
+    tag: 0.3.0
     pullPolicy: IfNotPresent
   resources:
     requests:
@@ -17,6 +17,7 @@ api:
       cpu: "1"
       memory: 1Gi
   healthCheck: /health/ready
+  livenessCheck: /health/live
   livenessThreshold: 60
   # 生产环境额外配置
   env:

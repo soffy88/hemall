@@ -10,11 +10,11 @@ services:
       dockerfile: Dockerfile.prod
       additional_contexts:
         platform3o: ../platform/3O
-    image: registry.sxueji.com/hemall/backend:latest
+    image: registry.sxueji.com/hemall/backend:0.3.0
     restart: unless-stopped
     environment:
       # Database (sslmode=disable: 容器内网连接无需 TLS，避免 asyncpg 读取 root 客户端证书失败)
-      HEMALL_PG_DSN: postgresql://hemall:${HEMALL_PG_PASSWORD}@db:5432/hemall_prod?sslmode=disable
+      HEMALL_PG_DSN: postgresql://hemall:${HEMALL_PG_PASSWORD:?set a strong pg password}@db:5432/hemall_prod?sslmode=disable
       HEMALL_PG_POOL_MIN: 5
       HEMALL_PG_POOL_MAX: 30
       # Redis
@@ -23,10 +23,10 @@ services:
       # production 触发 Settings.validate_production_security(): 弱默认密钥/缺
       # ENCRYPTION_KEY/默认 pg 凭据 → 拒绝启动 (app/config.py)。
       HEMALL_ENVIRONMENT: ${HEMALL_ENVIRONMENT:?set production (or development/staging for non-prod)}
-      HEMALL_JWT_SECRET: ${HEMALL_JWT_SECRET}
+      HEMALL_JWT_SECRET: ${HEMALL_JWT_SECRET:?set a strong jwt secret}
       HEMALL_JWT_ALGORITHM: HS256
       HEMALL_JWT_EXPIRES_MINUTES: 1440
-      HEMALL_ANON_SALT: ${HEMALL_ANON_SALT}
+      HEMALL_ANON_SALT: ${HEMALL_ANON_SALT:?set a stable anon salt}
       # Webhook HMAC / 边缘网桥 Bearer (公开默认值在生产校验中被拒)
       HEMALL_WEBHOOK_SECRET: ${HEMALL_WEBHOOK_SECRET:?set a strong webhook HMAC secret}
       HEMALL_HARDWARE_SECRET: ${HEMALL_HARDWARE_SECRET:?set a strong edge-bridge bearer secret}
@@ -67,6 +67,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
     networks:
       - hemall-backend
 
@@ -77,7 +85,7 @@ services:
     environment:
       POSTGRES_DB: hemall_prod
       POSTGRES_USER: hemall
-      POSTGRES_PASSWORD: ${HEMALL_PG_PASSWORD}
+      POSTGRES_PASSWORD: ${HEMALL_PG_PASSWORD:?set a strong pg password}
       # Performance tuning
       POSTGRES_MAX_CONNECTIONS: "200"
       POSTGRES_SHARED_BUFFERS: 256MB
@@ -116,7 +124,7 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: https://mall.sxueji.com
-    image: registry.sxueji.com/hemall/frontend:latest
+    image: registry.sxueji.com/hemall/frontend:0.3.0
     restart: unless-stopped
     networks:
       - hemall-backend
@@ -163,7 +171,7 @@ services:
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set a strong grafana password}
       GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-piechart-panel
     volumes:
       - grafana_data:/var/lib/grafana

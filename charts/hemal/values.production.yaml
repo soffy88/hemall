@@ -6,7 +6,7 @@ api:
   replicas: 3
   image:
     repository: registry.example.com/hemall/backend
-    tag: latest
+    tag: 0.3.0
     pullPolicy: Always
   resources:
     requests:
@@ -16,6 +16,7 @@ api:
       cpu: "2"
       memory: 2Gi
   healthCheck: /health/ready
+  livenessCheck: /health/live
   livenessThreshold: 60
   env:
     LOG_LEVEL: INFO
