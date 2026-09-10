@@ -41,11 +41,14 @@ check_prerequisites() {
 build_image() {
     local tag=$1
     local registry=$2
-    
+
     log "构建 Docker 镜像: ${registry}/hemall:${tag}"
-    
-    # 构建镜像
-    docker build -f Dockerfile.prod -t ${registry}/hemall:${tag} .
+
+    # 3O 平台包在构建上下文之外，须经 BuildKit additional context 引入
+    # （Dockerfile.prod 注释 + docker-compose 的 additional_contexts 同理）。
+    docker build -f Dockerfile.prod \
+        --build-context platform3o=../platform/3O \
+        -t ${registry}/hemall:${tag} .
     
     # 推送到仓库
     if [ "$registry" != "local" ]; then
@@ -76,7 +79,9 @@ deploy_to_k8s() {
     
     log "等待部署完成..."
     kubectl rollout status deployment/hemall-api -n $namespace --timeout=300s
-    
+    # 就绪门：等待可用副本（readiness 503 时此步失败，阻止坏版本接流量）
+    kubectl wait --for=condition=available deployment/hemall-api -n $namespace --timeout=300s
+
     log "部署完成"
 }
 
@@ -102,7 +107,7 @@ run_health_check() {
 # 主部署函数
 main() {
     local environment=${1:-production}
-    local tag=${2:-latest}
+    local tag=${2:-0.3.0}
     local registry=${3:-your-registry.com}
     
     log "开始 Hemall ${environment} 环境部署"
@@ -115,14 +120,18 @@ main() {
     # 构建镜像
     build_image $tag $registry
     
-    # 根据环境选择 values 文件
-    local values_file="values.yaml"
+    # 根据环境选择 values 文件（实际路径 charts/hemal/ 下；缺失时回落默认并告警）
+    local values_file="charts/hemal/values.yaml"
     if [ "$environment" == "staging" ]; then
-        values_file="values.staging.yaml"
+        values_file="charts/hemal/values.staging.yaml"
     elif [ "$environment" == "production" ]; then
-        values_file="values.production.yaml"
+        values_file="charts/hemal/values.production.yaml"
     elif [ "$environment" == "mall-sxueji" ]; then
-        values_file="values.mall-sxueji.yaml"
+        values_file="charts/hemal/values.mall-sxueji.yaml"
+    fi
+    if [ ! -f "$values_file" ]; then
+        log_warn "values 文件 $values_file 不存在，回落 charts/hemal/values.yaml"
+        values_file="charts/hemal/values.yaml"
     fi
     
     # 部署到 Kubernetes
@@ -140,7 +149,7 @@ show_help() {
     echo ""
     echo "参数:"
     echo "  环境    部署环境 (staging|production，默认: production)"
-    echo "  标签    Docker 镜像标签 (默认: latest)"
+    echo "  标签    Docker 镜像标签 (默认: 0.3.0，与 Chart appVersion 对齐)"
     echo "  仓库    Docker 镜像仓库 (默认: your-registry.com)"
     echo ""
     echo "示例:"

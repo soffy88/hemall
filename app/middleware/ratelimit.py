@@ -100,7 +100,9 @@ class TokenBucketRateLimiter:
         bucket = self._buckets.get(key)
         if bucket is None:
             if len(self._buckets) >= _MAX_BUCKETS:
-                self._buckets.clear()
+                # 淘汰最旧 10% 桶而非全量清空，避免攻击者挤爆桶表洗白限流。
+                for old_key in list(self._buckets)[: _MAX_BUCKETS // 10]:
+                    del self._buckets[old_key]
             bucket = TokenBucket(self.capacity, self.refill_per_sec)
             self._buckets[key] = bucket
         return bucket

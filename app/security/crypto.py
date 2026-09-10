@@ -82,8 +82,9 @@ def decrypt_field(value: str | None) -> str | None:
         return decrypted.decode("utf-8")
     except InvalidToken:
         # 可能是未加密的明文 (历史数据迁移前), 降级返回原值。这是唯一允许的
-        # "原样返回" 分支——仅针对 Fernet 判定的非法/明文 token。
-        logger.debug("decrypt_field: value appears unencrypted, returning as-is")
+        # "原样返回" 分支——仅针对 Fernet 判定的非法/明文 token。warning（不记值）
+        # 让明密混存可被观测，迁移完成后应清零此日志。
+        logger.warning("decrypt_field: value appears unencrypted, returning as-is")
         return value
     except Exception as exc:
         # 其它异常 (如 key 配置错误) 属真实故障: 绝不能静默把密文当明文回传,

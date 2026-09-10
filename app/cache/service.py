@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 import redis.asyncio as redis
@@ -38,6 +39,8 @@ class CacheManager:
         self._redis_url = settings.redis_url or "redis://localhost:6379/0"
         self._pool: redis.Redis | None = None
         self._started = False
+        # 本实例持有的锁 token：release 时仅删自己持有的锁，避免误删他人锁。
+        self._lock_tokens: dict[str, str] = {}
 
     @classmethod
     async def create(cls, settings: Settings) -> CacheManager:
@@ -274,11 +277,13 @@ class CacheManager:
 
         lock_key = f"hemall:lock:{lock_name}"
         end_time = time.time() + timeout
+        token = uuid.uuid4().hex
 
         while time.time() < end_time:
             try:
-                acquired = await self._pool.set(lock_key, "1", nx=True, ex=timeout)
+                acquired = await self._pool.set(lock_key, token, nx=True, ex=timeout)
                 if acquired:
+                    self._lock_tokens[lock_key] = token
                     return True
             except Exception:
                 pass
@@ -287,13 +292,22 @@ class CacheManager:
         return False
 
     async def release_lock(self, lock_name: str) -> bool:
-        """释放分布式锁。"""
+        """释放分布式锁（仅释放本实例持有的锁，Lua 原子比对 token）。"""
         if not self.is_available:
             return False
         lock_key = f"hemall:lock:{lock_name}"
+        token = self._lock_tokens.pop(lock_key, None)
+        if token is None:
+            return False
         try:
-            await self._pool.delete(lock_key)
-            return True
+            released = await self._pool.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('del', KEYS[1]) else return 0 end",
+                1,
+                lock_key,
+                token,
+            )
+            return bool(released)
         except Exception:
             return False
 
