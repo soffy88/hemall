@@ -45,9 +45,7 @@ class ManualPayoutProvider:
         self._transfers[transfer_id] = record
         return record
 
-    async def escrow(
-        self, *, account: str, amount: int, release_date: Any
-    ) -> dict[str, Any]:
+    async def escrow(self, *, account: str, amount: int, release_date: Any) -> dict[str, Any]:
         """把资金锁定至 release_date 才能到账 (T+7 分账托管)。"""
         escrow_id = f"escrow_{uuid.uuid4().hex[:16]}"
         record = {
@@ -133,11 +131,13 @@ class ManualPaymentGateway:
         out_trade_no: str,
         total_fee_cents: int,
         description: str,
+        currency: str = "CNY",
     ) -> dict[str, Any]:
         """Stripe 专属统一下单形态 (PaymentIntent)。"""
         record = {
             "out_trade_no": out_trade_no,
             "total_fee_cents": total_fee_cents,
+            "currency": currency.upper(),
             "description": description,
             "status": "requires_payment_method",
             "payment_intent_id": f"pi_mock_{out_trade_no[-12:]}",
@@ -155,10 +155,14 @@ class ManualPaymentGateway:
         out_refund_no: str,
         refund_fee_cents: int,
         reason: str = "",
+        total_fee_cents: int | None = None,
+        payment_intent_id: str | None = None,
     ) -> dict[str, Any]:
         """退款。真实实现调微信 v3 退款 API / Stripe Refund.create。"""
         if refund_fee_cents <= 0:
             raise ValueError("refund: refund_fee_cents must be positive")
+        if out_refund_no in self._refunds:
+            return self._refunds[out_refund_no]
         record = {
             "out_refund_no": out_refund_no,
             "out_trade_no": out_trade_no,

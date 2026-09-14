@@ -48,8 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from oservi.engines.cron_scheduler_engine import CronSchedulerEngine
-from oservi.engines.event_webhook_dispatcher import EventWebhookDispatcherEngine
+from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
 
 from ..config import Settings
 from .spider_targets import extract_unit_from_text

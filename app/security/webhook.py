@@ -10,9 +10,12 @@
 (`await request.body()` / `request.form()`) 拿到的还是原始 payload，不丢失。
 
 签名协议 (本域自建契约，README 已注明)：
-    X-Hemall-Signature: hex( HMAC_SHA256(secret, raw_body_bytes) )
-    X-Hemall-Timestamp: Unix 秒 (可选，提供则校验 ±300s 防重放)
-    X-Hemall-Nonce:     一次性随机串 (可选，提供则进防重放去重集)
+    X-Hemall-Signature: hex( HMAC_SHA256(secret, raw_body_bytes) )  (必填)
+    X-Hemall-Timestamp: Unix 秒 (必填，±300s 防重放)
+    X-Hemall-Nonce:     一次性随机串 (必填，防重放去重)
+
+    timestamp/nonce 均为必填：调用方省略任一即 403。verify_hmac_sha256
+    本身保留可选参数仅为单测可注入，中间件层强制要求。
 
 诚实的空白：真实微信支付回调用的是"微信支付平台证书验签 + wechatpay-* 头"，
 支付宝用 RSA2 验签，不是这个 HMAC 契约——这两个 provider 目前是 mock，没有
@@ -138,7 +141,13 @@ class WebhookSignatureMiddleware:
         self.protected_paths = protected_paths
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if scope["type"] != "http" or scope["path"] not in self.protected_paths:
+        # 路径归一化："/notify/" 与 "/notify" 视为同一受保护路径，防止
+        # 尾斜杠变体绕过精确匹配。
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"].rstrip("/") or "/"
+        if path not in self.protected_paths:
             await self.app(scope, receive, send)
             return
 
@@ -161,6 +170,23 @@ class WebhookSignatureMiddleware:
         timestamp = headers.get("x-hemall-timestamp", "")
         nonce = headers.get("x-hemall-nonce", "")
 
+        # timestamp/nonce 必填：省略即视为重放风险，直接拒绝。
+        if not timestamp or not nonce:
+            from ..middleware.metrics import WEBHOOK_SIGNATURE_REJECTED
+
+            WEBHOOK_SIGNATURE_REJECTED.inc()
+            logger.warning(
+                "webhook replay headers missing: path=%s client=%s",
+                path,
+                scope.get("client"),
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "missing replay protection headers"},
+            )
+            await response(scope, receive, send)
+            return
+
         if not verify_hmac_sha256(
             body,
             signature,
@@ -173,7 +199,7 @@ class WebhookSignatureMiddleware:
             WEBHOOK_SIGNATURE_REJECTED.inc()
             logger.warning(
                 "webhook signature rejected: path=%s client=%s",
-                scope["path"],
+                path,
                 scope.get("client"),
             )
             response = JSONResponse(

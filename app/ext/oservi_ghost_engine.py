@@ -25,7 +25,7 @@ from .omodul.ignite_ghost_node import (
     ignite_ghost_node,
 )
 from .oprim import db_query_many
-from oservi.engines.cron_scheduler_engine import CronSchedulerEngine
+from .oservi_compat import CronSchedulerEngine
 
 logger = logging.getLogger("hemall.ext.oservi_ghost")
 

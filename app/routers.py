@@ -801,7 +801,11 @@ class _PickupTicketRequest(BaseModel):
 
 
 @ext_bespoke_router.post("/store/pickup-ticket")
-async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
+async def issue_pickup_ticket(
+    body: _PickupTicketRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
     """签发加密 JWT 提货码 (Phase 9 SPEC §5 弱网离线核销凭证)。
 
     支付成功回调后调用：后端校验订单已支付，签发带过期时间的 JWT，
@@ -811,15 +815,24 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
     JWT payload: { order_id, node_name, typ: "pickup" }
     有效期: 24 小时。
 
-    公开端点 (持提货码即可核销，无需登录)，纳入限流防刷。
+    安全基线 (与报案入口一致)：要求顾客 JWT，且 order_id 必须归属当前
+    顾客——否则枚举任意已支付 order_id 即可冒领他人提货码。核销侧
+    (扫码枪离线验 JWT) 仍无需登录。
     """
     from obase.crypto.util import CryptoUtil
 
     pool = _pool(request)
+    customer_id = principal["customer_id"]
+    if not await _owns_order(pool, customer_id, body.order_id):
+        raise HTTPException(404, "order not found")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT o.id, o.status, o.grand_total_cents "
+            "SELECT o.id, o.status, o.currency, o.grand_total_cents, "
+            "o.payment_verified_at, o.shipping_address, "
+            "p.status AS payment_status, p.amount_cents AS payment_amount_cents, "
+            "p.currency AS payment_currency "
             'FROM "customer_order" o '
+            "LEFT JOIN payment_intent p ON p.id::text = o.payment_intent_id "
             "WHERE o.id = $1",
             body.order_id,
         )
@@ -827,16 +840,34 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
         raise HTTPException(404, "order not found")
 
     # 只对已支付订单签发提货码
-    paid_statuses = {"confirmed", "paid", "fulfilled", "completed"}
-    if str(row["status"]) not in paid_statuses:
+    paid_statuses = {
+        "confirmed",
+        "processing",
+        "packed",
+        "shipped",
+        "delivered",
+        "completed",
+    }
+    payment_verified = (
+        str(row["status"]) in paid_statuses
+        and row["payment_status"] == "paid"
+        and row["payment_verified_at"] is not None
+        and int(row["payment_amount_cents"] or -1)
+        == int(row["grand_total_cents"] or 0)
+        and str(row["payment_currency"] or "").upper()
+        == str(row["currency"] or "").upper()
+    )
+    if not payment_verified:
         raise HTTPException(
-            409, f"order not paid (status={row['status']}), cannot issue pickup ticket"
+            409,
+            "payment is not verified PAID for this order; cannot issue pickup ticket",
         )
 
     # 取货点: 优先从订单 shipping_address 的 node_name 取，缺失回退默认
     node_name = "附近节点"
-    if row.get("node_name"):
-        node_name = row["node_name"]
+    shipping_address = row["shipping_address"] or {}
+    if isinstance(shipping_address, dict) and shipping_address.get("node_name"):
+        node_name = shipping_address["node_name"]
 
     cfg_store = request.app.state.config
     pickup_code = CryptoUtil.jwt_sign(
@@ -1036,7 +1067,6 @@ _EXT_BESPOKE_PUBLIC_PATHS = {
     "/supply-chain/suppliers/lookup",
     "/store/nearby-feed",
     "/store/cart/lock",
-    "/store/pickup-ticket",
     "/growth/douyin_callback",
     "/store/batches/{batch_id}/battle-reports",
     # Phase 10: IoT 边桥防腐层端点 (自带 HARDWARE_SECRET Bearer 鉴权，

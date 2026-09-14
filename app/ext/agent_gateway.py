@@ -609,6 +609,44 @@ def _clean_filename(name: str) -> str:
     return stem.strip()[:40] or "未命名商品"
 
 
+#: 传货上传允许的文件扩展名 (白名单)。存盘后经 /media 无鉴权公开，
+#: HTML/SVG/JS 等可执行类型可致存储型 XSS——一律拒绝。
+_ALLOWED_UPLOAD_EXTENSIONS = frozenset(
+    {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".gif",
+        ".mp4",
+        ".mov",
+        ".webm",
+    }
+)
+
+#: 传货上传允许的 content-type 前缀 (与扩展名双重校验)。
+_ALLOWED_UPLOAD_CONTENT_PREFIXES = ("image/", "video/")
+
+
+def _sanitize_upload_filename(name: str) -> str:
+    """清洗上传文件名防路径遍历：只保留 basename，字符白名单。
+
+    Raises:
+        HTTPException(400): 文件名为空、无允许的扩展名、或清洗后无可用字符。
+    """
+    base = Path(name).name.strip().replace("\x00", "")
+    if not base or base in {".", ".."}:
+        raise HTTPException(400, "invalid filename")
+    suffix = Path(base).suffix.lower()
+    if suffix not in _ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(400, f"unsupported file type: {suffix or '(none)'}")
+    stem = Path(base).stem
+    stem = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff._\- ]+", "", stem).strip().strip(".")
+    if not stem:
+        raise HTTPException(400, "invalid filename")
+    return f"{stem[:80]}{suffix}"
+
+
 async def ingest_media(
     file: UploadFile,
     *,
@@ -635,12 +673,16 @@ async def ingest_media(
     if not file.filename:
         raise HTTPException(400, "empty upload")
 
-    # 1. 存盘
+    # 1. 存盘 (文件名先清洗防路径遍历 + 类型白名单，见 _sanitize_upload_filename)
+    safe_name = _sanitize_upload_filename(file.filename)
+    content_type = file.content_type or ""
+    if not content_type.startswith(_ALLOWED_UPLOAD_CONTENT_PREFIXES):
+        raise HTTPException(400, f"unsupported content type: {content_type or '(none)'}")
     user_ref = str(principal.get("user_id") or "anonymous")[:8]
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     ingest_dir = out_root / "agent_ingest" / user_ref
     ingest_dir.mkdir(parents=True, exist_ok=True)
-    dest = ingest_dir / f"{ts}_{file.filename}"
+    dest = ingest_dir / f"{ts}_{safe_name}"
     content = await file.read()
     if not content:
         raise HTTPException(400, "empty file")
@@ -649,7 +691,7 @@ async def ingest_media(
     dest.write_bytes(content)
 
     # 2. 商品名 + SKU
-    title = _clean_filename(file.filename)
+    title = _clean_filename(safe_name)
     sku = f"AGT-{abs(hash(dest.name)) % 900000 + 100000}"
 
     # 3. 上架 (直插 SQL — 与 seed_grocery_catalog 同一套装配)

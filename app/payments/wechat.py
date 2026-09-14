@@ -118,6 +118,7 @@ class WeChatPayProvider:
 
         # 内存态订单存储 (沙箱模式)
         self._orders: dict[str, dict[str, Any]] = {}
+        self._refunds: dict[str, dict[str, Any]] = {}
 
         if self._sandbox:
             logger.warning(
@@ -164,12 +165,20 @@ class WeChatPayProvider:
     ) -> dict[str, Any]:
         """申请退款。"""
         if self._sandbox:
+            if out_refund_no in self._refunds:
+                return self._refunds[out_refund_no]
             order = self._orders.get(out_trade_no)
             if order is None:
                 return {"status": "error", "message": "order not found"}
             order["refund_amount"] = refund_amount
             order["refund_status"] = "SUCCESS"
-            return {"status": "SUCCESS", "refund_id": f"refund_{uuid.uuid4().hex[:12]}"}
+            result = {
+                "status": "SUCCESS",
+                "refund_id": f"refund_{out_refund_no[-12:]}",
+                "out_refund_no": out_refund_no,
+            }
+            self._refunds[out_refund_no] = result
+            return result
 
         raise NotImplementedError("production refund not yet implemented")
 

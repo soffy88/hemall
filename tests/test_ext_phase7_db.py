@@ -53,7 +53,12 @@ async def cn_pool():
 
 
 async def _make_variant(
-    pool, *, lat: float = 31.0, lon: float = 121.0, title: str = "土鸡蛋"
+    pool,
+    *,
+    lat: float = 31.0,
+    lon: float = 121.0,
+    title: str = "土鸡蛋",
+    product_status: str = "active",
 ) -> tuple[str, str, str]:
     from obase.uuid7 import uuid7
 
@@ -66,10 +71,11 @@ async def _make_variant(
             lon,
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,$2,$3,'active') RETURNING id",
+            "INSERT INTO product (id, title, slug, status) VALUES ($1,$2,$3,$4) RETURNING id",
             uuid7(),
             title,
             f"phase7-slug-{uuid7()}",
+            product_status,
         )
         # product_variant 没有 title 列 (共享 schema 只有 sku_code)——标题挂在
         # product 上，这里不插不存在的列。sku 用完整 uuid 去横线，避免 uuid7
@@ -237,7 +243,9 @@ async def test_spider_engine_layered_writes_price_benchmark(cn_pool):
     from app.ext.oservi import build_competitor_spider_engine
 
     pool = cn_pool
-    prod, variant, batch = await _make_variant(pool, title="雪花牛肉800g")
+    prod, variant, batch = await _make_variant(
+        pool, title="雪花牛肉800g", product_status="published"
+    )
     spider = pool._test_spider  # type: ignore[attr-defined]
     item = {
         "item": "雪花牛肉800g 家庭装",

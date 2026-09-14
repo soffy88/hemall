@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
 from app.deps import get_current_customer
-from obase.uuid7 import uuid7
 
 logger = logging.getLogger("hemall.storefront")
 
@@ -61,9 +61,7 @@ def _cfg(request: Request, config_cls: type, **kwargs: Any) -> Any:
     return config_cls(redis_url=settings.redis_url, **kwargs)
 
 
-def _sign_receipt(
-    order_id: str, secret: str, algorithm: str, ttl_minutes: int = 43200
-) -> str:
+def _sign_receipt(order_id: str, secret: str, algorithm: str, ttl_minutes: int = 43200) -> str:
     """签发收据 token（30 天有效）。"""
     from obase.crypto.util import CryptoUtil
 
@@ -105,9 +103,7 @@ async def create_cart(body: CreateCartRequest, request: Request):
 
     cfg = _cfg(request, CreateCartConfig)
     inp = CreateCartInput(region_code=body.region_code, currency=body.currency)
-    result = await create_cart(
-        cfg, inp, _output_dir(request, "create_cart"), pool=_pool(request)
-    )
+    result = await create_cart(cfg, inp, _output_dir(request, "create_cart"), pool=_pool(request))
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
     return {
@@ -132,9 +128,7 @@ async def add_line_item(body: AddLineItemRequest, request: Request):
     )
 
     cfg = _cfg(request, AddLineItemConfig)
-    inp = AddLineItemInput(
-        cart_id=body.cart_id, batch_id=body.batch_id, quantity=body.quantity
-    )
+    inp = AddLineItemInput(cart_id=body.cart_id, batch_id=body.batch_id, quantity=body.quantity)
     result = await add_line_item_to_cart(
         cfg, inp, _output_dir(request, "add_line_item_to_cart"), pool=_pool(request)
     )
@@ -307,13 +301,373 @@ async def set_cart_customer(body: SetCartCustomerRequest, request: Request):
 # ── 支付 + 结账 ──────────────────────────────────────────────────────────
 
 
+def _payment_payload(intent: Any) -> dict[str, Any]:
+    """把 PaymentService 结果转换成 storefront 可直接消费的响应。"""
+
+    provider_result = intent.provider_result or {}
+    return {
+        "payment_id": intent.intent_id,
+        "order_id": intent.order_id,
+        "amount": str(intent.amount_cents / 100),
+        "amount_cents": intent.amount_cents,
+        "currency": intent.currency,
+        "provider": intent.provider,
+        "status": intent.status,
+        "qr_code": provider_result.get("qr_code"),
+        "code_url": provider_result.get("code_url"),
+        "client_secret": provider_result.get("client_secret"),
+        "provider_result": provider_result or None,
+    }
+
+
+async def _create_draft_order_with_reservations(
+    pool: Any,
+    *,
+    customer_id: str,
+    region_code: str,
+    currency: str,
+    line_items: list[dict[str, Any]],
+    billing_address: dict[str, Any] | None = None,
+    shipping_address: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """原子创建代客订单：锁 batch、预留、建 reservation ledger、建订单。
+
+    这条 storefront 路径不调用 ``mark_draft_order_paid``；草稿只代表库存
+    已预留，支付必须随后经过 payment_intent + provider 回调才能确认。
+    """
+
+    if not line_items:
+        raise ValueError("line_items must not be empty")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            order_id = uuid7()
+            prepared: list[dict[str, Any]] = []
+            subtotal_cents = 0
+            for item in line_items:
+                batch = await conn.fetchrow(
+                    """
+                    SELECT ib.id, ib.variant_id, ib.location_id, ib.stock_qty,
+                           ib.reserved_qty, ib.retail_price_cents, ib.status,
+                           ib.inspection_status, pv.product_id
+                    FROM inventory_batch ib
+                    JOIN product_variant pv ON pv.id = ib.variant_id
+                    WHERE ib.id = $1
+                    FOR UPDATE OF ib
+                    """,
+                    item["batch_id"],
+                )
+                if batch is None:
+                    raise ValueError(f"batch {item['batch_id']} not found")
+                if batch["status"] != "active" or batch["inspection_status"] != "passed":
+                    raise ValueError(f"batch {item['batch_id']} is not sellable")
+                quantity = int(item["quantity"])
+                available = int(batch["stock_qty"]) - int(batch["reserved_qty"] or 0)
+                if quantity <= 0 or available < quantity:
+                    raise ValueError(
+                        f"insufficient stock for batch {item['batch_id']}: "
+                        f"requested {quantity}, available {max(0, available)}"
+                    )
+                await conn.execute(
+                    """
+                    UPDATE inventory_batch
+                    SET reserved_qty = reserved_qty + $1, updated_at = NOW()
+                    WHERE id = $2 AND stock_qty - reserved_qty >= $1
+                    """,
+                    quantity,
+                    batch["id"],
+                )
+                line_total = int(batch["retail_price_cents"]) * quantity
+                subtotal_cents += line_total
+                prepared.append(
+                    {
+                        "batch_id": batch["id"],
+                        "variant_id": batch["variant_id"],
+                        "location_id": batch["location_id"],
+                        "product_id": batch["product_id"],
+                        "quantity": quantity,
+                        "unit_price_cents": int(batch["retail_price_cents"]),
+                        "line_total_cents": line_total,
+                    }
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO customer_order
+                    (id, cart_id, customer_id, region_code, currency, status,
+                     subtotal_cents, discount_cents, tax_cents, shipping_cents,
+                     grand_total_cents, billing_address, shipping_address)
+                VALUES ($1, NULL, $2, $3, $4, 'draft', $5, 0, 0, 0, $5, $6::jsonb, $7::jsonb)
+                """,
+                order_id,
+                customer_id,
+                region_code or None,
+                currency.upper(),
+                subtotal_cents,
+                json.dumps(billing_address or {}, ensure_ascii=False),
+                json.dumps(shipping_address or {}, ensure_ascii=False),
+            )
+
+            for line in prepared:
+                line_id = uuid7()
+                await conn.execute(
+                    """
+                    INSERT INTO order_line_item
+                        (id, order_id, batch_id, quantity, unit_price_cents, line_total_cents,
+                         location_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    line_id,
+                    order_id,
+                    line["batch_id"],
+                    line["quantity"],
+                    line["unit_price_cents"],
+                    line["line_total_cents"],
+                    line["location_id"],
+                )
+                reservation_key = f"order:{order_id}:line:{line_id}"
+                reservation_id = await conn.fetchval(
+                    """
+                    INSERT INTO inventory_reservation
+                        (order_id, order_line_item_id, product_id, variant_id,
+                         location_id, batch_id, quantity, idempotency_key)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
+                    """,
+                    str(order_id),
+                    str(line_id),
+                    str(line["product_id"]),
+                    str(line["variant_id"]) if line["variant_id"] else None,
+                    line["location_id"],
+                    line["batch_id"],
+                    line["quantity"],
+                    reservation_key,
+                )
+                await conn.execute(
+                    """
+                    UPDATE order_line_item
+                    SET reservation_id = $1
+                    WHERE id = $2
+                    """,
+                    reservation_id,
+                    line_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO stock_movement
+                        (product_id, variant_id, location_id, batch_id,
+                         movement_type, quantity, reference_type, reference_id,
+                         reason, idempotency_key)
+                    VALUES ($1, $2, $3, $4, 'reserve', $5, 'order', $6, $7, $8)
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                    DO NOTHING
+                    """,
+                    str(line["product_id"]),
+                    str(line["variant_id"]) if line["variant_id"] else None,
+                    line["location_id"],
+                    line["batch_id"],
+                    line["quantity"],
+                    str(order_id),
+                    "draft order reservation",
+                    f"movement:{reservation_key}",
+                )
+
+            return {
+                "order_id": str(order_id),
+                "grand_total_cents": subtotal_cents,
+                "currency": currency.upper(),
+            }
+
+
+async def _create_order_from_cart(
+    pool: Any,
+    *,
+    cart_id: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    """把购物车快照原子转为 payment_pending 订单，但不捕获支付。"""
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cart = await conn.fetchrow(
+                """
+                SELECT id, customer_id, region_code, currency, status,
+                       subtotal_cents, discount_cents, tax_cents, shipping_cents,
+                       grand_total_cents, billing_address, shipping_address
+                FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+                """,
+                cart_id,
+            )
+            if cart is None:
+                raise ValueError("cart not found")
+            existing = await conn.fetchrow(
+                "SELECT id, grand_total_cents, currency, status "
+                "FROM customer_order WHERE cart_id = $1",
+                cart_id,
+            )
+            if existing is not None:
+                return {
+                    "order_id": str(existing["id"]),
+                    "grand_total_cents": int(existing["grand_total_cents"]),
+                    "currency": str(existing["currency"]),
+                    "status": str(existing["status"]),
+                }
+
+            lines = await conn.fetch(
+                """
+                SELECT cli.id, cli.batch_id, cli.quantity, cli.unit_price_cents,
+                       cli.line_total_cents, ib.variant_id, ib.location_id,
+                       pv.product_id, ib.stock_qty, ib.reserved_qty,
+                       ib.status, ib.inspection_status
+                FROM cart_line_item cli
+                JOIN inventory_batch ib ON ib.id = cli.batch_id
+                JOIN product_variant pv ON pv.id = ib.variant_id
+                WHERE cli.cart_id = $1 AND cli.deleted_at IS NULL
+                ORDER BY cli.created_at, cli.id
+                FOR UPDATE OF cli, ib
+                """,
+                cart_id,
+            )
+            if not lines:
+                raise ValueError("cart has no line items")
+
+            order_id = uuid7()
+            for line in lines:
+                quantity = int(line["quantity"])
+                if (
+                    quantity <= 0
+                    or line["status"] != "active"
+                    or line["inspection_status"] != "passed"
+                ):
+                    raise ValueError(f"batch {line['batch_id']} is not sellable")
+                reserved = await conn.fetchrow(
+                    """
+                    UPDATE inventory_batch
+                    SET reserved_qty = reserved_qty + $1, updated_at = NOW()
+                    WHERE id = $2 AND stock_qty - reserved_qty >= $1
+                    RETURNING id
+                    """,
+                    quantity,
+                    line["batch_id"],
+                )
+                if reserved is None:
+                    raise ValueError(f"insufficient stock for batch {line['batch_id']}")
+            await conn.execute(
+                """
+                INSERT INTO customer_order
+                    (id, cart_id, customer_id, region_code, currency, status,
+                     subtotal_cents, discount_cents, tax_cents, shipping_cents,
+                     grand_total_cents, billing_address, shipping_address)
+                VALUES ($1, $2, COALESCE($3, $4), $5, $6, 'pending', $7, $8, $9, $10,
+                        $11, $12::jsonb, $13::jsonb)
+                """,
+                order_id,
+                cart["id"],
+                customer_id,
+                cart["customer_id"],
+                cart["region_code"],
+                str(cart["currency"] or "CNY").upper(),
+                cart["subtotal_cents"],
+                cart["discount_cents"],
+                cart["tax_cents"],
+                cart["shipping_cents"],
+                cart["grand_total_cents"],
+                json.dumps(cart["billing_address"] or {}, ensure_ascii=False),
+                json.dumps(cart["shipping_address"] or {}, ensure_ascii=False),
+            )
+            for line in lines:
+                line_id = uuid7()
+                await conn.execute(
+                    """
+                    INSERT INTO order_line_item
+                        (id, order_id, batch_id, quantity, unit_price_cents, line_total_cents,
+                         location_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    line_id,
+                    order_id,
+                    line["batch_id"],
+                    line["quantity"],
+                    line["unit_price_cents"],
+                    line["line_total_cents"],
+                    line["location_id"],
+                )
+                reservation_key = f"order:{order_id}:line:{line_id}"
+                reservation_id = await conn.fetchval(
+                    """
+                    INSERT INTO inventory_reservation
+                        (order_id, order_line_item_id, product_id, variant_id,
+                         location_id, batch_id, quantity, idempotency_key)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
+                    """,
+                    str(order_id),
+                    str(line_id),
+                    str(line["product_id"]),
+                    str(line["variant_id"]) if line["variant_id"] else None,
+                    line["location_id"],
+                    line["batch_id"],
+                    line["quantity"],
+                    reservation_key,
+                )
+                await conn.execute(
+                    "UPDATE order_line_item SET reservation_id = $1 WHERE id = $2",
+                    reservation_id,
+                    line_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO stock_movement
+                        (product_id, variant_id, location_id, batch_id,
+                         movement_type, quantity, reference_type, reference_id,
+                         reason, idempotency_key)
+                    VALUES ($1, $2, $3, $4, 'reserve', $5, 'order', $6, $7, $8)
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                    DO NOTHING
+                    """,
+                    str(line["product_id"]),
+                    str(line["variant_id"]) if line["variant_id"] else None,
+                    line["location_id"],
+                    line["batch_id"],
+                    line["quantity"],
+                    str(order_id),
+                    "cart reservation transferred to order",
+                    f"movement:{reservation_key}",
+                )
+
+            await conn.execute(
+                "UPDATE cart SET status = 'payment_pending', updated_at = NOW() WHERE id = $1",
+                cart_id,
+            )
+            return {
+                "order_id": str(order_id),
+                "grand_total_cents": int(cart["grand_total_cents"]),
+                "currency": str(cart["currency"] or "CNY").upper(),
+            }
+
+
+async def _start_payment(
+    pool: Any,
+    settings: Any,
+    *,
+    order_id: str,
+    provider: str,
+) -> dict[str, Any]:
+    from .payments.service import PaymentService
+
+    service = PaymentService(pool, settings)
+    intent = await service.create_intent(order_id=order_id, provider=provider)
+    return _payment_payload(await service.process_intent(intent.intent_id))
+
+
 class CheckoutRequest(BaseModel):
-    """一步完成结账：设置区域 → 建支付会话 → 选定 → 授权 → 完成。"""
+    """一步创建待支付订单；支付成功必须由 provider 回调确认。"""
 
     cart_id: str
     billing_address: AddressPayload | None = None
     shipping_address: AddressPayload | None = None
     customer_id: str | None = None
+    provider: str | None = None
 
 
 @router.post("/checkout")
@@ -390,86 +744,33 @@ async def checkout(body: CheckoutRequest, request: Request):
         if r["status"] == "failed":
             raise HTTPException(400, f"customer: {r['error']['message']}")
 
-    # 3. 建支付会话
-    from omodul.create_payment_sessions import (
-        CreatePaymentSessionsConfig,
-        CreatePaymentSessionsInput,
-        create_payment_sessions,
-    )
-
-    r = await create_payment_sessions(
-        _cfg(request, CreatePaymentSessionsConfig),
-        CreatePaymentSessionsInput(
+    # 3. 只建立待支付订单。provider capture/confirm 不能在这里伪造成功；
+    # 支付 intent 先落库，再由真实 provider 回调进入 verified PAID。
+    try:
+        order = await _create_order_from_cart(
+            pool,
             cart_id=body.cart_id,
-            provider_names=[cfg_store.default_payment_provider],
-        ),
-        _step_dir(out_root, "create_payment_sessions"),
-        pool=pool,
-    )
-    if r["status"] == "failed":
-        raise HTTPException(400, f"payment_sessions: {r['error']['message']}")
+            customer_id=body.customer_id,
+        )
+        provider_name = (
+            body.provider
+            or cfg_store.payment_gateway_provider
+            or cfg_store.default_payment_provider
+        )
+        payment = await _start_payment(
+            pool,
+            cfg_store,
+            order_id=order["order_id"],
+            provider=provider_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - translate provider/db failures
+        logger.exception("store checkout failed")
+        raise HTTPException(503, "payment service unavailable") from exc
 
-    sessions = r.get("sessions", [])
-    provider_name = cfg_store.default_payment_provider
-    selected_session = next(
-        (s for s in sessions if s["provider_name"] == provider_name), None
-    )
-    if selected_session is None or selected_session["status"] == "failed":
-        raise HTTPException(400, f"{provider_name} payment session not available")
-
-    # 4. 选定支付会话
-    from omodul.set_payment_session import (
-        SetPaymentSessionConfig,
-        SetPaymentSessionInput,
-        set_payment_session,
-    )
-
-    r = await set_payment_session(
-        _cfg(request, SetPaymentSessionConfig),
-        SetPaymentSessionInput(
-            cart_id=body.cart_id,
-            provider_name=provider_name,
-        ),
-        _step_dir(out_root, "set_payment_session"),
-        pool=pool,
-    )
-    if r["status"] == "failed":
-        raise HTTPException(400, f"set_payment_session: {r['error']['message']}")
-
-    # 5. 授权支付
-    from omodul.authorize_payment_for_cart import (
-        AuthorizePaymentForCartConfig,
-        AuthorizePaymentForCartInput,
-        authorize_payment_for_cart,
-    )
-
-    r = await authorize_payment_for_cart(
-        _cfg(request, AuthorizePaymentForCartConfig),
-        AuthorizePaymentForCartInput(cart_id=body.cart_id),
-        _step_dir(out_root, "authorize_payment_for_cart"),
-        pool=pool,
-    )
-    if r["status"] == "failed":
-        raise HTTPException(400, f"authorize: {r['error']['message']}")
-
-    # 6. 完成结账
-    from omodul.complete_checkout import (
-        CompleteCheckoutConfig,
-        CompleteCheckoutInput,
-        complete_checkout,
-    )
-
-    r = await complete_checkout(
-        CompleteCheckoutConfig(redis_url=cfg_store.redis_url),
-        CompleteCheckoutInput(cart_id=body.cart_id),
-        _step_dir(out_root, "complete_checkout"),
-        pool=pool,
-    )
-    if r["status"] == "failed":
-        raise HTTPException(400, f"checkout: {r['error']['message']}")
-
-    # 7. 签发收据 token
-    order_id = str(r["order_id"])
+    # 收据可以用于查“待支付”订单，但前端只有在 verified PAID 后才显示成功。
+    order_id = order["order_id"]
     receipt_token = _sign_receipt(
         order_id,
         cfg_store.jwt_secret,
@@ -499,20 +800,146 @@ async def checkout(body: CheckoutRequest, request: Request):
                         "(id, device_id, order_id, batch_id, product_id, variant_id) "
                         "VALUES ($1, $2, $3, $4, $5, $6)",
                         [
-                            (uuid7(), device_id[:64], order_id, str(i["batch_id"]),
-                             str(i["product_id"]), str(i["variant_id"]))
+                            (
+                                uuid7(),
+                                device_id[:64],
+                                order_id,
+                                str(i["batch_id"]),
+                                str(i["product_id"]),
+                                str(i["variant_id"]),
+                            )
                             for i in items
                         ],
                     )
         except Exception as exc:  # noqa: BLE001 - 行为轨迹是旁路，不阻断下单
-            logger.warning(
-                "device purchase log failed (order=%s): %s", order_id, exc
-            )
+            logger.warning("device purchase log failed (order=%s): %s", order_id, exc)
 
     return {
         "order_id": order_id,
-        "grand_total_cents": r["grand_total_cents"],
+        "grand_total_cents": order["grand_total_cents"],
+        "currency": order["currency"],
         "receipt_token": receipt_token,
+        "payment": payment,
+    }
+
+
+class StoreDraftLineItem(BaseModel):
+    batch_id: str
+    quantity: int
+
+
+class StoreDraftOrderRequest(BaseModel):
+    region_code: str = "cn-east"
+    currency: str = "CNY"
+    line_items: list[StoreDraftLineItem]
+    billing_address: dict[str, Any] | None = None
+    shipping_address: dict[str, Any] | None = None
+
+
+@router.post("/draft-orders")
+async def create_store_draft_order(
+    body: StoreDraftOrderRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict[str, Any]:
+    """顾客快捷下单：库存预留和 reservation ledger 一次事务完成。"""
+
+    try:
+        return await _create_draft_order_with_reservations(
+            _pool(request),
+            customer_id=str(principal["customer_id"]),
+            region_code=body.region_code,
+            currency=body.currency,
+            line_items=[item.model_dump() for item in body.line_items],
+            billing_address=body.billing_address,
+            shipping_address=body.shipping_address,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+class StorePaymentRequest(BaseModel):
+    order_id: str
+    provider: str | None = None
+
+
+async def _assert_customer_order(pool: Any, customer_id: str, order_id: str) -> None:
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval(
+            "SELECT customer_id FROM customer_order WHERE id = $1",
+            order_id,
+        )
+    if owner is None or str(owner) != customer_id:
+        raise HTTPException(404, "order not found")
+
+
+@router.post("/payments/create")
+async def create_store_payment(
+    body: StorePaymentRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict[str, Any]:
+    """顾客支付入口；只接受自己订单，金额由 payment_intent 从订单读取。"""
+
+    pool = _pool(request)
+    await _assert_customer_order(pool, str(principal["customer_id"]), body.order_id)
+    settings = request.app.state.config
+    provider = body.provider or settings.payment_gateway_provider
+    try:
+        return await _start_payment(
+            pool,
+            settings,
+            order_id=body.order_id,
+            provider=provider,
+        )
+    except Exception as exc:  # noqa: BLE001 - avoid leaking gateway details
+        from .payments.service import (
+            PaymentAmountMismatchError,
+            PaymentNotFoundError,
+            PaymentServiceError,
+        )
+
+        if isinstance(exc, PaymentNotFoundError):
+            raise HTTPException(404, str(exc)) from exc
+        if isinstance(exc, PaymentAmountMismatchError):
+            raise HTTPException(409, str(exc)) from exc
+        if isinstance(exc, PaymentServiceError):
+            raise HTTPException(400, str(exc)) from exc
+        logger.exception("store payment create failed")
+        raise HTTPException(503, "payment service unavailable") from exc
+
+
+@router.get("/payments/{payment_id}")
+async def query_store_payment(
+    payment_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict[str, Any]:
+    """顾客轮询支付状态；不存在或非本人订单统一返回 404。"""
+
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT p.id, p.order_id, p.amount_cents, p.currency, p.provider,
+                   p.status, p.provider_trade_no, o.customer_id
+            FROM payment_intent p
+            JOIN customer_order o ON o.id::text = p.order_id
+            WHERE p.id = $1
+            """,
+            payment_id,
+        )
+    if row is None or str(row["customer_id"]) != str(principal["customer_id"]):
+        raise HTTPException(404, "payment not found")
+    return {
+        "payment_id": str(row["id"]),
+        "order_id": str(row["order_id"]),
+        "amount_cents": int(row["amount_cents"]),
+        "amount": str(int(row["amount_cents"]) / 100),
+        "currency": row["currency"],
+        "provider": row["provider"],
+        "status": row["status"],
+        "provider_trade_no": row["provider_trade_no"],
     }
 
 
@@ -562,9 +989,7 @@ async def remove_discount(body: RemoveDiscountRequest, request: Request):
     )
 
     cfg = _cfg(request, RemoveDiscountFromCartConfig)
-    inp = RemoveDiscountFromCartInput(
-        cart_id=body.cart_id, discount_id=body.discount_id
-    )
+    inp = RemoveDiscountFromCartInput(cart_id=body.cart_id, discount_id=body.discount_id)
     result = await remove_discount_from_cart(
         cfg, inp, _output_dir(request, "remove_discount_from_cart"), pool=_pool(request)
     )
@@ -614,9 +1039,7 @@ async def remove_gift_card(body: RemoveGiftCardRequest, request: Request):
     )
 
     cfg = _cfg(request, RemoveGiftCardFromCartConfig)
-    inp = RemoveGiftCardFromCartInput(
-        cart_id=body.cart_id, gift_card_id=body.gift_card_id
-    )
+    inp = RemoveGiftCardFromCartInput(cart_id=body.cart_id, gift_card_id=body.gift_card_id)
     result = await remove_gift_card_from_cart(
         cfg,
         inp,
@@ -790,12 +1213,8 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
             customer_id,
         )
 
-    token = _sign_customer_token(
-        customer_id, body.email, cfg.jwt_secret, cfg.jwt_algorithm
-    )
-    return CustomerTokenResponse(
-        access_token=token, customer_id=customer_id, email=body.email
-    )
+    token = _sign_customer_token(customer_id, body.email, cfg.jwt_secret, cfg.jwt_algorithm)
+    return CustomerTokenResponse(access_token=token, customer_id=customer_id, email=body.email)
 
 
 class CustomerLoginRequest(BaseModel):
@@ -821,18 +1240,12 @@ async def login_customer(body: CustomerLoginRequest, request: Request):
     if not bcrypt_verify(password=body.password, hashed=row["password_hash"]):
         raise HTTPException(401, "invalid credentials")
 
-    token = _sign_customer_token(
-        str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm
-    )
-    return CustomerTokenResponse(
-        access_token=token, customer_id=str(row["id"]), email=row["email"]
-    )
+    token = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
+    return CustomerTokenResponse(access_token=token, customer_id=str(row["id"]), email=row["email"])
 
 
 @router.get("/customers/me")
-async def get_my_profile(
-    request: Request, principal: dict = Depends(get_current_customer)
-):
+async def get_my_profile(request: Request, principal: dict = Depends(get_current_customer)):
     customer = await queries.get_customer(_pool(request), principal["customer_id"])
     if customer is None:
         raise HTTPException(404, "customer not found")
@@ -874,19 +1287,13 @@ async def update_my_profile(
 
 
 @router.get("/customers/me/orders")
-async def get_my_orders(
-    request: Request, principal: dict = Depends(get_current_customer)
-):
+async def get_my_orders(request: Request, principal: dict = Depends(get_current_customer)):
     return await queries.list_customer_orders(_pool(request), principal["customer_id"])
 
 
 @router.get("/customers/me/addresses")
-async def list_my_addresses(
-    request: Request, principal: dict = Depends(get_current_customer)
-):
-    return await queries.list_customer_addresses(
-        _pool(request), principal["customer_id"]
-    )
+async def list_my_addresses(request: Request, principal: dict = Depends(get_current_customer)):
+    return await queries.list_customer_addresses(_pool(request), principal["customer_id"])
 
 
 class MyAddressRequest(BaseModel):
@@ -914,17 +1321,13 @@ async def add_my_address(
 
     result = await add_customer_address(
         _cfg(request, AddCustomerAddressConfig),
-        AddCustomerAddressInput(
-            customer_id=principal["customer_id"], **body.model_dump()
-        ),
+        AddCustomerAddressInput(customer_id=principal["customer_id"], **body.model_dump()),
         _output_dir(request, "add_customer_address"),
         pool=_pool(request),
     )
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
-    return await queries.list_customer_addresses(
-        _pool(request), principal["customer_id"]
-    )
+    return await queries.list_customer_addresses(_pool(request), principal["customer_id"])
 
 
 async def _owns_address(pool: Any, customer_id: str, address_id: str) -> bool:
@@ -972,9 +1375,7 @@ async def update_my_address(
     )
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
-    return await queries.list_customer_addresses(
-        _pool(request), principal["customer_id"]
-    )
+    return await queries.list_customer_addresses(_pool(request), principal["customer_id"])
 
 
 @router.delete("/customers/me/addresses/{address_id}")
@@ -1079,7 +1480,5 @@ async def submit_my_claim(
 
 
 @router.get("/customers/me/claims")
-async def list_my_claims(
-    request: Request, principal: dict = Depends(get_current_customer)
-):
+async def list_my_claims(request: Request, principal: dict = Depends(get_current_customer)):
     return await queries.list_customer_claims(_pool(request), principal["customer_id"])

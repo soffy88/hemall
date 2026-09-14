@@ -49,6 +49,7 @@ class ReserveStockRequest(BaseModel):
     variant_id: str | None = None
     quantity: int = Field(..., gt=0, description="预留数量")
     location_id: str = Field(..., description="仓库 ID")
+    reservation_key: str | None = Field(None, description="重试幂等键")
 
 
 class DeductStockRequest(BaseModel):
@@ -155,18 +156,20 @@ async def reserve_stock(
     from .service import InsufficientStockError
 
     try:
-        batches = await svc.reserve_stock(
+        allocations = await svc.reserve_stock_allocations(
             order_id=body.order_id,
             product_id=body.product_id,
             quantity=body.quantity,
             location_id=body.location_id,
             variant_id=body.variant_id,
+            reservation_key=body.reservation_key,
         )
         return {
             "status": "reserved",
             "order_id": body.order_id,
             "reserved_qty": body.quantity,
-            "batch_ids": batches,
+            "batch_ids": [str(item["batch_id"]) for item in allocations],
+            "allocations": allocations,
         }
     except InsufficientStockError as e:
         raise HTTPException(

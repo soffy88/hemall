@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "hemall headless commerce backend — 3O paradigm project service layer (§8), assembling the platform/3O element libraries into a runnable FastAPI commerce engine."
 requires-python = ">=3.12"
 dependencies = [
-    # 3O element libraries (installed editable from ../platform/3O via [tool.uv.sources])
+    # 3O element libraries (resolved from immutable commits via [tool.uv.sources])
     "obase",
     "oprim",
     "oskill",
@@ -24,6 +24,9 @@ dependencies = [
     # 下崩溃 (collections.MutableSet 已移除)，钉住兼容组合。
     "h2>=4.0",
     "hyperframe>=6.0",
+    # app/search/client imports the async client at application import time;
+    # keep this explicit instead of relying on a transitive 3O dependency.
+    "elasticsearch>=8.12",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +35,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=4.0",
     "httpx>=0.27",
+    "mypy>=1.10",
     "ruff>=0.8",
 ]
 
@@ -50,7 +54,6 @@ observability = [
 
 # Phase 2: 高级商业能力
 phase2 = [
-    "elasticsearch>=8.12",
     "redis>=5.0",
     "firebase-admin>=6.0",
     # apns2 已于 2025-02 移除: 2020 年后未维护, 其 hyper 0.7 钉死
@@ -59,11 +62,16 @@ phase2 = [
 ]
 
 [tool.uv.sources]
-obase = { path = "../platform/3O/obase", editable = true }
-oprim = { path = "../platform/3O/oprim", editable = true }
-oskill = { path = "../platform/3O/oskill", editable = true }
-omodul = { path = "../platform/3O/omodul", editable = true }
-oservi = { path = "../platform/3O/oservi", editable = true }
+# Pin the public 3O dependencies by immutable commits. The previous sibling
+# paths made CI/Docker depend on ../platform/3O existing on the runner.
+obase = { git = "https://github.com/helios-plat/obase.git", rev = "7c8ca2742fcae32c8f6da83363becfb1de6d06cd" }
+oprim = { git = "https://github.com/helios-plat/oprim.git", rev = "f1e731ae43812c2ac574b2b7ff6fc9784bb7e313" }
+oskill = { git = "https://github.com/helios-plat/oskill.git", rev = "7a64db59ae38766f5254409b53a0dd199da3b55b" }
+omodul = { git = "https://github.com/helios-plat/omodul.git", rev = "38323ebb7ac635eb584506f1639a821323a76039" }
+# The v1.4 engine commit contains the event_webhook_dispatcher and cron
+# engines imported by this service; the local sibling had unpublished later
+# work that is not required to build hemall.
+oservi = { git = "https://github.com/helios-plat/oservice.git", rev = "1a4f44b15c19064ae06596751c2ec82be4ae180f" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

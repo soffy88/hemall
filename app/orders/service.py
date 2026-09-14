@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from obase.persistence.pool import PgPool
 
 from .models import (
-    InvalidOrderTransitionError,
+    ConcurrentOrderTransitionError,
     OrderSnapshot,
     OrderStatus,
     StatusHistoryEntry,
@@ -24,6 +25,10 @@ class OrderNotFoundError(Exception):
         super().__init__(f"order not found: {order_id}")
 
 
+class OrderInventoryConflictError(Exception):
+    """订单行与逐批 reservation 账本不一致，拒绝状态变更。"""
+
+
 class OrderService:
     """订单服务 — 封装订单全生命周期操作。"""
 
@@ -37,7 +42,7 @@ class OrderService:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, cart_id, customer_id, region_code, currency, status,
+                SELECT id, cart_id, customer_id, region_code, currency, status, version,
                        subtotal_cents, discount_cents, tax_cents, shipping_cents,
                        grand_total_cents, payment_provider_name, payment_intent_id,
                        billing_address, shipping_address, created_at, updated_at
@@ -52,6 +57,7 @@ class OrderService:
 
         return OrderSnapshot(
             id=str(row["id"]),
+            version=int(row.get("version", 0) or 0),
             cart_id=str(row["cart_id"]) if row["cart_id"] else None,
             customer_id=str(row["customer_id"]) if row["customer_id"] else None,
             status=OrderStatus(row["status"]),
@@ -76,9 +82,11 @@ class OrderService:
                 """
                 SELECT oli.id, oli.order_id, oli.batch_id, oli.quantity,
                        oli.unit_price_cents, oli.line_total_cents,
-                       ib.product_id, ib.variant_id, ib.stock_qty
+                       pv.product_id, ib.variant_id, ib.location_id, ib.stock_qty,
+                       oli.location_id AS wired_location_id, oli.reservation_id
                 FROM order_line_item oli
                 JOIN inventory_batch ib ON ib.id = oli.batch_id
+                JOIN product_variant pv ON pv.id = ib.variant_id
                 WHERE oli.order_id = $1
                 """,
                 order_id,
@@ -112,7 +120,7 @@ class OrderService:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
-                SELECT id, cart_id, customer_id, currency, status,
+                SELECT id, cart_id, customer_id, currency, status, version,
                        subtotal_cents, discount_cents, tax_cents, shipping_cents,
                        grand_total_cents, payment_provider_name, payment_intent_id,
                        created_at, updated_at
@@ -129,6 +137,7 @@ class OrderService:
         return [
             OrderSnapshot(
                 id=str(r["id"]),
+                version=int(r.get("version", 0) or 0),
                 cart_id=str(r["cart_id"]) if r["cart_id"] else None,
                 customer_id=str(r["customer_id"]) if r["customer_id"] else None,
                 status=OrderStatus(r["status"]),
@@ -169,9 +178,7 @@ class OrderService:
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
         async with self._pool.acquire() as conn:
-            return await conn.fetchval(
-                f"SELECT COUNT(*) FROM customer_order {where}", *params
-            )
+            return await conn.fetchval(f"SELECT COUNT(*) FROM customer_order {where}", *params)
 
     # ── 状态机驱动 ───────────────────────────────────────────────
 
@@ -182,6 +189,7 @@ class OrderService:
         reason: str | None = None,
         operator_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        expected_version: int | None = None,
     ) -> OrderSnapshot:
         """驱动订单状态转换。
 
@@ -191,26 +199,52 @@ class OrderService:
         4. 写入历史记录
         5. 触发联动 (取消订单→释放库存, 确认→扣减库存等)
         """
-        order = await self.get_order(order_id)
-        if order is None:
-            raise OrderNotFoundError(order_id)
-
-        old_status = order.status
-        validate_order_transition(order_id, old_status, new_status)
-
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                # 更新订单状态
-                await conn.execute(
+                current = await conn.fetchrow(
+                    """
+                    SELECT id, status, version
+                    FROM customer_order
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    order_id,
+                )
+                if current is None:
+                    raise OrderNotFoundError(order_id)
+                old_status = OrderStatus(current["status"])
+                current_version = int(current["version"] or 0)
+                if expected_version is not None and expected_version != current_version:
+                    raise ConcurrentOrderTransitionError(
+                        order_id, expected_version, current_version
+                    )
+                validate_order_transition(order_id, old_status, new_status)
+
+                # 库存操作与订单 transition 共用同一 PostgreSQL 事务。
+                # 只按 inventory_reservation.batch_id 更新，绝不再按商品汇总扣减。
+                if new_status == OrderStatus.CANCELLED:
+                    await self._release_order_inventory(conn, order_id)
+                elif new_status == OrderStatus.SHIPPED:
+                    await self._ship_order_inventory(conn, order_id)
+
+                updated = await conn.fetchrow(
                     """
                     UPDATE customer_order
-                    SET status = $1, updated_at = NOW()
-                    WHERE id = $2 AND status = $3
+                    SET status = $1, version = version + 1, updated_at = NOW()
+                    WHERE id = $2 AND status = $3 AND version = $4
+                    RETURNING id, version
                     """,
                     new_status.value,
                     order_id,
                     old_status.value,
+                    current_version,
                 )
+                if updated is None:
+                    # 即使调用者没有显式传 expected_version，数据库条件仍保证
+                    # 一个版本只能成功一次。
+                    raise ConcurrentOrderTransitionError(
+                        order_id, current_version, current_version + 1
+                    )
 
                 # 写历史记录
                 await conn.execute(
@@ -224,19 +258,8 @@ class OrderService:
                     new_status.value,
                     reason,
                     operator_id,
-                    metadata,
+                    json.dumps(metadata or {}, ensure_ascii=False),
                 )
-
-        # 更新快照
-        order.status = new_status
-
-        # 触发联动
-        if new_status == OrderStatus.CANCELLED:
-            await self._on_cancel(order, reason)
-        elif new_status == OrderStatus.CONFIRMED:
-            await self._on_confirm(order)
-        elif new_status == OrderStatus.SHIPPED:
-            await self._on_ship(order)
 
         logger.info(
             "order %s transitioned: %s → %s",
@@ -244,7 +267,10 @@ class OrderService:
             old_status.value,
             new_status.value,
         )
-        return order
+        result = await self.get_order(order_id)
+        if result is None:  # pragma: no cover - row was just updated in the transaction
+            raise OrderNotFoundError(order_id)
+        return result
 
     async def confirm_order(
         self,
@@ -335,6 +361,198 @@ class OrderService:
             operator_id=operator_id,
         )
 
+    # ── 精确库存联动 (与订单 transition 共用同一事务) ───────────────
+
+    async def _release_order_inventory(self, conn: Any, order_id: str) -> None:
+        """按 reservation/batch 精确释放订单库存。
+
+        这里不再按 product/location 汇总更新。每一条 reservation 都先锁住，
+        再只更新它自己的 batch；订单状态和库存账本要么一起提交，要么一起回滚。
+        """
+
+        reservations = await conn.fetch(
+            """
+            SELECT id, product_id, variant_id, location_id, batch_id,
+                   quantity, consumed_qty, released_qty
+            FROM inventory_reservation
+            WHERE order_id = $1
+              AND status IN ('reserved', 'partially_released')
+            ORDER BY created_at, id
+            FOR UPDATE
+            """,
+            order_id,
+        )
+        for reservation in reservations:
+            releasable = (
+                int(reservation["quantity"])
+                - int(reservation["consumed_qty"])
+                - int(reservation["released_qty"])
+            )
+            if releasable <= 0:
+                continue
+
+            batch = await conn.fetchrow(
+                """
+                UPDATE inventory_batch
+                SET reserved_qty = reserved_qty - $1, updated_at = NOW()
+                WHERE id = $2 AND reserved_qty >= $1
+                RETURNING id
+                """,
+                releasable,
+                reservation["batch_id"],
+            )
+            if batch is None:
+                raise OrderInventoryConflictError(
+                    f"reservation {reservation['id']} is inconsistent with batch "
+                    f"{reservation['batch_id']}"
+                )
+
+            released_qty = int(reservation["released_qty"]) + releasable
+            await conn.execute(
+                """
+                UPDATE inventory_reservation
+                SET released_qty = $1, status = 'released', updated_at = NOW()
+                WHERE id = $2
+                """,
+                released_qty,
+                reservation["id"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO stock_movement
+                    (product_id, variant_id, location_id, batch_id,
+                     movement_type, quantity, reference_type, reference_id,
+                     reason, idempotency_key)
+                VALUES ($1, $2, $3, $4, 'unreserve', $5, 'order', $6, $7, $8)
+                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                DO NOTHING
+                """,
+                reservation["product_id"],
+                reservation["variant_id"],
+                reservation["location_id"],
+                reservation["batch_id"],
+                releasable,
+                order_id,
+                "order cancelled",
+                f"order-cancel:{order_id}:{reservation['id']}:{released_qty}",
+            )
+
+    async def _ship_order_inventory(self, conn: Any, order_id: str) -> None:
+        """把订单 reservation 精确转换成 shipment，且保证只能转换一次。"""
+
+        reservations = await conn.fetch(
+            """
+            SELECT id, order_line_item_id, product_id, variant_id, location_id,
+                   batch_id, quantity, consumed_qty, released_qty
+            FROM inventory_reservation
+            WHERE order_id = $1
+              AND status IN ('reserved', 'partially_released')
+            ORDER BY created_at, id
+            FOR UPDATE
+            """,
+            order_id,
+        )
+        line_count = int(
+            await conn.fetchval(
+                "SELECT COUNT(*) FROM order_line_item WHERE order_id = $1",
+                order_id,
+            )
+            or 0
+        )
+        if line_count and not reservations:
+            # 没有 reservation 就拒绝发货，避免“订单显示已发货但库存未扣”或
+            # 重新按商品汇总扣错别的批次。历史订单应先做一次可审计迁移。
+            raise OrderInventoryConflictError(f"order {order_id} has no inventory reservations")
+
+        for reservation in reservations:
+            shippable = (
+                int(reservation["quantity"])
+                - int(reservation["consumed_qty"])
+                - int(reservation["released_qty"])
+            )
+            if shippable <= 0:
+                continue
+
+            batch = await conn.fetchrow(
+                """
+                UPDATE inventory_batch
+                SET stock_qty = stock_qty - $1,
+                    reserved_qty = reserved_qty - $1,
+                    updated_at = NOW()
+                WHERE id = $2 AND stock_qty >= $1 AND reserved_qty >= $1
+                RETURNING id
+                """,
+                shippable,
+                reservation["batch_id"],
+            )
+            if batch is None:
+                raise OrderInventoryConflictError(
+                    f"reservation {reservation['id']} cannot be shipped from batch "
+                    f"{reservation['batch_id']}"
+                )
+
+            consumed_qty = int(reservation["consumed_qty"]) + shippable
+            await conn.execute(
+                """
+                UPDATE inventory_reservation
+                SET consumed_qty = $1, status = 'consumed', updated_at = NOW()
+                WHERE id = $2
+                """,
+                consumed_qty,
+                reservation["id"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO stock_movement
+                    (product_id, variant_id, location_id, batch_id,
+                     movement_type, quantity, reference_type, reference_id,
+                     reason, idempotency_key)
+                VALUES ($1, $2, $3, $4, 'shipment', $5, 'order', $6, $7, $8)
+                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                DO NOTHING
+                """,
+                reservation["product_id"],
+                reservation["variant_id"],
+                reservation["location_id"],
+                reservation["batch_id"],
+                shippable,
+                order_id,
+                "order shipped",
+                f"order-ship:{order_id}:{reservation['id']}:{consumed_qty}",
+            )
+
+            line_id = reservation["order_line_item_id"]
+            if line_id:
+                await conn.execute(
+                    """
+                    UPDATE order_line_item
+                    SET fulfilled_qty = LEAST(quantity, fulfilled_qty + $1)
+                    WHERE id = $2 AND order_id = $3
+                    """,
+                    shippable,
+                    line_id,
+                    order_id,
+                )
+            else:
+                # 兼容迁移前未写 order_line_item_id 的 reservation，但仍然
+                # 只按 batch 精确绑定，不能按 product 汇总。
+                await conn.execute(
+                    """
+                    UPDATE order_line_item
+                    SET fulfilled_qty = LEAST(quantity, fulfilled_qty + $1)
+                    WHERE id = (
+                        SELECT id FROM order_line_item
+                        WHERE order_id = $2 AND batch_id = $3
+                          AND fulfilled_qty < quantity
+                        ORDER BY id
+                        LIMIT 1
+                    )
+                    """,
+                    shippable,
+                    order_id,
+                    reservation["batch_id"],
+                )
+
     # ── 状态联动 (内部) ──────────────────────────────────────────
 
     async def _on_cancel(self, order: OrderSnapshot, reason: str | None) -> None:
@@ -416,25 +634,28 @@ class OrderService:
                 order_id,
             )
 
-        return [
-            StatusHistoryEntry(
-                id=str(r["id"]),
-                order_id=str(r["order_id"]),
-                from_status=r["from_status"],
-                to_status=r["to_status"],
-                reason=r["reason"],
-                operator_id=r["operator_id"],
-                metadata=dict(r["metadata"]) if r["metadata"] else None,
-                created_at=r["created_at"],
+        history: list[StatusHistoryEntry] = []
+        for row in rows:
+            metadata = row["metadata"]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            history.append(
+                StatusHistoryEntry(
+                    id=str(row["id"]),
+                    order_id=str(row["order_id"]),
+                    from_status=row["from_status"],
+                    to_status=row["to_status"],
+                    reason=row["reason"],
+                    operator_id=row["operator_id"],
+                    metadata=dict(metadata) if metadata else None,
+                    created_at=row["created_at"],
+                )
             )
-            for r in rows
-        ]
+        return history
 
     # ── 订单统计 ─────────────────────────────────────────────────
 
-    async def get_order_stats(
-        self, customer_id: str | None = None
-    ) -> dict[str, int]:
+    async def get_order_stats(self, customer_id: str | None = None) -> dict[str, int]:
         """按状态统计订单数量。"""
         where = ""
         params: list[Any] = []

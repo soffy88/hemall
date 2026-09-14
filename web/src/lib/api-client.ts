@@ -22,6 +22,8 @@ import type {
   Order,
   OmodulResult,
   PickupTicket,
+  PaymentIntentResponse,
+  PaymentStatusResponse,
   PriceList,
   Product,
   ProductCategory,
@@ -374,11 +376,26 @@ export const api = {
 
   // ── Storefront: Checkout ────────────────────────────────────
 
-  checkout: (data: { cart_id: string; billing_address?: Address; shipping_address?: Address; customer_id?: string }) =>
+  checkout: (data: { cart_id: string; billing_address?: Address; shipping_address?: Address; customer_id?: string; provider?: string }) =>
     request<CheckoutResult>('/store/checkout', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  createStoreDraftOrder: (data: { region_code?: string; currency?: string; line_items: { batch_id: string; quantity: number }[]; billing_address?: Record<string, unknown>; shipping_address?: Record<string, unknown> }) =>
+    request<{ order_id: string; grand_total_cents: number; currency: string }>('/store/draft-orders', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  createStorePayment: (data: { order_id: string; provider?: string }) =>
+    request<PaymentIntentResponse>('/store/payments/create', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  queryStorePayment: (paymentId: string) =>
+    request<PaymentStatusResponse>(`/store/payments/${encodeURIComponent(paymentId)}`, {}, 'customer'),
 
   lookupOrder: (token: string) =>
     request<Order>(`/store/orders/lookup?token=${encodeURIComponent(token)}`),
@@ -917,7 +934,7 @@ export const api = {
     request<PickupTicket>('/store/pickup-ticket', {
       method: 'POST',
       body: JSON.stringify({ order_id: orderId }),
-    }, false),
+    }, 'customer'),
 
   // 零号探针触发器 (Admin Ops)：运营在批次上架时手动激活试探单做市。
   triggerInitialProbe: (data: { batch_id: string; initial_price: number }) =>
