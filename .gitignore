@@ -19,6 +19,11 @@ out/
 .env
 .env.*
 !.env.example
+# 证书与私钥 (微信支付/APNs/商户证书误提交即泄露)
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Logs
 *.log

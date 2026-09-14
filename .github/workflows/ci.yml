@@ -12,6 +12,7 @@ on:
 env:
   PYTHON_VERSION: "3.12"
   PIP_DISABLE_PIP_VERSION_CHECK: 1
+  UV_FROZEN: "1"
 
 jobs:
   # ── 代码质量检查 ──────────────────────────────────────────────────────
@@ -24,21 +25,26 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
+
+      # uv 按 uv.lock 可复现安装 (ruff/mypy 版本由 lock 钉死，不再 pip 浮动安装)。
+      # 注意：pyproject 的 3O 依赖是 ../platform/3O 路径源，Runner 需在仓库
+      # 旁并行检出 platform (与本地布局一致)，否则 sync 会 fail-fast。
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          pip install ruff mypy
-          pip install -e ".[dev]"
+        run: uv sync --frozen --extra dev
 
       - name: Ruff lint
-        run: ruff check app/ tests/
+        run: uv run ruff check app/ tests/
 
       - name: Ruff format check
-        run: ruff format --check app/ tests/
+        run: uv run ruff format --check app/ tests/
 
       - name: Type check
-        run: mypy app/ --ignore-missing-imports --no-strict-optional
+        run: uv run mypy app/ --ignore-missing-imports --no-strict-optional
 
   # ── 单元测试 ──────────────────────────────────────────────────────────
   test:
@@ -75,18 +81,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          pip install -e ".[dev,observability]"
+        run: uv sync --frozen --extra dev --extra observability
 
       - name: Run tests with coverage
         env:
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_REDIS_URL: redis://localhost:6379/0
         run: |
-          pytest tests/ \
+          uv run pytest tests/ \
             --cov=app \
             --cov-report=xml \
             --cov-report=term-missing \
@@ -94,7 +103,7 @@ jobs:
             -v
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
@@ -118,7 +127,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 集成测试 (可选，有 TEST_PG_DSN 时运行) ─────────────────────────────
+  # ── 集成测试 (main push 才跑；TEST_PG_DSN 接通后 DB 门控用例真实执行) ──
   integration:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -145,12 +154,18 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
       - name: Install dependencies
-        run: pip install -e ".[dev,observability]"
+        run: uv sync --frozen --extra dev --extra observability
 
       - name: Run integration tests
         env:
           TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_integration
+          HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_integration
           HEMALL_REDIS_URL: redis://localhost:6379/0
         run: |
-          pytest tests/test_integration_optional.py -v
+          uv run pytest tests/ -v
