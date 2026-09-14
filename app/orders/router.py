@@ -116,8 +116,8 @@ async def confirm_order(
     svc: Any = Depends(get_order_service),
 ) -> dict[str, Any]:
     """确认订单 (支付成功 → confirmed)。"""
-    from .models import InvalidOrderTransitionError
-    from .service import OrderNotFoundError
+    from .models import ConcurrentOrderTransitionError, InvalidOrderTransitionError
+    from .service import OrderInventoryConflictError, OrderNotFoundError
 
     try:
         order = await svc.confirm_order(
@@ -132,6 +132,8 @@ async def confirm_order(
             status_code=409,
             detail=f"cannot confirm: order is {e.from_status.value}",
         )
+    except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/{order_id}/cancel")
@@ -141,8 +143,8 @@ async def cancel_order(
     svc: Any = Depends(get_order_service),
 ) -> dict[str, Any]:
     """取消订单 (自动释放库存)。"""
-    from .models import InvalidOrderTransitionError
-    from .service import OrderNotFoundError
+    from .models import ConcurrentOrderTransitionError, InvalidOrderTransitionError
+    from .service import OrderInventoryConflictError, OrderNotFoundError
 
     try:
         reason = body.reason if body else "user requested"
@@ -155,6 +157,8 @@ async def cancel_order(
             status_code=409,
             detail=f"cannot cancel: order is {e.from_status.value}",
         )
+    except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/{order_id}/ship")
@@ -164,8 +168,8 @@ async def ship_order(
     svc: Any = Depends(get_order_service),
 ) -> dict[str, Any]:
     """发货 (自动扣减库存)。"""
-    from .models import InvalidOrderTransitionError
-    from .service import OrderNotFoundError
+    from .models import ConcurrentOrderTransitionError, InvalidOrderTransitionError
+    from .service import OrderInventoryConflictError, OrderNotFoundError
 
     try:
         order = await svc.ship_order(
@@ -181,6 +185,8 @@ async def ship_order(
             status_code=409,
             detail=f"cannot ship: order is {e.from_status.value}",
         )
+    except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/{order_id}/deliver")
@@ -189,8 +195,8 @@ async def deliver_order(
     svc: Any = Depends(get_order_service),
 ) -> dict[str, Any]:
     """标记送达。"""
-    from .models import InvalidOrderTransitionError
-    from .service import OrderNotFoundError
+    from .models import ConcurrentOrderTransitionError, InvalidOrderTransitionError
+    from .service import OrderInventoryConflictError, OrderNotFoundError
 
     try:
         order = await svc.deliver_order(order_id)
@@ -202,6 +208,8 @@ async def deliver_order(
             status_code=409,
             detail=f"cannot deliver: order is {e.from_status.value}",
         )
+    except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/{order_id}/complete")
@@ -210,8 +218,8 @@ async def complete_order(
     svc: Any = Depends(get_order_service),
 ) -> dict[str, Any]:
     """确认收货 (delivered → completed)。"""
-    from .models import InvalidOrderTransitionError
-    from .service import OrderNotFoundError
+    from .models import ConcurrentOrderTransitionError, InvalidOrderTransitionError
+    from .service import OrderInventoryConflictError, OrderNotFoundError
 
     try:
         order = await svc.complete_order(order_id)
@@ -223,6 +231,8 @@ async def complete_order(
             status_code=409,
             detail=f"cannot complete: order is {e.from_status.value}",
         )
+    except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/{order_id}/history")

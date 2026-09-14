@@ -69,9 +69,7 @@ class WechatCertificate:
 
     __slots__ = ("serial_no", "effective_time", "expire_time", "pem")
 
-    def __init__(
-        self, *, serial_no: str, effective_time: str, expire_time: str, pem: str
-    ) -> None:
+    def __init__(self, *, serial_no: str, effective_time: str, expire_time: str, pem: str) -> None:
         self.serial_no = serial_no
         self.effective_time = effective_time
         self.expire_time = expire_time
@@ -114,9 +112,7 @@ async def fetch_wechat_platform_certificates(
     async with gateway._client() as client:
         resp = await client.get(path, headers=headers)
     if resp.status_code >= 300:
-        raise PaymentGatewayError(
-            f"wechat cert api -> {resp.status_code}: {resp.text[:300]}"
-        )
+        raise PaymentGatewayError(f"wechat cert api -> {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     certs: list[WechatCertificate] = []
     for item in data.get("data", []):
@@ -133,7 +129,8 @@ async def fetch_wechat_platform_certificates(
         except Exception as exc:  # noqa: BLE001 - 单张坏证书不拖垮整批
             logger.warning(
                 "wechat certificate %s failed PEM parse: %s",
-                item.get("serial_no"), exc,
+                item.get("serial_no"),
+                exc,
             )
             continue
         certs.append(
@@ -283,9 +280,7 @@ class WechatPayNativeGateway:
         self._serial_no = serial_no
         self._private_key = load_private_key_pem(private_key) if private_key else None
         self._api_v3_key = api_v3_key
-        self._platform_cert = (
-            load_public_key_pem(platform_cert) if platform_cert else None
-        )
+        self._platform_cert = load_public_key_pem(platform_cert) if platform_cert else None
         self._platform_cert_serial = ""
         self._platform_cert_pem = str(platform_cert) if platform_cert else ""
         self._notify_url = notify_url
@@ -338,7 +333,7 @@ class WechatPayNativeGateway:
         message = wechat_sign_str(method, url_path, timestamp, nonce, body)
         signature = rsa_sha256_sign(self._private_key, message)
         return (
-            'WECHATPAY2-SHA256-RSA2048 '
+            "WECHATPAY2-SHA256-RSA2048 "
             f'mchid="{self._mchid}",nonce_str="{nonce}",'
             f'signature="{signature}",timestamp="{timestamp}",'
             f'serial_no="{self._serial_no}"'
@@ -397,6 +392,7 @@ class WechatPayNativeGateway:
         out_trade_no: str,
         total_fee_cents: int,
         description: str,
+        currency: str = "CNY",
     ) -> dict[str, Any]:
         raise PaymentGatewayError("stripe_prepay is not supported by WechatPayNativeGateway")
 
@@ -433,9 +429,7 @@ class WechatPayNativeGateway:
             "gateway": "wechat",
         }
 
-    async def verify_callback(
-        self, headers: dict[str, str], body: bytes
-    ) -> dict[str, Any] | None:
+    async def verify_callback(self, headers: dict[str, str], body: bytes) -> dict[str, Any] | None:
         """微信支付回调验签 + 解密。合法返回解密后的业务 JSON；否则 None。
 
         headers: 原始请求头 (大小写不敏感 dict)。
@@ -518,10 +512,13 @@ class StripePaymentGateway:
         )
 
     async def _post_form(
-        self, url_path: str, fields: dict[str, Any]
+        self,
+        url_path: str,
+        fields: dict[str, Any],
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         async with self._client() as client:
-            resp = await client.post(url_path, data=fields)
+            resp = await client.post(url_path, data=fields, headers=headers)
         if resp.status_code >= 300:
             raise PaymentGatewayError(
                 f"stripe api {url_path} -> {resp.status_code}: {resp.text[:300]}"
@@ -549,6 +546,7 @@ class StripePaymentGateway:
         out_trade_no: str,
         total_fee_cents: int,
         description: str,
+        currency: str = "CNY",
     ) -> dict[str, Any]:
         if total_fee_cents <= 0:
             raise ValueError("stripe_prepay: total_fee_cents must be positive")
@@ -556,12 +554,13 @@ class StripePaymentGateway:
             "/v1/payment_intents",
             {
                 "amount": total_fee_cents,
-                "currency": "cny",
+                "currency": currency.lower(),
                 "payment_method_types[]": "card",
                 "description": description,
                 "metadata[out_trade_no]": out_trade_no,
                 "metadata[order_ref]": out_trade_no,
             },
+            headers={"Idempotency-Key": out_trade_no},
         )
         return {
             "out_trade_no": out_trade_no,
@@ -582,6 +581,7 @@ class StripePaymentGateway:
         refund_fee_cents: int,
         reason: str = "",
         total_fee_cents: int | None = None,
+        payment_intent_id: str | None = None,
     ) -> dict[str, Any]:
         """按 out_trade_no 找到原 PaymentIntent 并退款。
 
@@ -595,10 +595,12 @@ class StripePaymentGateway:
             "/v1/refunds",
             {
                 "amount": refund_fee_cents,
+                **({"payment_intent": payment_intent_id} if payment_intent_id else {}),
                 "reason": reason[:250] or "requested_by_customer",
                 "metadata[out_refund_no]": out_refund_no,
                 "metadata[order_ref]": out_trade_no,
             },
+            headers={"Idempotency-Key": out_refund_no},
         )
         return {
             "out_refund_no": out_refund_no,
@@ -609,9 +611,7 @@ class StripePaymentGateway:
             "gateway": "stripe",
         }
 
-    async def verify_callback(
-        self, headers: dict[str, str], body: bytes
-    ) -> dict[str, Any] | None:
+    async def verify_callback(self, headers: dict[str, str], body: bytes) -> dict[str, Any] | None:
         """Stripe Webhook 验签。合法返回解析后的 JSON；否则 None。"""
         h = {k.lower(): v for k, v in headers.items()}
         signature = h.get("stripe-signature", "")

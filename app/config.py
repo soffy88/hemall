@@ -161,6 +161,10 @@ class Settings(BaseSettings):
             "postgresql://postgres:test@"
         ):
             problems.append("HEMALL_PG_DSN 仍是开发默认凭据 (postgres:test)")
+        if "*" in self.cors_origins:
+            problems.append(
+                "HEMALL_CORS_ORIGINS 含通配 '*' (生产必须收紧为具体来源列表)"
+            )
         if not os.getenv("ENCRYPTION_KEY"):
             problems.append(
                 "ENCRYPTION_KEY 未设置 (缺失时每次重启生成新 Fernet key, 已加密 PII 将无法解密)"

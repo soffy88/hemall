@@ -133,6 +133,13 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
             from .orders.models import ORDER_LIFECYCLE_DDL
 
             await _ensure_order_lifecycle_schema(pool, ORDER_LIFECYCLE_DDL)
+
+            # P0: payment authority/outbox, exact inventory reservations and
+            # versioned order transitions.  Keep this project-local rather than
+            # modifying the shared 3O schema used by other services.
+            from .p0_schema import ensure_p0_schema
+
+            await ensure_p0_schema(pool)
         finally:
             await lock_conn.execute("SELECT pg_advisory_unlock($1)", SCHEMA_LOCK_ID)
 

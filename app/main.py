@@ -32,6 +32,7 @@ from prometheus_client import make_asgi_app
 
 from . import __version__
 from .bootstrap import init_db, register_providers
+from .config import Settings
 from .deps import ensure_redis_connected, get_settings
 from .events import build_event_dispatcher
 from .ext.oservi_lifecycle import build_ext_oservi
@@ -223,6 +224,7 @@ class AppState:
     event_store: Any = None
     projector_registry: Any = None
     event_bus: Any = None
+    payment_reconciliation_task: asyncio.Task | None = None
 
 
 _app_state = AppState()
@@ -231,6 +233,22 @@ _app_state = AppState()
 def get_app_state() -> AppState:
     """获取应用运行时状态 (供 health 模块使用)。"""
     return _app_state
+
+
+async def _payment_reconciliation_loop(pool: Any, settings: Settings) -> None:
+    """持续处理 provider 成功后 DB 短暂不可用留下的 outbox。"""
+
+    from .payments.service import PaymentService
+
+    service = PaymentService(pool, settings)
+    while True:
+        try:
+            await service.reconcile(limit=100)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reconciliation must stay alive
+            logger.warning("payment reconciliation tick failed: %s", exc)
+        await asyncio.sleep(5)
 
 
 def _recommend_price_bucket(min_price_cents: int | None) -> str:
@@ -317,6 +335,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("i18n services init failed: %s", exc)
 
     metrics_task: asyncio.Task | None = None
+    payment_reconciliation_task: asyncio.Task | None = None
     try:
         app.state.pool, metrics_task = await init_db(settings)
     except Exception as exc:  # noqa: BLE001 - DB 不可达不阻止应用启动
@@ -328,6 +347,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Phase 0: 更新全局状态供 health 模块访问
     _app_state.pool = app.state.pool
+
+    if app.state.pool is not None:
+        payment_reconciliation_task = asyncio.create_task(
+            _payment_reconciliation_loop(app.state.pool, settings)
+        )
+        app.state.payment_reconciliation_task = payment_reconciliation_task
+        _app_state.payment_reconciliation_task = payment_reconciliation_task
 
     # Eventsourcing: DB 可用时初始化 EventStore，否则路由层诚实降级 503/空态。
     if app.state.pool is not None:
@@ -416,6 +442,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if metrics_task is not None:
         metrics_task.cancel()
 
+    if payment_reconciliation_task is not None:
+        payment_reconciliation_task.cancel()
+
     pool = getattr(app.state, "pool", None)
     if pool is not None:
         await pool.close()
@@ -439,6 +468,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _app_state.ai_service.close()
 
     # Phase 3: 分析服务无需显式关闭
+    events = getattr(app.state, "events", None)
+    if events is not None:
+        events.stop()
 
 
 def create_app() -> FastAPI:
@@ -521,9 +553,7 @@ def create_app() -> FastAPI:
     # 实际保存路径: <output_root>/ext_bespoke/agent_ingest/agent_ingest/<user>/<file>
     ingest_root = settings.output_root / "ext_bespoke" / "agent_ingest" / "agent_ingest"
     ingest_root.mkdir(parents=True, exist_ok=True)
-    app.mount(
-        "/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest"
-    )
+    app.mount("/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest")
 
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
@@ -573,9 +603,7 @@ def create_app() -> FastAPI:
         redis_up = False
         if settings is not None:
             try:
-                redis_up = (await check_redis_health(settings.redis_url))[
-                    "status"
-                ] == "up"
+                redis_up = (await check_redis_health(settings.redis_url))["status"] == "up"
             except Exception:  # noqa: BLE001 - 落地页状态降级显示
                 redis_up = False
 
@@ -584,9 +612,7 @@ def create_app() -> FastAPI:
 
         def _dot(up: bool) -> str:
             return (
-                '<span class="dot dot-up"></span>'
-                if up
-                else '<span class="dot dot-down"></span>'
+                '<span class="dot dot-up"></span>' if up else '<span class="dot dot-down"></span>'
             )
 
         html = _render_landing(

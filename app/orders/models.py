@@ -36,6 +36,7 @@ class OrderStatus(str, enum.Enum):
         any          → failed (系统异常)
     """
 
+    DRAFT = "draft"
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
@@ -53,6 +54,11 @@ class OrderStatus(str, enum.Enum):
 
 
 VALID_ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
+    OrderStatus.DRAFT: {
+        OrderStatus.CONFIRMED,
+        OrderStatus.CANCELLED,
+        OrderStatus.FAILED,
+    },
     OrderStatus.PENDING: {
         OrderStatus.CONFIRMED,
         OrderStatus.CANCELLED,
@@ -115,6 +121,19 @@ class InvalidOrderTransitionError(Exception):
         )
 
 
+class ConcurrentOrderTransitionError(Exception):
+    """两个调用者基于同一版本竞争 transition，只有一个可以成功。"""
+
+    def __init__(self, order_id: str, expected_version: int, current_version: int) -> None:
+        self.order_id = order_id
+        self.expected_version = expected_version
+        self.current_version = current_version
+        super().__init__(
+            f"stale order version for {order_id}: expected {expected_version}, "
+            f"current {current_version}"
+        )
+
+
 def validate_order_transition(
     order_id: str, from_status: OrderStatus, to_status: OrderStatus
 ) -> None:
@@ -131,6 +150,7 @@ class OrderSnapshot(BaseModel):
     """订单快照 (查询用)。"""
 
     id: str
+    version: int = 0
     cart_id: str | None = None
     customer_id: str | None = None
     status: OrderStatus

@@ -375,10 +375,12 @@ async def get_order(pool: Any, order_id: str) -> dict | None:
                    o.status, o.subtotal_cents, o.discount_cents, o.tax_cents,
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.payment_intent_id,
+                   o.payment_verified_at, p.status AS payment_status,
                    o.billing_address, o.shipping_address,
                    o.created_at, o.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
             FROM customer_order o
+            LEFT JOIN payment_intent p ON p.id::text = o.payment_intent_id
             LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object(
                     'id', oli.id,

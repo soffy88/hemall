@@ -17,7 +17,8 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { useOptimisticCart, haptic } from '@/lib/cart-store';
 import { getCustomerAuth } from '@/lib/customer-auth-store';
-import type { PickupTicket } from '@/types/api';
+import { StripePaymentElement } from '@/components/stripe-payment-element';
+import type { PaymentIntentResponse, PickupTicket } from '@/types/api';
 
 interface CheckoutContext {
   nodeName: string;
@@ -40,6 +41,8 @@ export default function ExpressCheckoutPage() {
   const ctx = useMemo(loadContext, []);
   const [paying, setPaying] = useState(false);
   const [ticket, setTicket] = useState<PickupTicket | null>(null);
+  const [orderId, setOrderId] = useState('');
+  const [payment, setPayment] = useState<PaymentIntentResponse | null>(null);
   const [error, setError] = useState('');
 
   const lockedItems = cart.items.filter((i) => i.status === 'locked');
@@ -57,47 +60,88 @@ export default function ExpressCheckoutPage() {
     }
   }, [cart.lockedCount, ticket, router]);
 
+  async function finishPaidPayment(currentOrderId: string, initialPayment: PaymentIntentResponse) {
+    let currentPayment = initialPayment;
+    // provider 回调前保持待支付；不能因为拿到二维码/Client Secret 就显示成功。
+    for (let attempt = 0; attempt < 45 && currentPayment.status !== 'paid'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const status = await api.queryStorePayment(currentPayment.payment_id);
+      currentPayment = { ...currentPayment, ...status };
+      setPayment(currentPayment);
+      if (currentPayment.status === 'failed' || currentPayment.status === 'cancelled') {
+        throw new Error(`支付未完成（${currentPayment.status}）`);
+      }
+    }
+    if (currentPayment.status !== 'paid') {
+      throw new Error('支付已创建，请完成支付后再次点击“确认支付”查询结果');
+    }
+
+    // 只有服务端已 verified PAID 才请求离线核销凭证。
+    const ticketRes = await api.issuePickupTicket(currentOrderId);
+
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'CACHE_PICKUP_TICKET',
+        payload: ticketRes,
+      });
+    }
+    localStorage.setItem(
+      'hemall_pickup_ticket',
+      JSON.stringify({ ...ticketRes, issued_at: new Date().toISOString() }),
+    );
+
+    setTicket(ticketRes);
+    cart.clear();
+  }
+
   async function handlePay() {
     if (paying) return;
     setPaying(true);
     setError('');
     haptic('tap');
     try {
-      // 1. 建草稿订单 (锁定批次 → line items)
       const cust = getCustomerAuth();
-      const draft = await api.createDraftOrder({
-        customer_id: cust?.customerId,
-        region_code: 'cn-east',
-        currency: 'CNY',
-        line_items: lockedItems.map((i) => ({ batch_id: i.batch_id, quantity: i.qty })),
-      });
-      const orderId = (draft as any).order_id ?? (draft as any).id;
+      if (!cust) throw new Error('请先登录顾客账号后再支付');
 
-      // 2. 标记已支付 (manual provider = 模拟微信原生支付成功回调)
-      await api.markDraftOrderPaid({
-        order_id: orderId,
-        payment_provider_name: 'manual',
-        payment_intent_id: `wechat-native-${Date.now()}`,
-      });
-
-      // 3. 签发离线核销提货码
-      const ticketRes = await api.issuePickupTicket(orderId);
-
-      // 4. Service Worker 硬缓存 (断网可离线渲染)
-      if (navigator.serviceWorker?.controller) {
-        navigator.serviceWorker.controller.postMessage({
-          type: 'CACHE_PICKUP_TICKET',
-          payload: ticketRes,
+      // 草稿创建、逐批 reservation 和支付 intent 都由服务端完成。
+      // 客户端永远不提交金额，也不调用 markDraftOrderPaid。
+      let currentOrderId = orderId;
+      if (!currentOrderId) {
+        const draft = await api.createStoreDraftOrder({
+          region_code: 'cn-east',
+          currency: 'CNY',
+          line_items: lockedItems.map((i) => ({ batch_id: i.batch_id, quantity: i.qty })),
         });
+        currentOrderId = draft.order_id;
+        setOrderId(currentOrderId);
       }
-      // 同时兜底写 localStorage
-      localStorage.setItem(
-        'hemall_pickup_ticket',
-        JSON.stringify({ ...ticketRes, issued_at: new Date().toISOString() }),
-      );
 
-      setTicket(ticketRes);
-      cart.clear();
+      let currentPayment = payment;
+      if (!currentPayment) {
+        currentPayment = await api.createStorePayment({ order_id: currentOrderId });
+        setPayment(currentPayment);
+      }
+
+      // Stripe 需要用户在 Payment Element 中完成卡片/3DS 确认；先停在支付表单，
+      // 不能拿到 client_secret 就误判成功。
+      if (currentPayment.provider === 'stripe' && currentPayment.client_secret && currentPayment.status !== 'paid') {
+        return;
+      }
+      await finishPaidPayment(currentOrderId, currentPayment);
+    } catch (e: any) {
+      haptic('fail');
+      setError(e.message || '支付失败，请重试');
+    } finally {
+      setPaying(false);
+    }
+  }
+
+  async function handleStripeConfirmed() {
+    if (paying || !orderId || !payment) return;
+    setPaying(true);
+    setError('');
+    try {
+      await finishPaidPayment(orderId, payment);
     } catch (e: any) {
       haptic('fail');
       setError(e.message || '支付失败，请重试');
@@ -236,12 +280,27 @@ export default function ExpressCheckoutPage() {
             className="w-full rounded-2xl bg-emerald-600 py-4 text-white shadow-lg transition-transform active:scale-[0.99] disabled:opacity-50"
           >
             <span className="block text-lg font-black" style={{ fontSize: 24, fontWeight: 800 }}>
-              {paying ? '正在拉起微信支付...' : '确认支付'}
+              {paying ? '等待支付确认...' : payment ? '查询支付结果' : '确认支付'}
             </span>
             <span className="block text-xs font-semibold text-emerald-100">
-              {paying ? '指纹/人脸识别中' : '微信原生支付 · 人脸/指纹'}
+              {payment?.qr_code || payment?.code_url
+                ? '请完成微信/Stripe 支付后等待回调'
+                : '微信/Stripe 安全支付'}
             </span>
           </button>
+          {payment && payment.status !== 'paid' && !paying && (
+            <div className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-800">
+              <div>支付状态：{payment.status}</div>
+              {payment.qr_code && <a className="mt-1 block break-all underline" href={payment.qr_code}>打开微信支付链接</a>}
+              {payment.code_url && <a className="mt-1 block break-all underline" href={payment.code_url}>打开支付链接</a>}
+              {payment.provider === 'stripe' && payment.client_secret && (
+                <StripePaymentElement
+                  clientSecret={payment.client_secret}
+                  onConfirmed={handleStripeConfirmed}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
     </main>

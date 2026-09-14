@@ -25,8 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from oservi.engines.cron_scheduler_engine import CronSchedulerEngine
-from oservi.engines.event_webhook_dispatcher import EventWebhookDispatcherEngine
+from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
 
 from ..config import Settings
 from ..middleware.metrics import (

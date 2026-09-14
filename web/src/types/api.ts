@@ -157,6 +157,9 @@ export interface Order {
   shipping_cents: number;
   grand_total_cents: number;
   payment_provider_name: string | null;
+  payment_intent_id?: string | null;
+  payment_status?: string | null;
+  payment_verified_at?: string | null;
   billing_address: Address | null;
   shipping_address: Address | null;
   created_at: string;
@@ -281,7 +284,34 @@ export interface RecommendationResult {
 export interface CheckoutResult {
   order_id: string;
   grand_total_cents: number;
+  currency?: string;
   receipt_token: string;
+  payment: PaymentIntentResponse;
+}
+
+export interface PaymentIntentResponse {
+  payment_id: string;
+  order_id: string;
+  amount: string;
+  amount_cents: number;
+  currency: string;
+  provider: string;
+  status: string;
+  qr_code?: string | null;
+  code_url?: string | null;
+  client_secret?: string | null;
+  provider_result?: Record<string, unknown> | null;
+}
+
+export interface PaymentStatusResponse {
+  payment_id: string;
+  order_id: string;
+  amount_cents: number;
+  amount: string;
+  currency: string;
+  provider: string;
+  status: string;
+  provider_trade_no?: string | null;
 }
 
 // ── Phase 9: BFF v9.0 做市量化 Feed 契约 ──────────────────────

@@ -102,6 +102,7 @@ class AlipayProvider:
 
         # 内存态订单存储 (沙箱模式)
         self._orders: dict[str, dict[str, Any]] = {}
+        self._refunds: dict[str, dict[str, Any]] = {}
 
         if self._sandbox:
             logger.warning(
@@ -145,16 +146,21 @@ class AlipayProvider:
     ) -> dict[str, Any]:
         """申请退款 (alipay.trade.refund)。"""
         if self._sandbox:
+            if out_request_no and out_request_no in self._refunds:
+                return self._refunds[out_request_no]
             order = self._orders.get(out_trade_no)
             if order is None:
                 return {"code": "ACQ.TRADE_NOT_EXIST", "msg": "order not found"}
             order["refund_amount"] = refund_amount
-            return {
+            result = {
                 "code": "10000",
                 "msg": "Success",
                 "refund_fee": refund_amount,
                 "fund_change": "Y",
             }
+            if out_request_no:
+                self._refunds[out_request_no] = result
+            return result
 
         raise NotImplementedError("production refund not yet implemented")
 

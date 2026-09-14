@@ -19,6 +19,14 @@ from .models import (
     PaymentStatus,
     validate_transition,
 )
+from .service import (
+    PaymentAmountMismatchError,
+    PaymentNotFoundError,
+    PaymentService,
+    PaymentServiceError,
+    PaymentStateError,
+    RefundConflictError,
+)
 from .wechat import WeChatPayOrderRequest, WeChatPayProvider
 
 logger = logging.getLogger("hemall.payments.router")
@@ -38,7 +46,12 @@ class CreatePaymentRequest(BaseModel):
     """创建支付会话。"""
 
     order_id: str = Field(..., description="业务订单 ID")
-    amount: Decimal = Field(..., gt=0, description="支付金额 (元)")
+    # 兼容旧客户端字段，但它只用于服务端篡改检测，永远不参与金额计算。
+    amount: Decimal | None = Field(
+        None,
+        gt=0,
+        description="已弃用：服务端从订单快照计算金额，不信任客户端值",
+    )
     provider: PaymentProvider = Field(..., description="支付渠道")
     description: str = Field("", description="商品描述")
     payer_openid: str | None = Field(None, description="微信 openid (微信支付时)")
@@ -48,10 +61,14 @@ class CreatePaymentResponse(BaseModel):
     """创建支付会话响应。"""
 
     payment_id: str
+    order_id: str
+    amount: str
+    currency: str
     status: str
     qr_code: str | None = None
     code_url: str | None = None
     expires_at: str | None = None
+    provider_result: dict[str, Any] | None = None
 
 
 class PaymentQueryResponse(BaseModel):
@@ -60,6 +77,7 @@ class PaymentQueryResponse(BaseModel):
     payment_id: str
     order_id: str
     amount: str
+    currency: str = "CNY"
     status: str
     provider: str
     provider_trade_no: str | None = None
@@ -73,6 +91,9 @@ class RefundRequest(BaseModel):
         None, description="退款金额 (元), None=全额退款"
     )
     reason: str = Field("", description="退款原因")
+    idempotency_key: str | None = Field(
+        None, description="退款幂等键；省略时按 payment_id+amount 派生"
+    )
 
 
 # ── API 端点 ─────────────────────────────────────────────────────────
@@ -86,98 +107,35 @@ async def create_payment(
     _principal: dict = Depends(get_current_user),
     pool: Any = Depends(get_pool),
 ) -> CreatePaymentResponse:
-    """创建支付会话 → 获取支付二维码/链接。"""
-    # 1. 创建 PaymentSession 记录
-    payment_id = str(uuid.uuid4())
-    amount_cents = int(body.amount * 100)  # 元 → 分
-
-    qr_code = None
-    code_url = None
-
-    # 2. 调用第三方支付接口
-    settings = get_settings()
-    if body.provider == PaymentProvider.WECHAT:
-        if settings.payment_gateway_provider == "wechat":
-            # 补天 P0: 真实微信支付 v3 Native (平行替换)。密钥缺失时
-            # bootstrap 已回退 manual，这里仍走统一契约。
-            from obase.provider_registry import ProviderRegistry
-
-            gw = ProviderRegistry.get().generic("payment_gateway", "wechat")
-            prepay = await gw.prepay(
-                out_trade_no=payment_id,
-                total_fee_cents=amount_cents,
-                description=body.description or f"order-{body.order_id}",
-                notify_url=settings.wechat_pay_notify_url,
-            )
-            code_url = prepay.get("code_url")
-        else:
-            resp = await _wechat_provider.create_order(
-                WeChatPayOrderRequest(
-                    out_trade_no=payment_id,
-                    description=body.description or f"order-{body.order_id}",
-                    total_amount=amount_cents,
-                    payer_openid=body.payer_openid,
-                )
-            )
-            if not resp.success:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"wechat pay create failed: {resp.err_msg}",
-                )
-            code_url = resp.code_url
-
-    elif body.provider == PaymentProvider.STRIPE:
-        from obase.provider_registry import ProviderRegistry
-
-        gw = ProviderRegistry.get().generic("payment_gateway", "stripe")
-        prepay = await gw.stripe_prepay(
-            out_trade_no=payment_id,
-            total_fee_cents=amount_cents,
-            description=body.description or f"order-{body.order_id}",
-        )
-        code_url = prepay.get("client_secret")  # 前端 Stripe.js 用 client_secret
-
-    elif body.provider == PaymentProvider.ALIPAY:
-        resp = await _alipay_provider.create_order(
-            AlipayOrderRequest(
-                out_trade_no=payment_id,
-                subject=body.description or f"order-{body.order_id}",
-                total_amount=str(body.amount),
-            )
-        )
-        if not resp.success:
-            raise HTTPException(
-                status_code=502,
-                detail=f"alipay create failed: {resp.err_msg}",
-            )
-        qr_code = resp.qr_code
-
-    elif body.provider == PaymentProvider.MANUAL:
-        # 手动模式: 不生成二维码
-        pass
-
-    # 3. 写入数据库
+    """创建支付 intent；金额只从 customer_order.grand_total_cents 读取。"""
+    service = PaymentService(pool, get_settings())
     try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO payment_session (id, order_id, amount, provider, status, metadata)
-                VALUES ($1, $2, $3, $4, 'pending', $5)
-                """,
-                payment_id,
-                body.order_id,
-                amount_cents,
-                body.provider.value,
-                json.dumps({"description": body.description or ""}, ensure_ascii=False),
-            )
-    except Exception as exc:
-        logger.warning("payment session DB write failed (non-fatal): %s", exc)
+        intent = await service.create_intent(
+            order_id=body.order_id,
+            provider=body.provider.value,
+            requested_amount=body.amount,
+            description=body.description,
+            payer_openid=body.payer_openid,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+        intent = await service.process_intent(intent.intent_id)
+    except PaymentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PaymentAmountMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PaymentServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    provider_result = intent.provider_result or {}
     return CreatePaymentResponse(
-        payment_id=payment_id,
-        status="pending",
-        qr_code=qr_code,
-        code_url=code_url,
+        payment_id=intent.intent_id,
+        order_id=intent.order_id,
+        amount=str(Decimal(intent.amount_cents) / 100),
+        currency=intent.currency,
+        status=intent.status,
+        qr_code=provider_result.get("qr_code"),
+        code_url=provider_result.get("code_url") or provider_result.get("client_secret"),
+        provider_result=provider_result or None,
     )
 
 
@@ -191,8 +149,8 @@ async def query_payment(
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, order_id, amount, status, provider, provider_trade_no "
-                "FROM payment_session WHERE id = $1",
+                "SELECT id, order_id, amount_cents, currency, status, provider, provider_trade_no "
+                "FROM payment_intent WHERE id = $1",
                 payment_id,
             )
     except Exception:
@@ -204,7 +162,8 @@ async def query_payment(
     return PaymentQueryResponse(
         payment_id=str(row["id"]),
         order_id=row["order_id"],
-        amount=str(Decimal(row["amount"]) / 100),
+        amount=str(Decimal(row["amount_cents"]) / 100),
+        currency=row["currency"],
         status=row["status"],
         provider=row["provider"],
         provider_trade_no=row["provider_trade_no"],
@@ -214,137 +173,210 @@ async def query_payment(
 @router.post("/refund")
 async def refund_payment(
     body: RefundRequest,
+    request: Request,
     _principal: dict = Depends(get_current_user),
     pool: Any = Depends(get_pool),
 ) -> dict[str, Any]:
-    """申请退款。"""
-    # 查询支付会话
+    """申请幂等退款；provider 成功但 DB 暂时故障由 outbox 恢复。"""
+    service = PaymentService(pool, get_settings())
     try:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT id, amount, status, provider, provider_trade_no "
-                "FROM payment_session WHERE id = $1",
-                body.payment_id,
-            )
-    except Exception:
-        raise HTTPException(status_code=503, detail="database unavailable")
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="payment not found")
-
-    current_status = PaymentStatus(row["status"])
-    if current_status not in (PaymentStatus.PAID, PaymentStatus.PARTIAL_REFUND):
-        raise HTTPException(
-            status_code=409,
-            detail=f"cannot refund: current status is {current_status.value}",
-        )
-
-    # 调用退款
-    refund_amount = body.refund_amount or Decimal(row["amount"]) / 100
-    refund_amount_cents = int(refund_amount * 100)
-    if refund_amount_cents <= 0 or refund_amount_cents > int(row["amount"]):
-        raise HTTPException(status_code=400, detail="invalid refund_amount")
-
-    provider = row["provider"]
-    settings = get_settings()
-    if provider == PaymentProvider.WECHAT.value:
-        if settings.payment_gateway_provider == "wechat":
-            from obase.provider_registry import ProviderRegistry
-
-            gw = ProviderRegistry.get().generic("payment_gateway", "wechat")
-            result = await gw.refund(
-                out_trade_no=body.payment_id,
-                out_refund_no=f"refund_{uuid.uuid4().hex[:12]}",
-                refund_fee_cents=refund_amount_cents,
-                reason=body.reason,
-                total_fee_cents=int(row["amount"]),
-            )
-        else:
-            result = await _wechat_provider.refund(
-                out_trade_no=body.payment_id,
-                out_refund_no=f"refund_{uuid.uuid4().hex[:12]}",
-                refund_amount=refund_amount_cents,
-            )
-    elif provider == PaymentProvider.STRIPE.value:
-        from obase.provider_registry import ProviderRegistry
-
-        gw = ProviderRegistry.get().generic("payment_gateway", "stripe")
-        result = await gw.refund(
-            out_trade_no=body.payment_id,
-            out_refund_no=f"refund_{uuid.uuid4().hex[:12]}",
-            refund_fee_cents=refund_amount_cents,
+        return await service.request_refund(
+            payment_id=body.payment_id,
+            refund_amount=body.refund_amount,
             reason=body.reason,
+            idempotency_key=body.idempotency_key or request.headers.get("Idempotency-Key"),
         )
-    elif provider == PaymentProvider.ALIPAY.value:
-        result = await _alipay_provider.refund(
-            out_trade_no=body.payment_id,
-            refund_amount=str(refund_amount),
-        )
-    else:
-        result = {"status": "SUCCESS"}  # manual
+    except PaymentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (PaymentStateError, RefundConflictError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PaymentServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # 更新数据库状态
-    new_status = (
-        PaymentStatus.PARTIAL_REFUND
-        if refund_amount_cents < row["amount"]
-        else PaymentStatus.REFUNDED
-    )
+
+def _wechat_notify_amount_cents(notify: dict[str, Any]) -> int | None:
+    """从微信回调解密体提取实付金额 (分)；取不到则返回 None（跳过比对）。"""
+    amount = notify.get("amount")
+    if isinstance(amount, dict) and amount.get("total") is not None:
+        try:
+            return int(amount["total"])
+        except (TypeError, ValueError):
+            return None
+    for key in ("total_fee", "total_amount", "amount"):
+        if notify.get(key) is not None:
+            try:
+                return int(notify[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _alipay_notify_amount_cents(total_amount: str | None) -> int | None:
+    """支付宝回调 total_amount（元字符串）→ 分；解析失败返回 None。"""
+    if not total_amount:
+        return None
     try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE payment_session SET status = $1, refund_amount = $2, "
-                "updated_at = NOW() WHERE id = $3",
-                new_status.value,
-                refund_amount_cents,
-                body.payment_id,
-            )
-    except Exception as exc:
-        logger.warning("refund DB update failed (non-fatal): %s", exc)
-
-    return {
-        "payment_id": body.payment_id,
-        "status": new_status.value,
-        "refund_amount": str(refund_amount),
-        "provider_result": result,
-    }
+        return int(Decimal(str(total_amount)) * 100)
+    except Exception:
+        return None
 
 
 async def _settle_payment_and_order(
-    pool: Any, session_id: str, transaction_id: str | None
+    pool: Any,
+    session_id: str,
+    transaction_id: str | None,
+    paid_amount_cents: int | None = None,
+    expected_provider: str | None = None,
+    paid_currency: str | None = None,
 ) -> None:
-    """支付成功回调的统一收尾：标记 payment_session 为 paid 且推进对应订单。
+    """支付成功回调的统一收尾：验证 intent 后原子推进订单。
 
     幂等：仅当会话仍是 pending 时才翻转并推进订单 (RETURNING 拿 order_id);
     重复通知拿不到行 → 不重复确认订单。订单已非可确认态时只记日志不报错
     (避免回调因订单侧状态而失败, 让网关反复重推)。
+
+    金额一致性 (fail-closed)：调用方传入回调方声明的实付金额
+    (paid_amount_cents) 时，先比对 payment_session.amount，不一致则拒绝
+    落库——防止 HMAC 绕过后用小额回调冒充大额订单已支付。
     """
-    if pool is None:
+    if pool is None or paid_amount_cents is None:
+        logger.warning("payment settlement rejected: missing verified amount session=%s", session_id)
         return
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "UPDATE payment_session SET status = 'paid', provider_trade_no = $1, "
-            "updated_at = NOW() WHERE id = $2 AND status = 'pending' RETURNING order_id",
-            transaction_id,
-            session_id,
-        )
-    if row is None or not row.get("order_id"):
-        return
+        async with conn.transaction():
+            intent = await conn.fetchrow(
+                """
+                SELECT p.id, p.order_id, p.amount_cents, p.currency, p.provider,
+                       p.status, o.status AS order_status, o.grand_total_cents,
+                       o.currency AS order_currency
+                FROM payment_intent p
+                LEFT JOIN customer_order o ON o.id::text = p.order_id
+                WHERE p.id = $1
+                FOR UPDATE OF p
+                """,
+                session_id,
+            )
+            if intent is None:
+                logger.warning("payment intent not found: %s", session_id)
+                return
+            if expected_provider and intent["provider"] != expected_provider:
+                logger.warning("payment provider mismatch: %s", session_id)
+                return
+            if intent["status"] not in {
+                PaymentStatus.PENDING.value,
+                "provider_pending",
+                PaymentStatus.PAID.value,
+            }:
+                logger.warning(
+                    "payment intent is not settleable: session=%s status=%s",
+                    session_id,
+                    intent["status"],
+                )
+                return
+            if int(intent["amount_cents"]) != int(paid_amount_cents):
+                logger.warning(
+                    "payment amount mismatch: session=%s expected=%s got=%s",
+                    session_id,
+                    intent["amount_cents"],
+                    paid_amount_cents,
+                )
+                return
+            callback_currency = (paid_currency or intent["currency"]).upper()
+            if callback_currency != str(intent["currency"]).upper():
+                logger.warning("payment currency mismatch: %s", session_id)
+                return
+            if intent["order_id"] is None or intent["grand_total_cents"] is None:
+                return
+            if int(intent["grand_total_cents"]) != int(intent["amount_cents"]):
+                logger.warning("order total no longer matches payment intent: %s", session_id)
+                return
+            if str(intent["order_currency"]).upper() != str(intent["currency"]).upper():
+                logger.warning("order currency no longer matches payment intent: %s", session_id)
+                return
 
-    from ..orders.models import InvalidOrderTransitionError
-    from ..orders.service import OrderNotFoundError, OrderService
+            # Duplicate provider callbacks are successful no-ops. The order
+            # transition and reservation wiring are in the same DB transaction.
+            if intent["status"] != PaymentStatus.PAID.value:
+                await conn.execute(
+                    """
+                    UPDATE payment_intent
+                    SET status = 'paid', provider_trade_no = COALESCE($1, provider_trade_no),
+                        last_error = NULL, version = version + 1, updated_at = NOW()
+                    WHERE id = $2 AND status IN ('pending', 'provider_pending')
+                    """,
+                    transaction_id,
+                    session_id,
+                )
 
-    try:
-        await OrderService(pool).confirm_order(
-            str(row["order_id"]), payment_intent_id=transaction_id
-        )
-    except (InvalidOrderTransitionError, OrderNotFoundError) as exc:
-        logger.info(
-            "payment settled but order %s not confirmed (state/exists): %s",
-            row["order_id"],
-            exc,
-        )
-    except Exception as exc:  # noqa: BLE001 - 回调侧订单推进失败不应连累验签成功语义
-        logger.warning("order confirm on payment notify failed: %s", exc)
+            order_id = str(intent["order_id"])
+            lines = await conn.fetch(
+                """
+                SELECT oli.id, oli.batch_id, oli.quantity, ib.variant_id,
+                       ib.location_id, pv.product_id
+                FROM order_line_item oli
+                JOIN inventory_batch ib ON ib.id = oli.batch_id
+                JOIN product_variant pv ON pv.id = ib.variant_id
+                WHERE oli.order_id = $1
+                """,
+                order_id,
+            )
+            for line in lines:
+                reservation_key = f"order:{order_id}:line:{line['id']}"
+                await conn.execute(
+                    """
+                    INSERT INTO inventory_reservation
+                        (order_id, order_line_item_id, product_id, variant_id,
+                         location_id, batch_id, quantity, idempotency_key)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (idempotency_key) DO NOTHING
+                    """,
+                    order_id,
+                    str(line["id"]),
+                    str(line["product_id"]),
+                    str(line["variant_id"]) if line["variant_id"] else None,
+                    line["location_id"],
+                    line["batch_id"],
+                    int(line["quantity"]),
+                    reservation_key,
+                )
+                await conn.execute(
+                    """
+                    UPDATE order_line_item
+                    SET location_id = COALESCE(location_id, $1),
+                        reservation_id = COALESCE(
+                            reservation_id,
+                            (SELECT id FROM inventory_reservation WHERE idempotency_key = $2)
+                        )
+                    WHERE id = $3
+                    """,
+                    line["location_id"],
+                    reservation_key,
+                    line["id"],
+                )
+
+            if intent["order_status"] in {"pending", "draft"}:
+                await conn.execute(
+                    """
+                    UPDATE customer_order
+                    SET status = 'confirmed', payment_provider_name = $1,
+                        payment_intent_id = $2, payment_verified_at = NOW(),
+                        version = version + 1, updated_at = NOW()
+                    WHERE id = $3 AND status IN ('pending', 'draft')
+                    """,
+                    intent["provider"],
+                    session_id,
+                    intent["order_id"],
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO order_status_history
+                        (order_id, from_status, to_status, reason, metadata)
+                    VALUES ($1, $2, 'confirmed', 'payment confirmed', $3::jsonb)
+                    """,
+                    intent["order_id"],
+                    intent["order_status"],
+                    json.dumps({"payment_intent_id": session_id}, ensure_ascii=False),
+                )
 
 
 @router.post("/wechat/notify")
@@ -368,7 +400,14 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
         if success and out_trade_no:
             pool = getattr(request.app.state, "pool", None)
             await _settle_payment_and_order(
-                pool, out_trade_no, notify.get("transaction_id")
+                pool,
+                out_trade_no,
+                notify.get("transaction_id"),
+                _wechat_notify_amount_cents(notify),
+                expected_provider=PaymentProvider.WECHAT.value,
+                paid_currency=(notify.get("amount") or {}).get("currency")
+                if isinstance(notify.get("amount"), dict)
+                else None,
             )
         return {"code": "SUCCESS", "message": "ok"}
 
@@ -382,7 +421,11 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
     if notify.is_success:
         pool = getattr(request.app.state, "pool", None)
         await _settle_payment_and_order(
-            pool, notify.out_trade_no, notify.transaction_id
+            pool,
+            notify.out_trade_no,
+            notify.transaction_id,
+            notify.amount,
+            expected_provider=PaymentProvider.WECHAT.value,
         )
 
     return {"code": "SUCCESS", "message": "ok"}
@@ -402,6 +445,67 @@ async def alipay_notify(request: Request) -> str:
 
     if notify.is_success:
         pool = getattr(request.app.state, "pool", None)
-        await _settle_payment_and_order(pool, notify.out_trade_no, notify.trade_no)
+        await _settle_payment_and_order(
+            pool,
+            notify.out_trade_no,
+            notify.trade_no,
+            _alipay_notify_amount_cents(notify.total_amount),
+            expected_provider=PaymentProvider.ALIPAY.value,
+            paid_currency="CNY",
+        )
 
     return "success"
+
+
+@router.post("/stripe/webhook")
+async def stripe_webhook(request: Request) -> dict[str, bool]:
+    """Stripe PaymentIntent webhook：验签后只接受精确金额/币种的成功事件。"""
+
+    body = await request.body()
+    try:
+        from obase.provider_registry import ProviderRegistry
+
+        gateway = ProviderRegistry.get().generic("payment_gateway", "stripe")
+        event = await gateway.verify_callback(dict(request.headers), body)
+    except Exception as exc:  # noqa: BLE001 - webhook must fail closed
+        logger.warning("stripe webhook verification failed: %s", exc)
+        raise HTTPException(status_code=400, detail="invalid stripe webhook") from exc
+    if not event:
+        raise HTTPException(status_code=400, detail="invalid stripe webhook")
+
+    if event.get("type") != "payment_intent.succeeded":
+        return {"received": True}
+    obj = ((event.get("data") or {}).get("object") or {})
+    provider_intent_id = str(obj.get("id") or "")
+    metadata = obj.get("metadata") or {}
+    out_trade_no = str(metadata.get("out_trade_no") or metadata.get("order_ref") or "")
+    amount = obj.get("amount_received", obj.get("amount"))
+    currency = str(obj.get("currency") or "").upper()
+    if not provider_intent_id or amount is None:
+        raise HTTPException(status_code=400, detail="stripe event missing payment fields")
+
+    pool = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise HTTPException(status_code=503, detail="database not ready")
+    async with pool.acquire() as conn:
+        intent_id = await conn.fetchval(
+            """
+            SELECT id FROM payment_intent
+            WHERE provider_intent_id = $1
+               OR ($2 <> '' AND id::text = $2)
+            """,
+            provider_intent_id,
+            out_trade_no,
+        )
+    if intent_id is None:
+        logger.warning("stripe payment intent not found: %s", provider_intent_id)
+        return {"received": True}
+    await _settle_payment_and_order(
+        pool,
+        str(intent_id),
+        provider_intent_id,
+        int(amount),
+        expected_provider=PaymentProvider.STRIPE.value,
+        paid_currency=currency,
+    )
+    return {"received": True}
