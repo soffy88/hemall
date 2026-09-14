@@ -101,8 +101,8 @@ class InventoryService:
 
         return [
             StockSnapshot(
-                product_id=r["product_id"],
-                variant_id=r["variant_id"],
+                product_id=str(r["product_id"]),
+                variant_id=(str(r["variant_id"]) if r["variant_id"] else None),
                 location_id=str(r["location_id"]),
                 location_name=r["location_name"],
                 total_qty=r["stock_qty"],
@@ -161,8 +161,8 @@ class InventoryService:
             having = (
                 "HAVING SUM(ib.stock_qty - ib.reserved_qty) <= COALESCE("
                 "(SELECT safety_threshold FROM product_safety_stock "
-                "WHERE product_id = pv.product_id "
-                "AND variant_id IS NOT DISTINCT FROM ib.variant_id "
+                "WHERE product_id = pv.product_id::text "
+                "AND variant_id IS NOT DISTINCT FROM ib.variant_id::text "
                 "AND location_id = ib.location_id), 10)"
             )
 
@@ -372,7 +372,8 @@ class InventoryService:
                              movement_type, quantity, reference_type, reference_id,
                              idempotency_key)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        ON CONFLICT (idempotency_key) DO NOTHING
+                            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                            DO NOTHING
                         """,
                         product_id,
                         str(result["variant_id"]) if result["variant_id"] else None,
@@ -390,6 +391,10 @@ class InventoryService:
                             "batch_id": batch_id,
                             "location_id": str(result["location_id"]),
                             "quantity": to_reserve,
+                            "product_id": product_id,
+                            "variant_id": (
+                                str(result["variant_id"]) if result["variant_id"] else None
+                            ),
                         }
                     )
                     remaining -= to_reserve
@@ -419,7 +424,7 @@ class InventoryService:
                         WHERE reference_type = 'order' AND reference_id = $1
                           AND movement_type = 'shipment'
                           AND product_id = $2 AND location_id = $3
-                          AND ($4 IS NULL OR variant_id = $4)
+                          AND ($4::text IS NULL OR variant_id = $4::text)
                         """,
                         order_id,
                         product_id,
@@ -436,7 +441,7 @@ class InventoryService:
                     SELECT * FROM inventory_reservation
                     WHERE order_id = $1 AND product_id = $2
                       AND location_id = $3
-                      AND ($4 IS NULL OR variant_id = $4)
+                      AND ($4::text IS NULL OR variant_id = $4::text)
                       AND status IN ('reserved', 'partially_released')
                     ORDER BY created_at, id
                     FOR UPDATE
@@ -504,7 +509,8 @@ class InventoryService:
                              movement_type, quantity, reference_type, reference_id,
                              idempotency_key)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        ON CONFLICT (idempotency_key) DO NOTHING
+                            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                            DO NOTHING
                         """,
                         product_id,
                         reservation["variant_id"],
@@ -551,7 +557,7 @@ class InventoryService:
                         WHERE reference_type = 'order' AND reference_id = $1
                           AND movement_type = 'unreserve'
                           AND product_id = $2 AND location_id = $3
-                          AND ($4 IS NULL OR variant_id = $4)
+                          AND ($4::text IS NULL OR variant_id = $4::text)
                         """,
                         order_id,
                         product_id,
@@ -568,7 +574,7 @@ class InventoryService:
                     SELECT * FROM inventory_reservation
                     WHERE order_id = $1 AND product_id = $2
                       AND location_id = $3
-                      AND ($4 IS NULL OR variant_id = $4)
+                      AND ($4::text IS NULL OR variant_id = $4::text)
                       AND status IN ('reserved', 'partially_released')
                     ORDER BY created_at, id
                     FOR UPDATE
@@ -635,7 +641,8 @@ class InventoryService:
                              movement_type, quantity, reference_type, reference_id,
                              reason, idempotency_key)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                        ON CONFLICT (idempotency_key) DO NOTHING
+                        ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                        DO NOTHING
                         """,
                         product_id,
                         reservation["variant_id"],
@@ -785,8 +792,8 @@ class InventoryService:
                 FROM inventory_batch ib
                 JOIN product_variant pv ON pv.id = ib.variant_id
                 LEFT JOIN product_safety_stock pss
-                    ON pss.product_id = pv.product_id
-                    AND pss.variant_id IS NOT DISTINCT FROM ib.variant_id
+                    ON pss.product_id = pv.product_id::text
+                    AND pss.variant_id IS NOT DISTINCT FROM ib.variant_id::text
                     AND pss.location_id = ib.location_id
                 WHERE ib.stock_qty > 0
                 GROUP BY pv.product_id, ib.variant_id, ib.location_id, pss.safety_threshold
@@ -796,8 +803,8 @@ class InventoryService:
 
         return [
             StockAlert(
-                product_id=r["product_id"],
-                variant_id=r["variant_id"],
+                product_id=str(r["product_id"]),
+                variant_id=(str(r["variant_id"]) if r["variant_id"] else None),
                 location_id=str(r["location_id"]),
                 safety_threshold=r["threshold"],
                 current_available=r["available"],
@@ -828,7 +835,8 @@ class InventoryService:
 
         if variant_id is not None:
             conditions.append(
-                f"(variant_id = ${param_idx} OR (variant_id IS NULL AND ${param_idx} IS NULL))"
+                f"(variant_id = ${param_idx}::text OR "
+                f"(variant_id IS NULL AND ${param_idx}::text IS NULL))"
             )
             params.append(variant_id)
             param_idx += 1

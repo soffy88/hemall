@@ -7,13 +7,51 @@ test_integration_optional.py (无 TEST_PG_DSN 时跳过)。
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+
 import pytest
 from fastapi.testclient import TestClient
-
 from obase.crypto.util import CryptoUtil
 
 from app.deps import get_settings
 from app.main import app
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _ensure_test_database_schema():
+    """在启用 TEST_PG_DSN 时用生产 bootstrap 初始化真实测试库。
+
+    各历史集成测试 fixture 只负责自己的 provider 和扩展表，但空的 CI
+    PostgreSQL 还没有共享 commerce 表；直接调用 ensure_ext_schema 会在
+    第一个 FK (stock_location) 处失败，并让后续 named pool setup 连锁报错。
+    这里复用生产 init_db，确保共享表、扩展表、P0 表和本地补丁列以同一套
+    DDL 建立；测试本身仍通过真实 asyncpg/PostgreSQL 事务执行。
+    """
+    test_dsn = os.environ.get("TEST_PG_DSN")
+    if not test_dsn:
+        yield
+        return
+
+    from app.bootstrap import init_db
+    from app.config import Settings
+
+    settings = Settings(
+        pg_dsn=test_dsn,
+        pg_pool_name="hemall_test_schema",
+        pg_pool_min=1,
+        pg_pool_max=5,
+        redis_url=os.environ.get("HEMALL_REDIS_URL", "redis://localhost:6379/0"),
+    )
+    pool, metrics_task = await init_db(settings)
+    try:
+        yield
+    finally:
+        metrics_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await metrics_task
+        await pool.close()
 
 
 @pytest.fixture(autouse=True)

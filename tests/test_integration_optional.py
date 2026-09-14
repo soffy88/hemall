@@ -18,6 +18,9 @@ pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipp
 @pytest.fixture
 def db_client(monkeypatch):
     monkeypatch.setenv("HEMALL_PG_DSN", TEST_DSN)
+    # This test explicitly exercises the temporary first-admin bootstrap path.
+    # Production keeps public administrator registration disabled by default.
+    monkeypatch.setenv("HEMALL_ALLOW_PUBLIC_ADMIN_REGISTRATION", "true")
     from app.deps import get_settings
 
     get_settings.cache_clear()  # 拾取新 DSN

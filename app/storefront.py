@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
 from app.deps import get_current_customer
-from obase.uuid7 import uuid7
 
 logger = logging.getLogger("hemall.storefront")
 
@@ -459,7 +459,8 @@ async def _create_draft_order_with_reservations(
                          movement_type, quantity, reference_type, reference_id,
                          reason, idempotency_key)
                     VALUES ($1, $2, $3, $4, 'reserve', $5, 'order', $6, $7, $8)
-                    ON CONFLICT (idempotency_key) DO NOTHING
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                    DO NOTHING
                     """,
                     str(line["product_id"]),
                     str(line["variant_id"]) if line["variant_id"] else None,
@@ -500,7 +501,8 @@ async def _create_order_from_cart(
             if cart is None:
                 raise ValueError("cart not found")
             existing = await conn.fetchrow(
-                "SELECT id, grand_total_cents, currency, status FROM customer_order WHERE cart_id = $1",
+                "SELECT id, grand_total_cents, currency, status "
+                "FROM customer_order WHERE cart_id = $1",
                 cart_id,
             )
             if existing is not None:
@@ -620,7 +622,8 @@ async def _create_order_from_cart(
                          movement_type, quantity, reference_type, reference_id,
                          reason, idempotency_key)
                     VALUES ($1, $2, $3, $4, 'reserve', $5, 'order', $6, $7, $8)
-                    ON CONFLICT (idempotency_key) DO NOTHING
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                    DO NOTHING
                     """,
                     str(line["product_id"]),
                     str(line["variant_id"]) if line["variant_id"] else None,

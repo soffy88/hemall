@@ -10,7 +10,6 @@ from obase.persistence.pool import PgPool
 
 from .models import (
     ConcurrentOrderTransitionError,
-    InvalidOrderTransitionError,
     OrderSnapshot,
     OrderStatus,
     StatusHistoryEntry,
@@ -425,7 +424,8 @@ class OrderService:
                      movement_type, quantity, reference_type, reference_id,
                      reason, idempotency_key)
                 VALUES ($1, $2, $3, $4, 'unreserve', $5, 'order', $6, $7, $8)
-                ON CONFLICT (idempotency_key) DO NOTHING
+                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                DO NOTHING
                 """,
                 reservation["product_id"],
                 reservation["variant_id"],
@@ -508,7 +508,8 @@ class OrderService:
                      movement_type, quantity, reference_type, reference_id,
                      reason, idempotency_key)
                 VALUES ($1, $2, $3, $4, 'shipment', $5, 'order', $6, $7, $8)
-                ON CONFLICT (idempotency_key) DO NOTHING
+                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                DO NOTHING
                 """,
                 reservation["product_id"],
                 reservation["variant_id"],
@@ -633,19 +634,24 @@ class OrderService:
                 order_id,
             )
 
-        return [
-            StatusHistoryEntry(
-                id=str(r["id"]),
-                order_id=str(r["order_id"]),
-                from_status=r["from_status"],
-                to_status=r["to_status"],
-                reason=r["reason"],
-                operator_id=r["operator_id"],
-                metadata=dict(r["metadata"]) if r["metadata"] else None,
-                created_at=r["created_at"],
+        history: list[StatusHistoryEntry] = []
+        for row in rows:
+            metadata = row["metadata"]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            history.append(
+                StatusHistoryEntry(
+                    id=str(row["id"]),
+                    order_id=str(row["order_id"]),
+                    from_status=row["from_status"],
+                    to_status=row["to_status"],
+                    reason=row["reason"],
+                    operator_id=row["operator_id"],
+                    metadata=dict(metadata) if metadata else None,
+                    created_at=row["created_at"],
+                )
             )
-            for r in rows
-        ]
+        return history
 
     # ── 订单统计 ─────────────────────────────────────────────────
 

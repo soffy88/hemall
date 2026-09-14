@@ -98,6 +98,7 @@ jobs:
 
       - name: Run tests with coverage
         env:
+          TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_REDIS_URL: redis://localhost:6379/0
         run: |
@@ -107,6 +108,31 @@ jobs:
             --cov-report=term-missing \
             --cov-fail-under=60 \
             -v
+
+      - name: P0 service coverage gates
+        env:
+          TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
+          HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
+          HEMALL_REDIS_URL: redis://localhost:6379/0
+        run: |
+          COVERAGE_FILE=/tmp/hemall-payment-service.coverage \
+            uv run pytest tests/test_p0_transaction_services.py \
+              --cov=app.payments.service \
+              --cov-report=term-missing \
+              --cov-fail-under=80 \
+              -q
+          COVERAGE_FILE=/tmp/hemall-inventory-service.coverage \
+            uv run pytest tests/test_p0_transaction_services.py \
+              --cov=app.inventory.service \
+              --cov-report=term-missing \
+              --cov-fail-under=80 \
+              -q
+          COVERAGE_FILE=/tmp/hemall-order-service.coverage \
+            uv run pytest tests/test_p0_transaction_services.py \
+              --cov=app.orders.service \
+              --cov-report=term-missing \
+              --cov-fail-under=80 \
+              -q
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

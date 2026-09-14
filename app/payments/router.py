@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from decimal import Decimal
 from typing import Any
 
@@ -12,13 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..deps import get_current_user, get_pool, get_settings
-from .alipay import AlipayOrderRequest, AlipayProvider
-from .models import (
-    PaymentProvider,
-    PaymentSession,
-    PaymentStatus,
-    validate_transition,
-)
+from .alipay import AlipayProvider
+from .models import PaymentProvider, PaymentStatus
 from .service import (
     PaymentAmountMismatchError,
     PaymentNotFoundError,
@@ -27,7 +21,7 @@ from .service import (
     PaymentStateError,
     RefundConflictError,
 )
-from .wechat import WeChatPayOrderRequest, WeChatPayProvider
+from .wechat import WeChatPayProvider
 
 logger = logging.getLogger("hemall.payments.router")
 
@@ -87,9 +81,7 @@ class RefundRequest(BaseModel):
     """退款请求。"""
 
     payment_id: str
-    refund_amount: Decimal | None = Field(
-        None, description="退款金额 (元), None=全额退款"
-    )
+    refund_amount: Decimal | None = Field(None, description="退款金额 (元), None=全额退款")
     reason: str = Field("", description="退款原因")
     idempotency_key: str | None = Field(
         None, description="退款幂等键；省略时按 payment_id+amount 派生"
@@ -153,8 +145,8 @@ async def query_payment(
                 "FROM payment_intent WHERE id = $1",
                 payment_id,
             )
-    except Exception:
-        raise HTTPException(status_code=503, detail="database unavailable")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="database unavailable") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail="payment not found")
@@ -240,7 +232,9 @@ async def _settle_payment_and_order(
     落库——防止 HMAC 绕过后用小额回调冒充大额订单已支付。
     """
     if pool is None or paid_amount_cents is None:
-        logger.warning("payment settlement rejected: missing verified amount session=%s", session_id)
+        logger.warning(
+            "payment settlement rejected: missing verified amount session=%s", session_id
+        )
         return
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -355,28 +349,30 @@ async def _settle_payment_and_order(
                 )
 
             if intent["order_status"] in {"pending", "draft"}:
-                await conn.execute(
+                updated_order = await conn.fetchrow(
                     """
                     UPDATE customer_order
                     SET status = 'confirmed', payment_provider_name = $1,
                         payment_intent_id = $2, payment_verified_at = NOW(),
                         version = version + 1, updated_at = NOW()
                     WHERE id = $3 AND status IN ('pending', 'draft')
+                    RETURNING id
                     """,
                     intent["provider"],
                     session_id,
                     intent["order_id"],
                 )
-                await conn.execute(
-                    """
-                    INSERT INTO order_status_history
-                        (order_id, from_status, to_status, reason, metadata)
-                    VALUES ($1, $2, 'confirmed', 'payment confirmed', $3::jsonb)
-                    """,
-                    intent["order_id"],
-                    intent["order_status"],
-                    json.dumps({"payment_intent_id": session_id}, ensure_ascii=False),
-                )
+                if updated_order is not None:
+                    await conn.execute(
+                        """
+                        INSERT INTO order_status_history
+                            (order_id, from_status, to_status, reason, metadata)
+                        VALUES ($1, $2, 'confirmed', 'payment confirmed', $3::jsonb)
+                        """,
+                        intent["order_id"],
+                        intent["order_status"],
+                        json.dumps({"payment_intent_id": session_id}, ensure_ascii=False),
+                    )
 
 
 @router.post("/wechat/notify")
@@ -475,7 +471,7 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
 
     if event.get("type") != "payment_intent.succeeded":
         return {"received": True}
-    obj = ((event.get("data") or {}).get("object") or {})
+    obj = (event.get("data") or {}).get("object") or {}
     provider_intent_id = str(obj.get("id") or "")
     metadata = obj.get("metadata") or {}
     out_trade_no = str(metadata.get("out_trade_no") or metadata.get("order_ref") or "")

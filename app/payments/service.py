@@ -242,6 +242,8 @@ class PaymentService:
 
         intent = await self._read_intent(intent_id)
         payload = job.get("payload") or {}
+        if isinstance(payload, str):
+            payload = json.loads(payload)
         try:
             result = await self._provider_prepay(
                 provider=intent.provider,
