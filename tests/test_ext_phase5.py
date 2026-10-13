@@ -323,7 +323,10 @@ async def test_social_broadcast_engine_publishes_fresh_and_clearance_with_priori
     )
 
     engine = build_social_broadcast_engine(
-        cn_pool, settings=Settings(output_root=tmp_path), stagger_seconds=0
+        cn_pool,
+        settings=Settings(output_root=tmp_path),
+        access_token="TEST_TOKEN",
+        stagger_seconds=0,
     )
     results = await engine.run_once()
     summary = results[0]
@@ -380,7 +383,10 @@ async def test_social_broadcast_engine_ignores_low_stock_and_old_batches(
     )
 
     engine = build_social_broadcast_engine(
-        cn_pool, settings=Settings(output_root=tmp_path), stagger_seconds=0
+        cn_pool,
+        settings=Settings(output_root=tmp_path),
+        access_token="TEST_TOKEN",
+        stagger_seconds=0,
     )
     results = await engine.run_once()
     published = {(p["batch_id"], p["broadcast_type"]) for p in results[0]["published"]}
