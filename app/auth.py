@@ -17,6 +17,7 @@ from obase.persistence.pool import PgPool
 from .config import Settings
 from .deps import get_pool, get_settings
 from .security.rate_limit import limiter
+from .security.tokens import TOKEN_TYPE_STAFF, sign_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -69,15 +70,15 @@ async def login(
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     user_id = str(row["id"])
-    token = CryptoUtil.jwt_sign(
-        payload={
+    token = sign_token(
+        {
             "sub": user_id,
             "email": row["email"],
-            "typ": "staff",
             "role": _staff_role_for_user(user_id, settings),
         },
+        typ=TOKEN_TYPE_STAFF,
         secret=settings.jwt_secret,
-        expires_in_minutes=settings.jwt_expires_minutes,
         algorithm=settings.jwt_algorithm,
+        expires_in_minutes=settings.jwt_expires_minutes,
     )
     return TokenResponse(access_token=token, user_id=user_id, email=row["email"])

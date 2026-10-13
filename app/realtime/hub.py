@@ -223,6 +223,35 @@ async def broadcast(event: str, data: dict[str, Any] | None = None) -> None:
 # ── WebSocket 端点 ───────────────────────────────────────────────────
 
 
+def _principal_from_ws_token(token: str) -> str | None:
+    """校验 WS 令牌并取推送主体标识；任何不合规都返回 None (→ 关闭 4001)。
+
+    这段曾经直接 ``CryptoUtil.jwt_decode(..., algorithms=[...])``——jwt_decode
+    的形参是 ``algorithm``(单数)，传 ``algorithms`` 必抛 TypeError，于是每一次
+    连接都被 except 吞掉：WS 端点实际是**永远连不上**的，而配套测试是个 no-op，
+    没人发现。顺带修掉：按 typ 白名单取主体，staff 用 sub、customer 用 customer_id。
+    """
+    from app.security.tokens import WS_TOKEN_TYPES, decode_token
+
+    settings = get_settings()
+    for typ in sorted(WS_TOKEN_TYPES):
+        try:
+            payload = decode_token(
+                token,
+                typ=typ,
+                secret=settings.jwt_secret,
+                algorithm=settings.jwt_algorithm,
+            )
+        except Exception:
+            continue
+        subject = (
+            payload.get("sub") if typ == "staff" else payload.get("customer_id")
+        )
+        if isinstance(subject, str) and subject.strip():
+            return subject
+    return None
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -234,19 +263,13 @@ async def websocket_endpoint(
         ws://localhost:8000/ws?token=<jwt>
 
     认证失败立即关闭连接 (code=4001)。
-    """
-    # 验证 JWT
-    try:
-        from obase.crypto.util import CryptoUtil
 
-        settings = get_settings()
-        payload = CryptoUtil.jwt_decode(
-            token=token,
-            secret=settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-        )
-        user_id = payload.get("sub", "anonymous")
-    except Exception:
+    白名单：只接受 typ∈{staff, customer} 且带主体标识的令牌。访客购物车令牌
+    (typ=cart)、收据令牌 (typ=receipt)、取货码 (typ=pickup)、以及任何没有 typ
+    的裸令牌一律 4001——它们不该订阅到任何人的实时推送。
+    """
+    user_id = _principal_from_ws_token(token)
+    if user_id is None:
         await websocket.close(code=4001, reason="invalid token")
         return
 

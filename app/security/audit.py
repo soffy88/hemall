@@ -140,20 +140,34 @@ def _hash_body(body: bytes) -> str:
 
 
 def _extract_actor(request: Request) -> tuple[str | None, str]:
-    """从 JWT 中提取 actor 信息。"""
+    """从 JWT 中提取 actor 信息 (白名单: 只认 staff/customer 主体令牌)。
+
+    能力令牌 (cart/receipt/pickup) 与无 typ 的裸令牌一律按匿名记账——它们
+    不代表人，让它们落进审计 actor 会污染责任归属。
+    """
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         try:
             from ..deps import get_settings
-            from obase.crypto.util import CryptoUtil
+            from .tokens import WS_TOKEN_TYPES, decode_token
 
             settings = get_settings()
-            payload = CryptoUtil.jwt_decode(
-                token=auth[7:],
-                secret=settings.jwt_secret,
-                algorithms=[settings.jwt_algorithm],
-            )
-            return payload.get("sub"), "user"
+            for typ in sorted(WS_TOKEN_TYPES):
+                try:
+                    payload = decode_token(
+                        auth[7:],
+                        typ=typ,
+                        secret=settings.jwt_secret,
+                        algorithm=settings.jwt_algorithm,
+                    )
+                except Exception:
+                    continue
+                subject = (
+                    payload.get("sub") if typ == "staff" else payload.get("customer_id")
+                )
+                if isinstance(subject, str) and subject.strip():
+                    return subject, "user"
+            return None, "anonymous"
         except Exception:
             pass
     return None, "anonymous"

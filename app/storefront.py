@@ -20,6 +20,13 @@ from pydantic import BaseModel
 
 from app import queries
 from app.deps import get_current_customer, get_settings
+from app.security.tokens import (
+    TOKEN_TYPE_CART,
+    TOKEN_TYPE_CUSTOMER,
+    TOKEN_TYPE_RECEIPT,
+    decode_token,
+    sign_token,
+)
 
 logger = logging.getLogger("hemall.storefront")
 
@@ -38,13 +45,17 @@ def _optional_customer(
 
 
 def _sign_cart_capability(cart_id: str, secret: str, algorithm: str) -> str:
-    from obase.crypto.util import CryptoUtil
+    """签发访客购物车能力令牌。
 
-    return CryptoUtil.jwt_sign(
-        payload={"typ": "cart", "cart_id": cart_id},
+    用独立派生密钥（typ=cart）+ 只授权这一个 cart_id——即使主密钥泄漏，
+    攻击者也造不出能读 staff/customer 主体或查订单的令牌。
+    """
+    return sign_token(
+        {"cart_id": cart_id},
+        typ=TOKEN_TYPE_CART,
         secret=secret,
-        expires_in_minutes=60 * 24 * 7,
         algorithm=algorithm,
+        expires_in_minutes=60 * 24 * 7,
     )
 
 
@@ -52,16 +63,17 @@ def _has_cart_capability(request: Request, cart_id: str) -> bool:
     token = request.headers.get("X-Cart-Token")
     if not token:
         return False
-    from obase.crypto.util import CryptoUtil
-
     settings = request.app.state.config
     try:
-        payload = CryptoUtil.jwt_decode(
-            token=token, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
+        payload = decode_token(
+            token,
+            typ=TOKEN_TYPE_CART,
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
         )
     except Exception:
         return False
-    return payload.get("typ") == "cart" and payload.get("cart_id") == cart_id
+    return payload.get("cart_id") == cart_id
 
 
 async def _authorize_cart(
@@ -145,14 +157,18 @@ def _cfg(request: Request, config_cls: type, **kwargs: Any) -> Any:
 
 
 def _sign_receipt(order_id: str, secret: str, algorithm: str, ttl_minutes: int = 10080) -> str:
-    """签发收据 token（30 天有效）。"""
-    from obase.crypto.util import CryptoUtil
+    """签发收据 token（30 天有效）。
 
-    return CryptoUtil.jwt_sign(
-        payload={"order_id": order_id},
+    typ=receipt 缺省是历史事故：payload 只带 order_id 时，收据 token 与 staff
+    token 结构一致，只差签名用的密钥——任何"解得出 JWT 就放行"的端点都能被
+    收据 token 打开。这里补上类型，并用独立派生密钥与 staff/customer 隔离。
+    """
+    return sign_token(
+        {"order_id": order_id},
+        typ=TOKEN_TYPE_RECEIPT,
         secret=secret,
-        expires_in_minutes=ttl_minutes,
         algorithm=algorithm,
+        expires_in_minutes=ttl_minutes,
     )
 
 
@@ -162,13 +178,12 @@ def _sign_customer_token(
     """签发顾客登录 token（30 天有效）。typ=customer 跟管理员 token 区分开,
     get_current_customer 靠这个 claim 拒绝管理员 token 冒充顾客主体。
     """
-    from obase.crypto.util import CryptoUtil
-
-    return CryptoUtil.jwt_sign(
-        payload={"customer_id": customer_id, "email": email, "typ": "customer"},
+    return sign_token(
+        {"customer_id": customer_id, "email": email},
+        typ=TOKEN_TYPE_CUSTOMER,
         secret=secret,
-        expires_in_minutes=ttl_minutes,
         algorithm=algorithm,
+        expires_in_minutes=ttl_minutes,
     )
 
 

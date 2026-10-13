@@ -281,8 +281,12 @@ COMPLEMENTARY_SQL: dict[str, str] = {
 
 
 def _require_admin_ops(request: Request) -> None:
-    """Admin Ops 级别鉴权——不仅要有 token，还要验证 role = ADMIN_OPS。"""
-    from obase.crypto.util import CryptoUtil
+    """Admin Ops 级别鉴权——typ=staff 主体 **且** role = ADMIN_OPS。
+
+    两道都要过：只查 role 的写法下，一条任何来源的、恰好带
+    ``role: "ADMIN_OPS"`` 但 ``typ`` 是 cart/receipt/裸的令牌同样畅通。
+    """
+    from app.security.tokens import TOKEN_TYPE_STAFF, decode_token
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -290,11 +294,17 @@ def _require_admin_ops(request: Request) -> None:
     token = auth_header.removeprefix("Bearer ")
     cfg = request.app.state.config
     try:
-        decoded = CryptoUtil.jwt_decode(
-            token=token, secret=cfg.jwt_secret, algorithm=cfg.jwt_algorithm
+        decoded = decode_token(
+            token,
+            typ=TOKEN_TYPE_STAFF,
+            secret=cfg.jwt_secret,
+            algorithm=cfg.jwt_algorithm,
         )
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid token")
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="invalid token") from exc
+
+    if not isinstance(decoded.get("sub"), str) or not decoded["sub"].strip():
+        raise HTTPException(status_code=401, detail="staff token missing subject")
 
     # 检查 role 字段是否存在且为 ADMIN_OPS
     claims_role = decoded.get("role")

@@ -407,12 +407,20 @@ async def get_order(pool: Any, order_id: str) -> dict | None:
 async def get_order_by_receipt_token(
     pool: Any, token: str, jwt_secret: str, jwt_algorithm: str
 ) -> dict | None:
-    """凭收据 token 查单。token 是签名的 JWT，payload 含 order_id。"""
-    from obase.crypto.util import CryptoUtil
+    """凭收据 token 查单。
+
+    白名单校验：必须是 typ=receipt 的能力令牌。这里曾经只读 payload 里的
+    order_id 而不校验令牌类型，于是任何一条能验签通过的 JWT（staff token、
+    pickup 取货码……）都能当收据令牌查任意订单。
+    """
+    from app.security.tokens import TOKEN_TYPE_RECEIPT, decode_token
 
     try:
-        payload = CryptoUtil.jwt_decode(
-            token=token, secret=jwt_secret, algorithm=jwt_algorithm
+        payload = decode_token(
+            token,
+            typ=TOKEN_TYPE_RECEIPT,
+            secret=jwt_secret,
+            algorithm=jwt_algorithm,
         )
     except Exception:
         return None

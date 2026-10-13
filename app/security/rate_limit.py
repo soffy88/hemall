@@ -59,20 +59,35 @@ def _resolve_storage_uri() -> str:
 
 
 def _key_func(request: Request) -> str:
-    """限流键: 优先按用户 (Bearer token 中的 sub), 否则按 IP。"""
+    """限流键: 优先按用户 (Bearer token 中的主体), 否则按 IP。
+
+    白名单: 只认 staff/customer 主体令牌 (`algorithms=` → `algorithm=` 的既有
+    bug 也一并修掉——那会让每一次取键都抛 TypeError 并退化成按 IP 限流，
+    也就是所有用户共用一个桶)。能力令牌/裸令牌无稳定主体，按 IP 计。
+    """
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         try:
             from ..deps import get_settings
-            from obase.crypto.util import CryptoUtil
+            from .tokens import WS_TOKEN_TYPES, decode_token
 
             settings = get_settings()
-            payload = CryptoUtil.jwt_decode(
-                token=auth[7:],
-                secret=settings.jwt_secret,
-                algorithms=[settings.jwt_algorithm],
-            )
-            return f"user:{payload.get('sub', 'anon')}"
+            for typ in sorted(WS_TOKEN_TYPES):
+                try:
+                    payload = decode_token(
+                        auth[7:],
+                        typ=typ,
+                        secret=settings.jwt_secret,
+                        algorithm=settings.jwt_algorithm,
+                    )
+                except Exception:
+                    continue
+                subject = (
+                    payload.get("sub") if typ == "staff" else payload.get("customer_id")
+                )
+                if isinstance(subject, str) and subject.strip():
+                    return f"user:{subject}"
+            return get_remote_address(request)
         except Exception:
             pass
     return get_remote_address(request)

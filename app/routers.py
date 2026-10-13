@@ -37,6 +37,7 @@ from .ext.oskill import (
 )
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
+from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
 from .storefront import _owns_order
 from .storefront import router as storefront_router
 
@@ -819,8 +820,6 @@ async def issue_pickup_ticket(
     顾客——否则枚举任意已支付 order_id 即可冒领他人提货码。核销侧
     (扫码枪离线验 JWT) 仍无需登录。
     """
-    from obase.crypto.util import CryptoUtil
-
     pool = _pool(request)
     customer_id = principal["customer_id"]
     if not await _owns_order(pool, customer_id, body.order_id):
@@ -870,15 +869,15 @@ async def issue_pickup_ticket(
         node_name = shipping_address["node_name"]
 
     cfg_store = request.app.state.config
-    pickup_code = CryptoUtil.jwt_sign(
-        payload={
+    pickup_code = sign_token(
+        {
             "order_id": body.order_id,
             "node_name": node_name,
-            "typ": "pickup",
         },
+        typ=TOKEN_TYPE_PICKUP,
         secret=cfg_store.jwt_secret,
-        expires_in_minutes=PICKUP_TICKET_TTL_HOURS * 60,
         algorithm=cfg_store.jwt_algorithm,
+        expires_in_minutes=PICKUP_TICKET_TTL_HOURS * 60,
     )
     expires_at = datetime.now(UTC) + timedelta(hours=PICKUP_TICKET_TTL_HOURS)
 
