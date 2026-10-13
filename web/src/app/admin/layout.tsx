@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { OAppShell, OSideBar } from '@helios/oui';
 import type { SideBarNavItem } from '@helios/oui';
-import { getAuth, clearAuth } from '@/lib/auth-store';
+import { clearAuth } from '@/lib/auth-store';
 
 const navItems: SideBarNavItem[] = [
   { id: 'dashboard', label: '仪表盘', href: '/admin' },
@@ -29,17 +29,7 @@ const navItems: SideBarNavItem[] = [
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [ready, setReady] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-
-  useEffect(() => {
-    const auth = getAuth();
-    if (!auth) {
-      router.push('/login');
-    } else {
-      setReady(true);
-    }
-  }, [router]);
 
   const activeId = navItems.find(
     (item) => item.href === pathname || (item.href !== '/admin' && pathname.startsWith(item.href!))
@@ -52,10 +42,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   function handleLogout() {
     clearAuth();
     router.push('/login');
-  }
-
-  if (!ready) {
-    return <div className="flex min-h-screen items-center justify-center"><span className="text-gray-500">加载中...</span></div>;
   }
 
   return (

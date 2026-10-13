@@ -3,8 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api-client';
-import { setCustomerAuth } from '@/lib/customer-auth-store';
+import { customerRegister } from '@/lib/customer-auth-store';
 
 export default function CustomerRegisterPage() {
   const router = useRouter();
@@ -25,8 +24,7 @@ export default function CustomerRegisterPage() {
     }
     setLoading(true);
     try {
-      const res = await api.customerRegister({ email, password, name, phone });
-      setCustomerAuth(res.access_token, res.customer_id, res.email);
+      await customerRegister({ email, password, name, phone });
       router.push('/shop/account');
     } catch (err: any) {
       setError(err.message || '注册失败');
