@@ -20,7 +20,12 @@ from pydantic import BaseModel
 
 from . import queries
 from .auth import router as auth_router
-from .deps import get_current_customer, get_current_user, require_staff_role
+from .deps import (
+    assert_staff_role,
+    get_current_customer,
+    get_current_user,
+    require_staff_role,
+)
 from .events import fire_event
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
 from .ext.feed_quant import build_feed_item, normalize_velocity
@@ -109,25 +114,55 @@ _EXT_POST_HOOKS: dict[str, Callable[[dict, Request], Any]] = {
 }
 
 
-def _require_admin(request: Request) -> None:
-    """轻量鉴权：要求 Authorization: Bearer <token> 头。复用 obase JWT 校验。"""
-    from obase.crypto.util import CryptoUtil
+#: /admin/* 读端点的角色分层（白名单）。
+#:
+#: 历史实现只判 "typ != customer"，等于**黑名单**：访客购物车令牌 (typ=cart)、
+#: 收据令牌 (typ=receipt)、取货码 (typ=pickup)、以及任何没有 typ 的裸令牌
+#: （staff 登录之前的老令牌全是裸的）都能读全部 30 个后台读端点。
+#: 现在改成两道闸：先走 get_current_user 白名单（只认 typ=staff 且必须有主体），
+#: 再按端点敏感度用角色白名单卡第二道。
+ADMIN_STAFF_ROLES = frozenset({"admin", "support", "staff"})
 
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(401, "missing token")
-    token = auth_header.removeprefix("Bearer ")
-    cfg = request.app.state.config
-    try:
-        payload = CryptoUtil.jwt_decode(
-            token=token, secret=cfg.jwt_secret, algorithm=cfg.jwt_algorithm
-        )
-    except Exception:
-        raise HTTPException(401, "invalid token")
-    if payload.get("typ") == "customer":
-        # 顾客 token 不能当管理员主体使用 (跟 get_current_user 同一道校验，
-        # 防止任何登录顾客的 token 越权访问 /admin/* 读端点)。
-        raise HTTPException(401, "customer token not valid for admin endpoints")
+#: 含顾客/员工 PII 或可兑付凭证的读端点——最低要 support 角色，普通 staff 不放行。
+ADMIN_PII_ROLES = frozenset({"admin", "support"})
+
+#: 命中前缀即按 PII 敏感度处理（取最长前缀匹配，覆盖 /admin/customers/{id}/addresses
+#: 这类子路径）。其余 /admin/* 读端点按 ADMIN_STAFF_ROLES 放行。
+ADMIN_PII_PATH_PREFIXES: tuple[str, ...] = (
+    "/admin/orders",
+    "/admin/customers",
+    "/admin/users",
+    "/admin/customer-groups",
+    "/admin/gift-cards",
+    "/admin/returns",
+    "/admin/swaps",
+    "/admin/claims",
+    "/admin/aftersales",
+    "/admin/growth/affiliate-contracts",
+)
+
+
+def admin_roles_for_path(path: str) -> frozenset[str]:
+    """按路径敏感度返回允许的角色集合。未知路径默认收严到 admin。"""
+    if any(path == prefix or path.startswith(prefix + "/") for prefix in ADMIN_PII_PATH_PREFIXES):
+        return ADMIN_PII_ROLES
+    if path == "/admin" or path.startswith("/admin/"):
+        return ADMIN_STAFF_ROLES
+    # 不在 /admin/* 下却复用了本守卫的端点 (ext_bespoke) —— 同样按 PII 标准收。
+    return ADMIN_PII_ROLES
+
+
+def _require_admin(
+    request: Request, principal: dict[str, Any] = Depends(get_current_user)
+) -> dict[str, Any]:
+    """后台端点鉴权：typ=staff 主体 + 角色白名单，两道都过才放行。
+
+    第一道 (get_current_user)：只认 typ=staff 的令牌，访客购物车令牌/收据令牌/
+    取货码/顾客令牌/无 typ 令牌全部 401。
+    第二道 (角色白名单)：按路径敏感度要求 admin/support，普通 staff 或
+    无 role claim 的令牌 403。
+    """
+    return assert_staff_role(principal, admin_roles_for_path(request.url.path))
 
 
 def _pool(request: Request) -> Any:

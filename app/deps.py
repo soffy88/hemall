@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -122,14 +123,25 @@ ANONYMOUS_PRINCIPAL: dict[str, Any] = {
 }
 
 
+def assert_staff_role(
+    principal: dict[str, Any], allowed_roles: Iterable[str]
+) -> dict[str, Any]:
+    """白名单检查角色 claim；不在集合内 → 403。返回 principal 便于链式使用。
+
+    角色集合是**白名单**：没有 role claim、role 是未知字符串、role 拼错，
+    一律 403。想要"默认放行"的端点请显式把角色名写进 allowed_roles。
+    """
+    if principal["claims"].get("role") not in frozenset(allowed_roles):
+        raise HTTPException(status_code=403, detail="insufficient staff role")
+    return principal
+
+
 def require_staff_role(*allowed_roles: str):
     """Require a staff token carrying one of the explicitly allowed role claims."""
     allowed = frozenset(allowed_roles)
 
     async def _require_role(principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-        if principal["claims"].get("role") not in allowed:
-            raise HTTPException(status_code=403, detail="insufficient staff role")
-        return principal
+        return assert_staff_role(principal, allowed)
 
     return _require_role
 

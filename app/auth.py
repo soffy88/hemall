@@ -38,11 +38,23 @@ class TokenResponse(BaseModel):
     email: str
 
 
+#: 全部合法的 staff 角色。校验端一律按这张表做**白名单**——未知/缺失的 role
+#: 一律 403，不会因为"没写判断"而默认放行。
+STAFF_ROLES = frozenset({"admin", "support", "staff"})
+
+
 def _staff_role_for_user(user_id: str, settings: Settings) -> str:
     privileged_ids = {
         value.strip() for value in settings.privileged_staff_ids.split(",") if value.strip()
     }
-    return "admin" if user_id in privileged_ids else "staff"
+    if user_id in privileged_ids:
+        return "admin"
+    support_ids = {
+        value.strip() for value in settings.support_staff_ids.split(",") if value.strip()
+    }
+    if user_id in support_ids:
+        return "support"
+    return "staff"
 
 
 @router.post("/login", response_model=TokenResponse)

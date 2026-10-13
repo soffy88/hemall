@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     # Comma-separated app_user IDs allowed to perform privileged staff operations.
     privileged_staff_ids: str = ""
+    # Comma-separated app_user IDs granted the `support` role — 可读后台 PII
+    # (顾客/员工/地址/礼品卡) 但不可执行管理员专属写操作。空 = 无人是 support。
+    support_staff_ids: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expires_minutes: int = 720
     # 伪名化盐: 服务层把 user_id 转成稳定不可逆引用再传给 omodul (§5.5.1 禁真实 PII)
