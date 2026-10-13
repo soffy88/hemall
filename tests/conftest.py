@@ -80,7 +80,7 @@ def auth_token() -> str:
     """用当前配置密钥签发一个合法 JWT (主体 test-user)。"""
     s = get_settings()
     return CryptoUtil.jwt_sign(
-        payload={"sub": "test-user", "email": "t@t.com"},
+        payload={"sub": "test-user", "email": "t@t.com", "typ": "staff"},
         secret=s.jwt_secret,
         algorithm=s.jwt_algorithm,
     )

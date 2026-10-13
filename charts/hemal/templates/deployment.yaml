@@ -58,7 +58,7 @@ spec:
         # 从 Secret 注入敏感配置
         envFrom:
         - secretRef:
-            name: {{ .Release.Name }}-secrets
+            name: {{ required ".Values.secrets.existingSecret must name an externally managed production Secret" .Values.secrets.existingSecret }}
         # 健康检查：liveness 只看进程存活，readiness 看依赖就绪
         livenessProbe:
           httpGet:

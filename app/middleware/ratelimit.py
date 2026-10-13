@@ -26,7 +26,9 @@ main.py 按路径组拆成两个桶参数。
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import math
 import time
 from typing import Any
 
@@ -121,6 +123,31 @@ class TokenBucketRateLimiter:
         return client_ip
 
 
+_REDIS_TOKEN_BUCKET_LUA = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local capacity = tonumber(ARGV[1])
+local refill = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+local tokens = tonumber(redis.call('GET', KEYS[1]))
+local last = tonumber(redis.call('GET', KEYS[2]))
+if tokens == nil then tokens = capacity end
+if last == nil then last = now end
+tokens = math.min(capacity, tokens + math.max(0, now - last) / 1000 * refill)
+local allowed = 0
+local retry_ms = 0
+if tokens >= 1 then
+  tokens = tokens - 1
+  allowed = 1
+else
+  retry_ms = math.ceil((1 - tokens) / refill * 1000)
+end
+redis.call('SET', KEYS[1], tostring(tokens), 'PX', ttl)
+redis.call('SET', KEYS[2], tostring(now), 'PX', ttl)
+return {allowed, retry_ms}
+"""
+
+
 class TokenBucketRateLimitMiddleware:
     """纯 ASGI 中间件：对公开路径做令牌桶限流。
 
@@ -145,15 +172,47 @@ class TokenBucketRateLimitMiddleware:
         capacity: int = DEFAULT_CAPACITY,
         refill_per_sec: float = DEFAULT_REFILL_PER_SEC,
         trusted_proxy_hops: int = 0,
+        redis_url: str | None = None,
+        fail_closed: bool = False,
     ) -> None:
         self.app = app
         self.public_paths = public_paths or set()
         self.path_prefixes = path_prefixes or set()
         self.limiter = TokenBucketRateLimiter(capacity, refill_per_sec)
+        self.redis_url = redis_url
+        self.fail_closed = fail_closed
+        self._redis: Any | None = None
         # >0 时信任前置反代注入的 X-Forwarded-For, 取倒数第 trusted_proxy_hops 跳
         # 作为真实对端 IP (跳数 = 自己到公网之间可信反代的层数)。0 = 直连, 只认
         # ASGI 对端。切勿在无可信反代时开启——XFF 客户端可伪造。
         self.trusted_proxy_hops = trusted_proxy_hops
+
+    async def _allow(self, key: str) -> tuple[bool | None, float]:
+        if not self.redis_url:
+            return self.limiter.allow(key)
+        try:
+            if self._redis is None:
+                from redis.asyncio import from_url
+
+                self._redis = from_url(self.redis_url, decode_responses=True)
+            digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+            base = f"hemall:ratelimit:{digest}"
+            ttl_ms = max(1000, math.ceil(self.limiter.capacity / self.limiter.refill_per_sec * 2000))
+            result = await self._redis.eval(
+                _REDIS_TOKEN_BUCKET_LUA,
+                2,
+                f"{base}:tokens",
+                f"{base}:last",
+                self.limiter.capacity,
+                self.limiter.refill_per_sec,
+                ttl_ms,
+            )
+            return bool(int(result[0])), max(0.0, float(result[1]) / 1000.0)
+        except Exception:
+            logger.exception("shared Redis rate limiter unavailable")
+            if self.fail_closed:
+                return None, 0.0
+            return self.limiter.allow(key)
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -179,7 +238,15 @@ class TokenBucketRateLimitMiddleware:
             )
         key = self.limiter.key_for(client_ip)
 
-        allowed, retry_after = self.limiter.allow(key)
+        allowed, retry_after = await self._allow(key)
+        if allowed is None:
+            response = JSONResponse(
+                status_code=503,
+                content={"detail": "shared rate limiter unavailable"},
+                headers={"Retry-After": "1"},
+            )
+            await response(scope, receive, send)
+            return
         if not allowed:
             logger.info(
                 "rate limit exceeded: path=%s key=%s retry_after=%.1fs",

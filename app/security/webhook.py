@@ -135,10 +135,36 @@ class WebhookSignatureMiddleware:
         *,
         secret: str,
         protected_paths: set[str],
+        redis_url: str | None = None,
+        fail_closed: bool = False,
     ) -> None:
         self.app = app
         self.secret = secret
         self.protected_paths = protected_paths
+        self.redis_url = redis_url
+        self.fail_closed = fail_closed
+        self._redis: Any | None = None
+
+    async def _claim_nonce(self, path: str, nonce: str) -> bool | None:
+        """Atomically claim a nonce in shared Redis; None means Redis unavailable."""
+        if not self.redis_url:
+            return None
+        try:
+            if self._redis is None:
+                from redis.asyncio import from_url
+
+                self._redis = from_url(self.redis_url, decode_responses=True)
+            digest = hashlib.sha256(f"{path}:{nonce}".encode("utf-8")).hexdigest()
+            claimed = await self._redis.set(
+                f"hemall:webhook:nonce:{digest}",
+                "1",
+                ex=_REPLAY_WINDOW_SECONDS * 2,
+                nx=True,
+            )
+            return bool(claimed)
+        except Exception:
+            logger.exception("shared Redis webhook nonce store unavailable")
+            return None
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
         # 路径归一化："/notify/" 与 "/notify" 视为同一受保护路径，防止
@@ -187,24 +213,46 @@ class WebhookSignatureMiddleware:
             await response(scope, receive, send)
             return
 
-        if not verify_hmac_sha256(
-            body,
-            signature,
-            self.secret,
-            timestamp=timestamp,
-            nonce=nonce,
-        ):
+        shared_nonce = None
+        # When shared Redis is configured, verify the signature/timestamp first, then claim
+        # the nonce atomically in Redis. Without Redis, retain the bounded process-local cache.
+        if self.redis_url:
+            valid_signature = verify_hmac_sha256(
+                body, signature, self.secret, timestamp=timestamp, nonce=None
+            )
+            if valid_signature:
+                shared_nonce = await self._claim_nonce(path, nonce)
+                if shared_nonce is None and not self.fail_closed:
+                    valid_signature = verify_hmac_sha256(
+                        body, signature, self.secret, timestamp=timestamp, nonce=nonce
+                    )
+                elif shared_nonce is None:
+                    response = JSONResponse(
+                        status_code=503,
+                        content={"detail": "shared webhook replay protection unavailable"},
+                        headers={"Retry-After": "1"},
+                    )
+                    await response(scope, receive, send)
+                    return
+                elif shared_nonce is False:
+                    valid_signature = False
+        else:
+            valid_signature = verify_hmac_sha256(
+                body, signature, self.secret, timestamp=timestamp, nonce=nonce
+            )
+
+        if not valid_signature:
             from ..middleware.metrics import WEBHOOK_SIGNATURE_REJECTED
 
             WEBHOOK_SIGNATURE_REJECTED.inc()
             logger.warning(
-                "webhook signature rejected: path=%s client=%s",
+                "webhook signature or replay check rejected: path=%s client=%s",
                 path,
                 scope.get("client"),
             )
             response = JSONResponse(
                 status_code=403,
-                content={"detail": "invalid webhook signature"},
+                content={"detail": "invalid webhook signature or replayed nonce"},
             )
             await response(scope, receive, send)
             return

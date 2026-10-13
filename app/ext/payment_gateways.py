@@ -649,9 +649,13 @@ def build_payment_gateway(settings: Any) -> tuple[str, Any]:
         )
         if gateway.is_configured:
             return provider, gateway
+        if str(getattr(settings, "environment", "development")).lower() == "production":
+            raise RuntimeError(
+                "production WeChat payment gateway is not configured; refusing manual fallback"
+            )
         logger.warning(
             "HEMALL_PAYMENT_GATEWAY_PROVIDER=wechat but keys missing "
-            "(mchid/private_key/api_v3_key/platform_cert); falling back to manual"
+            "(appid/mchid/serial_no/private_key/api_v3_key/platform_cert); falling back to manual"
         )
         return provider, ManualPaymentGateway()
 
@@ -663,10 +667,18 @@ def build_payment_gateway(settings: Any) -> tuple[str, Any]:
         )
         if gateway.is_configured:
             return provider, gateway
+        if str(getattr(settings, "environment", "development")).lower() == "production":
+            raise RuntimeError(
+                "production Stripe payment gateway is not configured; refusing manual fallback"
+            )
         logger.warning(
             "HEMALL_PAYMENT_GATEWAY_PROVIDER=stripe but keys missing "
             "(secret_key/webhook_secret); falling back to manual"
         )
         return provider, ManualPaymentGateway()
 
+    if str(getattr(settings, "environment", "development")).lower() == "production":
+        raise RuntimeError(
+            f"unsupported production payment gateway provider: {provider!r}"
+        )
     return "manual", ManualPaymentGateway()

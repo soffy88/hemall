@@ -27,6 +27,7 @@ dependencies = [
     # app/search/client imports the async client at application import time;
     # keep this explicit instead of relying on a transitive 3O dependency.
     "elasticsearch>=8.12",
+    "gunicorn>=23.0,<24.0",
 ]
 
 [project.optional-dependencies]

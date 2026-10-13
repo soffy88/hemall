@@ -517,6 +517,8 @@ def create_app() -> FastAPI:
         public_paths=public_zero_login_paths(),
         path_prefixes={"/store/"},
         trusted_proxy_hops=settings.ratelimit_trusted_proxy_hops,
+        redis_url=settings.redis_url,
+        fail_closed=settings.environment.lower() == "production",
     )
 
     # 补天计划 Task 1.1: Webhook 验签装甲 (最外层)——抖音/支付回调在 ASGI 层
@@ -534,6 +536,8 @@ def create_app() -> FastAPI:
         WebhookSignatureMiddleware,
         secret=settings.webhook_secret,
         protected_paths=protected_webhook_paths,
+        redis_url=settings.redis_url,
+        fail_closed=settings.environment.lower() == "production",
     )
 
     # Phase 0 Week 2: 限流

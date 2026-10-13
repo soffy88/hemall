@@ -355,3 +355,41 @@ def test_build_gateway_stripe_with_keys_real():
     assert name == "stripe"
     assert isinstance(gw, StripePaymentGateway)
     assert gw.is_configured
+
+
+def test_production_security_rejects_manual_payment_gateway():
+    with pytest.raises(RuntimeError, match="HEMALL_PAYMENT_GATEWAY_PROVIDER"):
+        Settings(environment="production", payment_gateway_provider="manual").validate_production_security()
+
+
+def test_production_security_rejects_incomplete_wechat_gateway():
+    with pytest.raises(RuntimeError, match="微信支付生产配置缺失"):
+        Settings(environment="production", payment_gateway_provider="wechat").validate_production_security()
+
+
+def test_production_security_rejects_incomplete_stripe_gateway():
+    with pytest.raises(RuntimeError, match="Stripe 生产配置缺失"):
+        Settings(environment="production", payment_gateway_provider="stripe").validate_production_security()
+
+
+def test_build_gateway_refuses_manual_fallback_in_production():
+    with pytest.raises(RuntimeError, match="refusing manual fallback"):
+        build_payment_gateway(Settings(environment="production", payment_gateway_provider="wechat"))
+    with pytest.raises(RuntimeError, match="refusing manual fallback"):
+        build_payment_gateway(Settings(environment="production", payment_gateway_provider="stripe"))
+
+
+def test_build_gateway_refuses_unknown_provider_in_production():
+    with pytest.raises(RuntimeError, match="unsupported production payment gateway provider"):
+        build_payment_gateway(Settings(environment="production", payment_gateway_provider="bogus"))
+
+
+def test_production_security_rejects_short_hmac_secrets():
+    with pytest.raises(RuntimeError, match="HEMALL_JWT_SECRET 必须至少 32 字节"):
+        Settings(environment="production", jwt_secret="x" * 31).validate_production_security()
+
+
+def test_production_security_rejects_invalid_fernet_key(monkeypatch):
+    monkeypatch.setenv("ENCRYPTION_KEY", "not-a-fernet-key")
+    with pytest.raises(RuntimeError, match="ENCRYPTION_KEY 必须是有效的 Fernet base64 key"):
+        Settings(environment="production", payment_gateway_provider="manual").validate_production_security()

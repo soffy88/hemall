@@ -13,12 +13,10 @@ Phase 3 Priority 3: 为业务团队提供实时数据分析和可视化能力。
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 logger = logging.getLogger("hemall.analytics")
 
@@ -82,9 +80,9 @@ class UserRetention(BaseModel):
 
     cohort_date: str
     total_users: int
-    d1_retention: float
-    d7_retention: float
-    d30_retention: float
+    d1_retention: float | None
+    d7_retention: float | None
+    d30_retention: float | None
 
 
 # ── 分析服务 ──────────────────────────────────────────────────────
@@ -185,37 +183,131 @@ class AnalyticsService:
     async def get_funnel(
         self, start_date: str, end_date: str
     ) -> list[FunnelData]:
-        """获取用户转化漏斗。"""
-        return [
-            FunnelData(stage="浏览", user_count=10000, conversion_rate=100.0),
-            FunnelData(stage="加购", user_count=3000, conversion_rate=30.0),
-            FunnelData(stage="下单", user_count=1500, conversion_rate=15.0),
-            FunnelData(stage="支付", user_count=1200, conversion_rate=12.0),
-            FunnelData(stage="复购", user_count=300, conversion_rate=3.0),
-        ]
+        """Return no funnel until page-view/cart interaction events are ingested.
+
+        Order and payment tables alone cannot truthfully provide the view and add-to-cart
+        stages. Returning an empty series is intentional; fabricated rates are not data.
+        """
+        logger.info(
+            "Conversion funnel unavailable: no page-view/add-to-cart event source is configured "
+            "for %s..%s",
+            start_date,
+            end_date,
+        )
+        return []
 
     async def get_retention(
         self, cohort_date: str, lookback_days: int = 30
     ) -> list[UserRetention]:
-        """获取用户留存数据。"""
-        return [
-            UserRetention(
-                cohort_date=cohort_date,
-                total_users=1000,
-                d1_retention=0.35,
-                d7_retention=0.15,
-                d30_retention=0.05,
-            )
-        ]
+        """Compute purchase-cohort retention from real paid orders only."""
+        from datetime import date
+
+        cohort_day = date.fromisoformat(cohort_date)
+        available_days = max(0, (date.today() - cohort_day).days)
+        try:
+            sql = """
+                WITH paid_orders AS (
+                    SELECT o.customer_id, o.created_at::date AS order_date
+                    FROM customer_order o
+                    WHERE o.customer_id IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1 FROM payment_intent p
+                          WHERE p.order_id = o.id::text AND p.status = 'paid'
+                      )
+                ), cohort AS (
+                    SELECT customer_id
+                    FROM paid_orders
+                    GROUP BY customer_id
+                    HAVING MIN(order_date) = $1::date
+                )
+                SELECT
+                    COUNT(*)::int AS total_users,
+                    COUNT(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM paid_orders p
+                        WHERE p.customer_id = c.customer_id
+                          AND p.order_date = $1::date + 1
+                    ))::int AS d1_users,
+                    COUNT(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM paid_orders p
+                        WHERE p.customer_id = c.customer_id
+                          AND p.order_date = $1::date + 7
+                    ))::int AS d7_users,
+                    COUNT(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM paid_orders p
+                        WHERE p.customer_id = c.customer_id
+                          AND p.order_date = $1::date + 30
+                    ))::int AS d30_users
+                FROM cohort c
+            """
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(sql, cohort_day)
+            if row is None or int(row["total_users"] or 0) == 0:
+                return []
+            total = int(row["total_users"])
+            d1 = round(int(row["d1_users"] or 0) / total, 4) if available_days >= 1 and lookback_days >= 1 else None
+            d7 = round(int(row["d7_users"] or 0) / total, 4) if available_days >= 7 and lookback_days >= 7 else None
+            d30 = round(int(row["d30_users"] or 0) / total, 4) if available_days >= 30 and lookback_days >= 30 else None
+            return [
+                UserRetention(
+                    cohort_date=cohort_day.isoformat(),
+                    total_users=total,
+                    d1_retention=d1,
+                    d7_retention=d7,
+                    d30_retention=d30,
+                )
+            ]
+        except Exception:
+            logger.warning("Purchase retention query failed; returning unavailable", exc_info=True)
+            return []
 
     async def get_dashboard_overview(self) -> dict[str, Any]:
-        """获取仪表盘总览数据。"""
-        return {
-            "today_gmv_cents": 1250000,
-            "today_orders": 450,
-            "today_active_users": 3200,
-            "today_new_users": 180,
-            "conversion_rate": 3.2,
-            "avg_order_value_cents": 2777,
-            "refund_rate": 1.5,
-        }
+        """Return live paid-order totals; expose untracked metrics as unavailable."""
+        try:
+            sql = """
+                WITH today_paid_orders AS (
+                    SELECT o.id, o.customer_id, o.grand_total_cents
+                    FROM customer_order o
+                    WHERE o.created_at >= CURRENT_DATE
+                      AND o.created_at < CURRENT_DATE + INTERVAL '1 day'
+                      AND EXISTS (
+                          SELECT 1 FROM payment_intent p
+                          WHERE p.order_id = o.id::text AND p.status = 'paid'
+                      )
+                )
+                SELECT
+                    COALESCE(SUM(grand_total_cents), 0)::bigint AS today_gmv_cents,
+                    COUNT(*)::int AS today_orders,
+                    COALESCE(AVG(grand_total_cents), 0)::bigint AS avg_order_value_cents
+                FROM today_paid_orders
+            """
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(sql)
+            if row is None:
+                row = {"today_gmv_cents": 0, "today_orders": 0, "avg_order_value_cents": 0}
+            return {
+                "today_gmv_cents": int(row["today_gmv_cents"] or 0),
+                "today_orders": int(row["today_orders"] or 0),
+                "today_active_users": None,
+                "today_new_users": None,
+                "conversion_rate": None,
+                "avg_order_value_cents": int(row["avg_order_value_cents"] or 0),
+                "refund_rate": None,
+                "unavailable_metrics": [
+                    "today_active_users", "today_new_users", "conversion_rate", "refund_rate"
+                ],
+            }
+        except Exception:
+            logger.warning("Dashboard order query failed; returning unavailable", exc_info=True)
+            return {
+                "today_gmv_cents": None,
+                "today_orders": None,
+                "today_active_users": None,
+                "today_new_users": None,
+                "conversion_rate": None,
+                "avg_order_value_cents": None,
+                "refund_rate": None,
+                "unavailable_metrics": [
+                    "today_gmv_cents", "today_orders", "today_active_users",
+                    "today_new_users", "conversion_rate", "avg_order_value_cents", "refund_rate"
+                ],
+            }

@@ -13,16 +13,99 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
-from app.deps import get_current_customer
+from app.deps import get_current_customer, get_settings
 
 logger = logging.getLogger("hemall.storefront")
 
 router = APIRouter(prefix="/store", tags=["storefront"])
+
+_optional_bearer = HTTPBearer(auto_error=False)
+
+
+def _optional_customer(
+    creds: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+    settings: Any = Depends(get_settings),
+) -> dict[str, Any] | None:
+    if creds is None:
+        return None
+    return get_current_customer(creds=creds, settings=settings)
+
+
+def _sign_cart_capability(cart_id: str, secret: str, algorithm: str) -> str:
+    from obase.crypto.util import CryptoUtil
+
+    return CryptoUtil.jwt_sign(
+        payload={"typ": "cart", "cart_id": cart_id},
+        secret=secret,
+        expires_in_minutes=60 * 24 * 7,
+        algorithm=algorithm,
+    )
+
+
+def _has_cart_capability(request: Request, cart_id: str) -> bool:
+    token = request.headers.get("X-Cart-Token")
+    if not token:
+        return False
+    from obase.crypto.util import CryptoUtil
+
+    settings = request.app.state.config
+    try:
+        payload = CryptoUtil.jwt_decode(
+            token=token, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
+        )
+    except Exception:
+        return False
+    return payload.get("typ") == "cart" and payload.get("cart_id") == cart_id
+
+
+async def _authorize_cart(
+    request: Request, cart_id: str, principal: dict[str, Any] | None
+) -> str | None:
+    """Authorize an owned customer cart or a guest cart capability.
+
+    Guest carts use a signed, cart-scoped bearer capability returned only at creation.
+    A guest cart can be claimed by a logged-in customer only with that capability.
+    """
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT customer_id FROM cart WHERE id = $1 AND deleted_at IS NULL", cart_id
+        )
+        if row is None:
+            raise HTTPException(404, "cart not found")
+        owner = row["customer_id"]
+        if principal is None:
+            if owner is not None or not _has_cart_capability(request, cart_id):
+                raise HTTPException(404, "cart not found")
+            return None
+
+        customer_id = str(principal["customer_id"])
+        if owner is not None:
+            if str(owner) != customer_id:
+                raise HTTPException(404, "cart not found")
+            return customer_id
+        if not _has_cart_capability(request, cart_id):
+            raise HTTPException(404, "cart not found")
+        bound = await conn.fetchval(
+            "UPDATE cart SET customer_id = $1 WHERE id = $2 AND customer_id IS NULL "
+            "RETURNING customer_id",
+            customer_id,
+            cart_id,
+        )
+        if bound is None:
+            current_owner = await conn.fetchval(
+                "SELECT customer_id FROM cart WHERE id = $1 AND deleted_at IS NULL", cart_id
+            )
+            if current_owner is None or str(current_owner) != customer_id:
+                raise HTTPException(404, "cart not found")
+        return customer_id
+
 
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -61,7 +144,7 @@ def _cfg(request: Request, config_cls: type, **kwargs: Any) -> Any:
     return config_cls(redis_url=settings.redis_url, **kwargs)
 
 
-def _sign_receipt(order_id: str, secret: str, algorithm: str, ttl_minutes: int = 43200) -> str:
+def _sign_receipt(order_id: str, secret: str, algorithm: str, ttl_minutes: int = 10080) -> str:
     """签发收据 token（30 天有效）。"""
     from obase.crypto.util import CryptoUtil
 
@@ -98,7 +181,11 @@ class CreateCartRequest(BaseModel):
 
 
 @router.post("/carts")
-async def create_cart(body: CreateCartRequest, request: Request):
+async def create_cart(
+    body: CreateCartRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
     from omodul.create_cart import CreateCartConfig, CreateCartInput, create_cart
 
     cfg = _cfg(request, CreateCartConfig)
@@ -106,8 +193,22 @@ async def create_cart(body: CreateCartRequest, request: Request):
     result = await create_cart(cfg, inp, _output_dir(request, "create_cart"), pool=_pool(request))
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
+    cart_id = str(result["cart_id"])
+    cart_token = None
+    if principal is not None:
+        async with _pool(request).acquire() as conn:
+            await conn.execute(
+                "UPDATE cart SET customer_id = $1 WHERE id = $2 AND customer_id IS NULL",
+                str(principal["customer_id"]),
+                cart_id,
+            )
+    else:
+        cart_token = _sign_cart_capability(
+            cart_id, request.app.state.config.jwt_secret, request.app.state.config.jwt_algorithm
+        )
     return {
-        "cart_id": result["cart_id"],
+        "cart_id": cart_id,
+        "cart_token": cart_token,
         "currency": result["currency"],
         "region_code": body.region_code,
     }
@@ -120,7 +221,12 @@ class AddLineItemRequest(BaseModel):
 
 
 @router.post("/carts/line-items")
-async def add_line_item(body: AddLineItemRequest, request: Request):
+async def add_line_item(
+    body: AddLineItemRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
         AddLineItemInput,
@@ -147,7 +253,12 @@ class UpdateLineItemRequest(BaseModel):
 
 
 @router.put("/carts/line-items")
-async def update_line_item(body: UpdateLineItemRequest, request: Request):
+async def update_line_item(
+    body: UpdateLineItemRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.update_line_item_in_cart import (
         UpdateLineItemConfig,
         UpdateLineItemInput,
@@ -175,7 +286,12 @@ class DeleteLineItemRequest(BaseModel):
 
 
 @router.delete("/carts/line-items")
-async def delete_line_item(body: DeleteLineItemRequest, request: Request):
+async def delete_line_item(
+    body: DeleteLineItemRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.delete_line_item_from_cart import (
         DeleteLineItemConfig,
         DeleteLineItemInput,
@@ -196,7 +312,10 @@ async def delete_line_item(body: DeleteLineItemRequest, request: Request):
 
 
 @router.get("/carts/{cart_id}")
-async def get_cart(cart_id: str, request: Request):
+async def get_cart(
+    cart_id: str, request: Request, principal: dict[str, Any] | None = Depends(_optional_customer)
+):
+    await _authorize_cart(request, cart_id, principal)
     cart = await queries.get_cart(_pool(request), cart_id)
     if cart is None:
         raise HTTPException(404, "cart not found")
@@ -222,7 +341,12 @@ class SetCartAddressRequest(BaseModel):
 
 
 @router.post("/carts/billing-address")
-async def set_billing_address(body: SetCartAddressRequest, request: Request):
+async def set_billing_address(
+    body: SetCartAddressRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.set_cart_billing_address import (
         SetCartBillingAddressConfig,
         SetCartBillingAddressInput,
@@ -249,7 +373,12 @@ async def set_billing_address(body: SetCartAddressRequest, request: Request):
 
 
 @router.post("/carts/shipping-address")
-async def set_shipping_address(body: SetCartAddressRequest, request: Request):
+async def set_shipping_address(
+    body: SetCartAddressRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.set_cart_shipping_address import (
         SetCartShippingAddressConfig,
         SetCartShippingAddressInput,
@@ -281,20 +410,17 @@ class SetCartCustomerRequest(BaseModel):
 
 
 @router.post("/carts/customer")
-async def set_cart_customer(body: SetCartCustomerRequest, request: Request):
-    from omodul.set_cart_customer import (
-        SetCartCustomerConfig,
-        SetCartCustomerInput,
-        set_cart_customer,
-    )
-
-    cfg = _cfg(request, SetCartCustomerConfig)
-    inp = SetCartCustomerInput(cart_id=body.cart_id, customer_id=body.customer_id)
-    result = await set_cart_customer(
-        cfg, inp, _output_dir(request, "set_cart_customer"), pool=_pool(request)
-    )
-    if result["status"] == "failed":
-        raise HTTPException(400, result["error"]["message"])
+async def set_cart_customer(
+    body: SetCartCustomerRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    if principal is None:
+        raise HTTPException(401, "customer authentication required")
+    customer_id = str(principal["customer_id"])
+    if body.customer_id != customer_id:
+        raise HTTPException(403, "cannot bind cart to another customer")
+    await _authorize_cart(request, body.cart_id, principal)
     return {"ok": True}
 
 
@@ -671,10 +797,20 @@ class CheckoutRequest(BaseModel):
 
 
 @router.post("/checkout")
-async def checkout(body: CheckoutRequest, request: Request):
+async def checkout(
+    body: CheckoutRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    if body.customer_id is not None and principal is None:
+        raise HTTPException(401, "customer authentication required")
+    authenticated_customer_id = str(principal["customer_id"]) if principal else None
+    if body.customer_id is not None and body.customer_id != authenticated_customer_id:
+        raise HTTPException(403, "customer_id does not match authenticated customer")
     pool = _pool(request)
     cfg_store = request.app.state.config
     out_root = _output_dir(request, "checkout")
+    await _authorize_cart(request, body.cart_id, principal)
 
     # 1. 设置地址
     if body.billing_address:
@@ -727,30 +863,13 @@ async def checkout(body: CheckoutRequest, request: Request):
         if r["status"] == "failed":
             raise HTTPException(400, f"shipping_address: {r['error']['message']}")
 
-    # 2. 绑定客户（可选）
-    if body.customer_id:
-        from omodul.set_cart_customer import (
-            SetCartCustomerConfig,
-            SetCartCustomerInput,
-            set_cart_customer,
-        )
-
-        r = await set_cart_customer(
-            _cfg(request, SetCartCustomerConfig),
-            SetCartCustomerInput(cart_id=body.cart_id, customer_id=body.customer_id),
-            _step_dir(out_root, "set_cart_customer"),
-            pool=pool,
-        )
-        if r["status"] == "failed":
-            raise HTTPException(400, f"customer: {r['error']['message']}")
-
     # 3. 只建立待支付订单。provider capture/confirm 不能在这里伪造成功；
     # 支付 intent 先落库，再由真实 provider 回调进入 verified PAID。
     try:
         order = await _create_order_from_cart(
             pool,
             cart_id=body.cart_id,
-            customer_id=body.customer_id,
+            customer_id=authenticated_customer_id,
         )
         provider_name = (
             body.provider
@@ -863,6 +982,21 @@ class StorePaymentRequest(BaseModel):
     provider: str | None = None
 
 
+def _resolve_store_payment_provider(settings: Any, requested_provider: str | None) -> str:
+    configured = str(settings.payment_gateway_provider or "").strip().lower()
+    requested = str(requested_provider or "").strip().lower() or None
+    if str(getattr(settings, "environment", "development")).lower() == "production":
+        if configured not in {"wechat", "stripe"}:
+            raise HTTPException(503, "production payment gateway is not configured")
+        if requested is not None and requested != configured:
+            raise HTTPException(400, "payment provider is fixed by production configuration")
+        return configured
+    provider = requested or configured or str(settings.default_payment_provider).lower()
+    if provider not in {"manual", "wechat", "stripe"}:
+        raise HTTPException(400, "unsupported payment provider")
+    return provider
+
+
 async def _assert_customer_order(pool: Any, customer_id: str, order_id: str) -> None:
     async with pool.acquire() as conn:
         owner = await conn.fetchval(
@@ -884,7 +1018,7 @@ async def create_store_payment(
     pool = _pool(request)
     await _assert_customer_order(pool, str(principal["customer_id"]), body.order_id)
     settings = request.app.state.config
-    provider = body.provider or settings.payment_gateway_provider
+    provider = _resolve_store_payment_provider(settings, body.provider)
     try:
         return await _start_payment(
             pool,
@@ -954,7 +1088,12 @@ class ApplyDiscountRequest(BaseModel):
 
 
 @router.post("/carts/discount")
-async def apply_discount(body: ApplyDiscountRequest, request: Request):
+async def apply_discount(
+    body: ApplyDiscountRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.apply_discount_to_cart import (
         ApplyDiscountToCartConfig,
         ApplyDiscountToCartInput,
@@ -981,7 +1120,12 @@ class RemoveDiscountRequest(BaseModel):
 
 
 @router.delete("/carts/discount")
-async def remove_discount(body: RemoveDiscountRequest, request: Request):
+async def remove_discount(
+    body: RemoveDiscountRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.remove_discount_from_cart import (
         RemoveDiscountFromCartConfig,
         RemoveDiscountFromCartInput,
@@ -1004,7 +1148,12 @@ class ApplyGiftCardRequest(BaseModel):
 
 
 @router.post("/carts/gift-card")
-async def apply_gift_card(body: ApplyGiftCardRequest, request: Request):
+async def apply_gift_card(
+    body: ApplyGiftCardRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.apply_gift_card_to_cart import (
         ApplyGiftCardToCartConfig,
         ApplyGiftCardToCartInput,
@@ -1031,7 +1180,12 @@ class RemoveGiftCardRequest(BaseModel):
 
 
 @router.delete("/carts/gift-card")
-async def remove_gift_card(body: RemoveGiftCardRequest, request: Request):
+async def remove_gift_card(
+    body: RemoveGiftCardRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.remove_gift_card_from_cart import (
         RemoveGiftCardFromCartConfig,
         RemoveGiftCardFromCartInput,
@@ -1058,7 +1212,12 @@ class AddShippingMethodRequest(BaseModel):
 
 
 @router.post("/carts/shipping-method")
-async def add_shipping_method(body: AddShippingMethodRequest, request: Request):
+async def add_shipping_method(
+    body: AddShippingMethodRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.add_shipping_method_to_cart import (
         AddShippingMethodToCartConfig,
         AddShippingMethodToCartInput,
@@ -1090,7 +1249,12 @@ class SetCartRegionRequest(BaseModel):
 
 
 @router.put("/carts/region")
-async def set_cart_region_route(body: SetCartRegionRequest, request: Request):
+async def set_cart_region_route(
+    body: SetCartRegionRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    await _authorize_cart(request, body.cart_id, principal)
     from omodul.set_cart_region import (
         SetCartRegionConfig,
         SetCartRegionInput,
@@ -1143,10 +1307,22 @@ async def storefront_product(product_id: str, request: Request):
 
 
 @router.get("/orders/lookup")
-async def lookup_order(token: str, request: Request):
+async def lookup_order(
+    request: Request,
+    response: Response,
+    token: str | None = Query(default=None, description="Development-only legacy receipt token"),
+    receipt_token: str | None = Header(default=None, alias="X-Receipt-Token"),
+):
     cfg = request.app.state.config
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if cfg.environment.lower() == "production" and token is not None:
+        raise HTTPException(400, "query-string receipt tokens are disabled; use X-Receipt-Token")
+    capability = receipt_token or (token if cfg.environment.lower() != "production" else None)
+    if not capability:
+        raise HTTPException(401, "receipt token required in X-Receipt-Token header")
     order = await queries.get_order_by_receipt_token(
-        _pool(request), token, cfg.jwt_secret, cfg.jwt_algorithm
+        _pool(request), capability, cfg.jwt_secret, cfg.jwt_algorithm
     )
     if order is None:
         raise HTTPException(404, "order not found or token invalid")

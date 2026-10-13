@@ -7,7 +7,6 @@ obase 提供 bcrypt_verify + jwt_sign 积木)。本模块在服务层把这两�
 
 from __future__ import annotations
 
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -38,6 +37,13 @@ class TokenResponse(BaseModel):
     email: str
 
 
+def _staff_role_for_user(user_id: str, settings: Settings) -> str:
+    privileged_ids = {
+        value.strip() for value in settings.privileged_staff_ids.split(",") if value.strip()
+    }
+    return "admin" if user_id in privileged_ids else "staff"
+
+
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def login(
@@ -62,10 +68,16 @@ async def login(
     if not CryptoUtil.verify_password(password=body.password, hashed=row["password_hash"]):
         raise HTTPException(status_code=401, detail="invalid credentials")
 
+    user_id = str(row["id"])
     token = CryptoUtil.jwt_sign(
-        payload={"sub": str(row["id"]), "email": row["email"]},
+        payload={
+            "sub": user_id,
+            "email": row["email"],
+            "typ": "staff",
+            "role": _staff_role_for_user(user_id, settings),
+        },
         secret=settings.jwt_secret,
         expires_in_minutes=settings.jwt_expires_minutes,
         algorithm=settings.jwt_algorithm,
     )
-    return TokenResponse(access_token=token, user_id=str(row["id"]), email=row["email"])
+    return TokenResponse(access_token=token, user_id=user_id, email=row["email"])

@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from functools import lru_cache
 from pathlib import Path
@@ -104,14 +103,12 @@ def get_current_user(
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
-    if payload.get("typ") == "customer":
-        # 顾客 token (get_current_customer 签发, typ=customer) 不能当员工/管理员
-        # 主体使用——否则任何登录顾客都能过 /admin/* 与 /agent/* 鉴权 (越权)。
-        raise HTTPException(
-            status_code=401, detail="customer token not valid for staff endpoints"
-        )
+    if payload.get("typ") != "staff":
+        raise HTTPException(status_code=401, detail="staff token required")
+    if not isinstance(payload.get("sub"), str) or not payload["sub"].strip():
+        raise HTTPException(status_code=401, detail="staff token missing subject")
     return {
-        "user_id": payload.get("sub"),
+        "user_id": payload["sub"],
         "email": payload.get("email"),
         "claims": payload,
     }
@@ -125,15 +122,26 @@ ANONYMOUS_PRINCIPAL: dict[str, Any] = {
 }
 
 
+def require_staff_role(*allowed_roles: str):
+    """Require a staff token carrying one of the explicitly allowed role claims."""
+    allowed = frozenset(allowed_roles)
+
+    async def _require_role(principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+        if principal["claims"].get("role") not in allowed:
+            raise HTTPException(status_code=403, detail="insufficient staff role")
+        return principal
+
+    return _require_role
+
+
 def get_current_customer(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     """从 Bearer JWT 解析顾客主体 (typ=customer); 缺失/无效/类型不符 → 401。
 
-    跟 get_current_user 共用同一份 JWT secret/algorithm, 靠 typ claim 区分顾客
-    token 和管理员 token —— 防止顾客 token 被误当管理员主体使用 (反之亦然,
-    虽然 get_current_user 本身不校验 typ, 但顾客端路由只认 get_current_customer)。
+    员工 token 必须精确匹配 typ=staff，顾客 token 必须精确匹配 typ=customer；
+    两类 token 均要求有对应主体标识，避免跨用途复用。
     """
     if creds is None:
         raise HTTPException(status_code=401, detail="not authenticated")
@@ -147,7 +155,10 @@ def get_current_customer(
         raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
     if payload.get("typ") != "customer":
         raise HTTPException(status_code=401, detail="not a customer token")
-    return {"customer_id": payload.get("customer_id"), "email": payload.get("email")}
+    customer_id = payload.get("customer_id")
+    if not isinstance(customer_id, str) or not customer_id.strip():
+        raise HTTPException(status_code=401, detail="customer token missing subject")
+    return {"customer_id": customer_id, "email": payload.get("email")}
 
 
 def build_output_dir(

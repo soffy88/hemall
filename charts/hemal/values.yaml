@@ -88,6 +88,14 @@ monitoring:
   prometheusRule:
     enabled: true
 
+# 生产凭据必须来自外部 Secret 管理（External Secrets / Sealed Secrets / Vault）。
+# Secret 至少应提供 HEMALL_PG_DSN、HEMALL_REDIS_URL、HEMALL_ENVIRONMENT=production、
+# HEMALL_JWT_SECRET、HEMALL_WEBHOOK_SECRET、HEMALL_HARDWARE_SECRET、ENCRYPTION_KEY、
+# HEMALL_PRIVILEGED_STAFF_IDS、HEMALL_CORS_ORIGINS、HEMALL_PAYMENT_GATEWAY_PROVIDER，
+# 以及所选支付网关和 HTTPS Elasticsearch 的全部凭据。
+secrets:
+  existingSecret: ""
+
 # 安全配置
 security:
   networkPolicies:

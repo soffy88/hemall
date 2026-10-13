@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from . import queries
 from .auth import router as auth_router
-from .deps import get_current_customer, get_current_user
+from .deps import get_current_customer, get_current_user, require_staff_role
 from .events import fire_event
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
 from .ext.feed_quant import build_feed_item, normalize_velocity
@@ -928,7 +928,7 @@ async def agent_list_tools(
 async def agent_execute(
     body: _AgentExecuteRequest,
     request: Request,
-    principal: dict[str, Any] = Depends(get_current_user),
+    principal: dict[str, Any] = Depends(require_staff_role("admin")),
 ):
     """工具执行 (JSON-RPC 风格): {tool, args} → omodul 结果。
 

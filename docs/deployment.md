@@ -151,13 +151,11 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `WECHAT_PAY_MCH_ID` | (空=沙箱) | 微信支付商户号 |
-| `WECHAT_PAY_API_KEY` | | 微信 V3 API 密钥 |
-| `WECHAT_PAY_NOTIFY_URL` | | 支付回调 URL |
-| `ALIPAY_APP_ID` | (空=沙箱) | 支付宝应用 APPID |
-| `ALIPAY_PRIVATE_KEY` | | 支付宝应用私钥 |
-| `ALIPAY_PUBLIC_KEY` | | 支付宝公钥 |
-| `ALIPAY_NOTIFY_URL` | | 支付宝回调 URL |
+| `HEMALL_PAYMENT_GATEWAY_PROVIDER` | `wechat` 或 `stripe` | 生产唯一启用的真实支付网关 |
+| `HEMALL_WECHAT_PAY_*` | 按网关要求设置 | 微信支付商户、APIv3、私钥、平台证书及回调配置 |
+| `HEMALL_STRIPE_SECRET_KEY` | 必填（Stripe） | Stripe 私钥 |
+| `HEMALL_STRIPE_WEBHOOK_SECRET` | 必填（Stripe） | Stripe webhook 签名密钥 |
+| `HEMALL_STRIPE_NOTIFY_URL` | 按部署设置 | Stripe 支付回跳/通知配置 |
 
 ---
 
@@ -177,23 +175,13 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
    WECHAT_PAY_NOTIFY_URL=https://yourdomain.com/payments/wechat/notify
    ```
 
-### 支付宝
+### 支付宝（生产环境暂不支持）
 
-1. 在[支付宝开放平台](https://open.alipay.com)创建应用
-2. 生成 RSA2 密钥对
-3. 配置支付宝公钥
-4. 设置异步通知 URL: `https://yourdomain.com/payments/alipay/notify`
-5. 配置环境变量:
-   ```env
-   ALIPAY_APP_ID=your_app_id
-   ALIPAY_PRIVATE_KEY=your_private_key
-   ALIPAY_PUBLIC_KEY=alipay_public_key
-   ALIPAY_NOTIFY_URL=https://yourdomain.com/payments/alipay/notify
-   ```
+支付宝回调当前在 production 环境明确拒绝结算，且没有接入经过验签的真实支付宝网关。生产配置仅允许 `wechat` 或 `stripe`。不要把支付宝标记为已可用支付方式；需要支持时，必须先实现并测试真实下单、回调验签、金额/币种关联和退款闭环。
 
-### 沙箱模式
+### 本地手动模式
 
-不配置 `WECHAT_PAY_MCH_ID` / `ALIPAY_APP_ID` 时自动进入沙箱模式，适合本地开发测试。
+`manual` 仅供本地开发和测试。生产环境启动校验会拒绝 `manual`、未知 provider，以及缺少必要凭据的真实网关。
 
 ---
 
@@ -201,9 +189,13 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ### 安全检查清单
 
-- [ ] 修改 `JWT_SECRET` 为强随机字符串 (≥32 字节)
+- [ ] 设置 `HEMALL_JWT_SECRET` 为强随机字符串 (≥32 字节)
 - [ ] 配置 `ENCRYPTION_KEY` (使用 Fernet 生成)
-- [ ] 设置 `CORS_ORIGINS` 为实际前端域名
+- [ ] 配置 `HEMALL_PRIVILEGED_STAFF_IDS`，只列出确需退款/Agent 执行权限的 app_user ID
+- [ ] 配置真实 `HEMALL_PAYMENT_GATEWAY_PROVIDER=wechat|stripe` 及对应凭据；生产禁止 `manual`
+- [ ] 设置 `HEMALL_CORS_ORIGINS` 为 JSON 数组形式的实际前端域名
+- [ ] Helm 部署必须设置 `secrets.existingSecret` 指向外部 Secret；Chart 不再生成不完整的生产 Secret
+- [ ] 若启用 Elasticsearch，必须提供外部 HTTPS 地址、认证凭据与 CA；Chart 拒绝未验证安全配置的内置 Elasticsearch
 - [ ] PostgreSQL 使用 SSL 连接
 - [ ] Redis 设置密码 + TLS
 - [ ] Docker 使用非 root 用户 (Dockerfile 已配置)

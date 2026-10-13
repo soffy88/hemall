@@ -9,8 +9,7 @@ services:
       additional_contexts:
         platform3o: ../platform/3O
     image: hemall/backend:v1.0.0-ghost-ignition
-    ports:
-      - "8000:8000"
+    # API is reachable through nginx only; do not publish the worker port on the host.
     environment:
       # Settings 只读 HEMALL_* 前缀 (app/config.py)。以下变量名必须带前缀,
       # 否则会被静默忽略并回退到源码内的开发默认值。
@@ -18,10 +17,26 @@ services:
       - HEMALL_LOG_LEVEL=INFO
       - HEMALL_PG_DSN=postgresql://hemall:${POSTGRES_PASSWORD:?set a strong postgres password}@postgres:5432/hemall
       - HEMALL_REDIS_URL=redis://redis:6379/0
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - HEMALL_ELASTICSEARCH_URL=https://elasticsearch:9200
+      - HEMALL_ELASTICSEARCH_USERNAME=elastic
+      - HEMALL_ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:?set a strong Elasticsearch password}
+      - HEMALL_ELASTICSEARCH_CA_CERT=/app/certs/elasticsearch/http_ca.crt
       # ↓ 必须在部署时用真实强随机值覆盖 (下面是占位; HEMALL_ENVIRONMENT=production
       #   时启动会校验非默认值, 见 Settings.validate_production_security)。
       - HEMALL_JWT_SECRET=${HEMALL_JWT_SECRET:?set a strong random jwt secret}
+      - HEMALL_PRIVILEGED_STAFF_IDS=${HEMALL_PRIVILEGED_STAFF_IDS:?set comma-separated privileged app_user IDs}
+      - HEMALL_CORS_ORIGINS=${HEMALL_CORS_ORIGINS:?set JSON array of allowed origins}
+      - HEMALL_PAYMENT_GATEWAY_PROVIDER=${HEMALL_PAYMENT_GATEWAY_PROVIDER:?set wechat or stripe for production}
+      - HEMALL_STRIPE_SECRET_KEY=${HEMALL_STRIPE_SECRET_KEY:-}
+      - HEMALL_STRIPE_WEBHOOK_SECRET=${HEMALL_STRIPE_WEBHOOK_SECRET:-}
+      - HEMALL_STRIPE_NOTIFY_URL=${HEMALL_STRIPE_NOTIFY_URL:-}
+      - HEMALL_WECHAT_PAY_APPID=${HEMALL_WECHAT_PAY_APPID:-}
+      - HEMALL_WECHAT_PAY_MCHID=${HEMALL_WECHAT_PAY_MCHID:-}
+      - HEMALL_WECHAT_PAY_SERIAL_NO=${HEMALL_WECHAT_PAY_SERIAL_NO:-}
+      - HEMALL_WECHAT_PAY_PRIVATE_KEY_PATH=${HEMALL_WECHAT_PAY_PRIVATE_KEY_PATH:-}
+      - HEMALL_WECHAT_PAY_API_V3_KEY=${HEMALL_WECHAT_PAY_API_V3_KEY:-}
+      - HEMALL_WECHAT_PAY_PLATFORM_CERT_PATH=${HEMALL_WECHAT_PAY_PLATFORM_CERT_PATH:-}
+      - HEMALL_WECHAT_PAY_NOTIFY_URL=${HEMALL_WECHAT_PAY_NOTIFY_URL:-}
       - HEMALL_WEBHOOK_SECRET=${HEMALL_WEBHOOK_SECRET:?set the webhook HMAC secret}
       - HEMALL_HARDWARE_SECRET=${HEMALL_HARDWARE_SECRET:?set the edge-bridge bearer secret}
       # Fernet PII 加密密钥 (无前缀, 经 os.getenv 读取)。缺失时每次重启换新 key,
@@ -39,8 +54,11 @@ services:
     restart: unless-stopped
     networks:
       - hemall-network
+      - data-network
     volumes:
       - ./logs:/app/logs
+      - ./secrets/wechat:/run/secrets/wechat:ro
+      - elasticsearch_certs:/app/certs/elasticsearch:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
       interval: 30s
@@ -66,11 +84,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
-    ports:
-      - "5432:5432"
     restart: unless-stopped
     networks:
-      - hemall-network
+      - data-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hemall"]
       interval: 10s
@@ -83,11 +99,9 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     restart: unless-stopped
     networks:
-      - hemall-network
+      - data-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -100,17 +114,15 @@ services:
     environment:
       - discovery.type=single-node
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
-      - xpack.security.enabled=false
+      - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD:?set a strong Elasticsearch password}
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
-    ports:
-      - "9200:9200"
-      - "9300:9300"
+      - elasticsearch_certs:/usr/share/elasticsearch/config/certs
     restart: unless-stopped
     networks:
-      - hemall-network
+      - data-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS --cacert /usr/share/elasticsearch/config/certs/http_ca.crt -u \"elastic:$$ELASTIC_PASSWORD\" https://localhost:9200/_cluster/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -137,7 +149,7 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     restart: unless-stopped
     networks:
       - hemall-network
@@ -151,7 +163,7 @@ services:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped
@@ -164,9 +176,9 @@ services:
     environment:
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
     ports:
-      - "16686:16686"
-      - "14268:14268"
-      - "14250:14250"
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:14268:14268"
+      - "127.0.0.1:14250:14250"
     restart: unless-stopped
     networks:
       - hemall-network
@@ -175,9 +187,13 @@ volumes:
   postgres_data:
   redis_data:
   elasticsearch_data:
+  elasticsearch_certs:
   prometheus_data:
   grafana_data:
 
 networks:
   hemall-network:
     driver: bridge
+  data-network:
+    driver: bridge
+    internal: true

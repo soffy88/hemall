@@ -40,6 +40,8 @@ class Settings(BaseSettings):
 
     # ── 鉴权 (obase.crypto.CryptoUtil JWT) ─────────────────────────────
     jwt_secret: str = "change-me-in-production"
+    # Comma-separated app_user IDs allowed to perform privileged staff operations.
+    privileged_staff_ids: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expires_minutes: int = 720
     # 伪名化盐: 服务层把 user_id 转成稳定不可逆引用再传给 omodul (§5.5.1 禁真实 PII)
@@ -119,6 +121,9 @@ class Settings(BaseSettings):
     # 二选一: ELASTICSEARCH_URL 环境变量 / 这两个字段之一。留空则用代码内默认地址。
     elasticsearch_url: str = ""
     hemall_elasticsearch_url: str = ""
+    elasticsearch_username: str = ""
+    elasticsearch_password: str = ""
+    elasticsearch_ca_cert: str = ""
     es_index_name: str = "hemall_products"
     es_autocomplete_index: str = "hemall_autocomplete"
     es_max_connections: int = 10
@@ -157,6 +162,12 @@ class Settings(BaseSettings):
                 problems.append(
                     f"HEMALL_{field.upper()} 仍是开发默认值 (必须显式设置强密钥)"
                 )
+        for field in ("jwt_secret", "webhook_secret", "hardware_secret"):
+            value = str(getattr(self, field) or "")
+            if len(value.encode("utf-8")) < 32:
+                problems.append(
+                    f"HEMALL_{field.upper()} 必须至少 32 字节，避免弱 HMAC 密钥"
+                )
         if "test@" in self.pg_dsn or self.pg_dsn.startswith(
             "postgresql://postgres:test@"
         ):
@@ -165,10 +176,69 @@ class Settings(BaseSettings):
             problems.append(
                 "HEMALL_CORS_ORIGINS 含通配 '*' (生产必须收紧为具体来源列表)"
             )
-        if not os.getenv("ENCRYPTION_KEY"):
+
+        if not self.privileged_staff_ids.strip():
+            problems.append("HEMALL_PRIVILEGED_STAFF_IDS must list at least one privileged app_user ID")
+
+        provider = self.payment_gateway_provider.strip().lower()
+        if provider not in {"wechat", "stripe"}:
+            problems.append(
+                "HEMALL_PAYMENT_GATEWAY_PROVIDER 必须是已配置的真实网关 wechat 或 stripe；"
+                "production 禁止 manual 或未知 provider"
+            )
+        elif provider == "wechat":
+            required = {
+                "wechat_pay_appid": self.wechat_pay_appid,
+                "wechat_pay_mchid": self.wechat_pay_mchid,
+                "wechat_pay_serial_no": self.wechat_pay_serial_no,
+                "wechat_pay_private_key_path": self.wechat_pay_private_key_path,
+                "wechat_pay_api_v3_key": self.wechat_pay_api_v3_key,
+                "wechat_pay_platform_cert_path": self.wechat_pay_platform_cert_path,
+            }
+            missing = [name for name, value in required.items() if not str(value).strip()]
+            if missing:
+                problems.append(
+                    "微信支付生产配置缺失: " + ", ".join(missing)
+                )
+        elif provider == "stripe":
+            required = {
+                "stripe_secret_key": self.stripe_secret_key,
+                "stripe_webhook_secret": self.stripe_webhook_secret,
+            }
+            missing = [name for name, value in required.items() if not str(value).strip()]
+            if missing:
+                problems.append(
+                    "Stripe 生产配置缺失: " + ", ".join(missing)
+                )
+
+        es_url = self.elasticsearch_url or self.hemall_elasticsearch_url
+        if es_url.lower().startswith("https://"):
+            es_missing = [
+                name
+                for name, value in {
+                    "elasticsearch_username": self.elasticsearch_username,
+                    "elasticsearch_password": self.elasticsearch_password,
+                    "elasticsearch_ca_cert": self.elasticsearch_ca_cert,
+                }.items()
+                if not str(value).strip()
+            ]
+            if es_missing:
+                problems.append(
+                    "Elasticsearch HTTPS 生产认证配置缺失: " + ", ".join(es_missing)
+                )
+
+        encryption_key = os.getenv("ENCRYPTION_KEY", "")
+        if not encryption_key:
             problems.append(
                 "ENCRYPTION_KEY 未设置 (缺失时每次重启生成新 Fernet key, 已加密 PII 将无法解密)"
             )
+        else:
+            try:
+                from cryptography.fernet import Fernet
+
+                Fernet(encryption_key.encode("ascii"))
+            except (ValueError, TypeError, UnicodeEncodeError):
+                problems.append("ENCRYPTION_KEY 必须是有效的 Fernet base64 key")
 
         if problems:
             raise RuntimeError(

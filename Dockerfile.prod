@@ -33,17 +33,15 @@ COPY --from=platform3o /oskill /platform/3O/oskill
 COPY --from=platform3o /omodul /platform/3O/omodul
 COPY --from=platform3o /oservi /platform/3O/oservi
 
-# 复制项目文件
-COPY pyproject.toml .
+# 复制项目元数据和锁文件，确保生产依赖与 CI 使用同一解析结果。
+COPY pyproject.toml uv.lock README.md ./
 COPY app/ ./app/
 
-# 创建虚拟环境并安装依赖 (uv 解析 [tool.uv.sources] 中的相对路径)
+# 依赖必须由 uv.lock 固定；Gunicorn 作为镜像入口工具单独固定精确版本。
 # UV_HTTP_TIMEOUT 防止网络慢时超时；uv 默认走 IPv4 优先
 ENV UV_HTTP_TIMEOUT=600
-RUN uv venv /opt/venv && \
-    uv pip install --python /opt/venv/bin/python --no-cache-dir \
-        -e ".[observability,phase2]" \
-        gunicorn
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+RUN uv sync --frozen --no-dev --extra observability --extra phase2
 
 # ── 生产阶段 ────────────────────────────────────────────────────────────
 FROM python:3.12-slim

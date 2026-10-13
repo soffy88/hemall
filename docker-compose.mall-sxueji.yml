@@ -24,6 +24,7 @@ services:
       # ENCRYPTION_KEY/默认 pg 凭据 → 拒绝启动 (app/config.py)。
       HEMALL_ENVIRONMENT: ${HEMALL_ENVIRONMENT:?set production (or development/staging for non-prod)}
       HEMALL_JWT_SECRET: ${HEMALL_JWT_SECRET:?set a strong jwt secret}
+      HEMALL_PRIVILEGED_STAFF_IDS: ${HEMALL_PRIVILEGED_STAFF_IDS:?set comma-separated privileged app_user IDs}
       HEMALL_JWT_ALGORITHM: HS256
       HEMALL_JWT_EXPIRES_MINUTES: 1440
       HEMALL_ANON_SALT: ${HEMALL_ANON_SALT:?set a stable anon salt}
@@ -44,7 +45,7 @@ services:
       HEMALL_DEFAULT_TAX_PROVIDER: flat_rate
       HEMALL_FLAT_TAX_RATE_PERCENT: 10.0
       # ── 补天 P0: 真实收款网关 (manual|wechat|stripe, 沙盒/生产无缝切换) ──
-      HEMALL_PAYMENT_GATEWAY_PROVIDER: ${HEMALL_PAYMENT_GATEWAY_PROVIDER:-manual}
+      HEMALL_PAYMENT_GATEWAY_PROVIDER: ${HEMALL_PAYMENT_GATEWAY_PROVIDER:?set wechat or stripe for production}
       HEMALL_WECHAT_PAY_APPID: ${HEMALL_WECHAT_PAY_APPID:-}
       HEMALL_WECHAT_PAY_MCHID: ${HEMALL_WECHAT_PAY_MCHID:-}
       HEMALL_WECHAT_PAY_SERIAL_NO: ${HEMALL_WECHAT_PAY_SERIAL_NO:-}
@@ -62,6 +63,7 @@ services:
     volumes:
       - hemall_output:/app/var/omodul_output
       - hemall_logs:/app/logs
+      - ./secrets/wechat:/run/secrets/wechat:ro
     depends_on:
       db:
         condition: service_healthy

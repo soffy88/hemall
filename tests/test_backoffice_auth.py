@@ -93,3 +93,29 @@ def test_rma_claim_ignores_client_supplied_trust_and_identity(client, customer_h
         headers=customer_headers,
     )
     assert r.status_code != 401
+
+
+@pytest.mark.parametrize("payload", [
+    {"sub": "u1", "typ": "pickup"},
+    {"sub": "o1", "typ": "receipt"},
+    {"sub": "u1"},
+    {"sub": "u1", "typ": "unknown"},
+    {"typ": "staff"},
+    {"sub": "", "typ": "staff"},
+])
+@pytest.mark.parametrize("method,path,body", PROTECTED_ENDPOINTS[:4])
+def test_backoffice_endpoints_reject_non_staff_and_invalid_subject_tokens(
+    client, method, path, body, payload
+):
+    settings = get_settings()
+    token = CryptoUtil.jwt_sign(
+        payload=payload,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    response = client.request(
+        method, path, json=body, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 401, (
+        f"{method} {path} accepted invalid staff token payload {payload!r}"
+    )

@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..deps import get_current_user, get_pool, get_settings
+from ..deps import get_current_user, get_pool, get_settings, require_staff_role
 from .alipay import AlipayProvider
 from .models import PaymentProvider, PaymentStatus
 from .service import (
@@ -166,7 +166,7 @@ async def query_payment(
 async def refund_payment(
     body: RefundRequest,
     request: Request,
-    _principal: dict = Depends(get_current_user),
+    _principal: dict = Depends(require_staff_role("admin")),
     pool: Any = Depends(get_pool),
 ) -> dict[str, Any]:
     """申请幂等退款；provider 成功但 DB 暂时故障由 outbox 恢复。"""
@@ -484,21 +484,31 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
     if pool is None:
         raise HTTPException(status_code=503, detail="database not ready")
     async with pool.acquire() as conn:
-        intent_id = await conn.fetchval(
+        intent = await conn.fetchrow(
             """
-            SELECT id FROM payment_intent
+            SELECT id, provider_intent_id, provider FROM payment_intent
             WHERE provider_intent_id = $1
                OR ($2 <> '' AND id::text = $2)
             """,
             provider_intent_id,
             out_trade_no,
         )
-    if intent_id is None:
+    if intent is None:
         logger.warning("stripe payment intent not found: %s", provider_intent_id)
         return {"received": True}
+    if (
+        intent["provider"] != PaymentProvider.STRIPE.value
+        or str(intent["provider_intent_id"] or "") != provider_intent_id
+    ):
+        logger.warning(
+            "stripe provider intent mismatch: local_intent=%s callback_intent=%s",
+            intent["id"],
+            provider_intent_id,
+        )
+        raise HTTPException(status_code=400, detail="stripe payment intent mismatch")
     await _settle_payment_and_order(
         pool,
-        str(intent_id),
+        str(intent["id"]),
         provider_intent_id,
         int(amount),
         expected_provider=PaymentProvider.STRIPE.value,

@@ -9,7 +9,6 @@ Phase 2: 为 hemall 提供高性能商品全文检索能力。
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import Any
@@ -65,12 +64,18 @@ class ElasticsearchClient:
         """建立 ES 连接并确保索引存在。"""
         try:
             url = self._load_es_url_from_settings()
-            self._es = AsyncElasticsearch(
-                [url],
-                maxsize=self._settings.es_max_connections or 10,
-                request_timeout=self._settings.es_request_timeout or 30,
-                retry_on_timeout=True,
-            )
+            client_options: dict[str, Any] = {
+                "maxsize": self._settings.es_max_connections or 10,
+                "request_timeout": self._settings.es_request_timeout or 30,
+                "retry_on_timeout": True,
+            }
+            if self._settings.elasticsearch_username and self._settings.elasticsearch_password:
+                client_options["basic_auth"] = (
+                    self._settings.elasticsearch_username, self._settings.elasticsearch_password
+                )
+            if self._settings.elasticsearch_ca_cert:
+                client_options["ca_certs"] = self._settings.elasticsearch_ca_cert
+            self._es = AsyncElasticsearch([url], **client_options)
             # 健康检查
             if await self._es.ping():
                 logger.info("Elasticsearch connected: %s", url)
