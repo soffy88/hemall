@@ -71,6 +71,13 @@ DB_DEADLOCK_ERRORS_TOTAL = Counter(
     "Total PostgreSQL deadlock errors observed",
 )
 
+#: 事件派发失败次数 (按事件类型)。派发失败不阻断主业务，但需可观测并告警。
+EVENT_DISPATCH_FAILURES_TOTAL = Counter(
+    "event_dispatch_failures_total",
+    "Total event dispatch failures",
+    ["event_type"],
+)
+
 
 # ── 指标采集中间件 ──────────────────────────────────────────────────────
 

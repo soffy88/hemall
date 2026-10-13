@@ -85,3 +85,16 @@ def record_exception(exception: Exception) -> None:
     span = trace.get_current_span()
     if span.is_recording():
         span.record_exception(exception)
+
+
+def shutdown_tracing() -> None:
+    """正确关闭 OpenTelemetry 追踪，flush 并 shutdown 所有 span processor。
+
+    这防止了 pytest 退出时的 "I/O operation on closed file" 错误，
+    也确保生产环境中 gunicorn worker 优雅退出时最后一批 span 不会丢失。
+    """
+    tracer_provider = trace.get_tracer_provider()
+    if hasattr(tracer_provider, "shutdown"):
+        tracer_provider.shutdown()
+    elif hasattr(tracer_provider, "force_flush"):
+        tracer_provider.force_flush()

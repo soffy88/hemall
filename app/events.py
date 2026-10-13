@@ -19,6 +19,7 @@ from typing import Any
 
 from .config import Settings
 from .ext.oservi_compat import EventWebhookDispatcherEngine
+from .middleware.metrics import EVENT_DISPATCH_FAILURES_TOTAL
 
 logger = logging.getLogger("hemall.events")
 
@@ -108,10 +109,17 @@ def build_event_dispatcher(
 
 
 async def fire_event(engine: Any, event: str, payload: dict[str, Any]) -> None:
-    """best-effort 派发事件; 派发失败只记日志, 不影响主业务流。"""
+    """派发旁路事件。
+
+    调用点都在业务事务提交之后（下单完成、安全库存告警），派发失败绝不能把
+    已成功的请求变成 500。因此：吞掉异常，但留下证据 —— WARNING 日志带事件名
+    和异常，并递增 event_dispatch_failures_total（Prometheus 告警规则据此报警）。
+    """
     if engine is None:
-        return
+        return None
     try:
         await engine.dispatch(event, payload)
-    except Exception as exc:  # noqa: BLE001 - 事件派发是旁路, 不阻断下单
-        logger.warning("event dispatch failed for %s: %s", event, exc)
+    except Exception as exc:  # noqa: BLE001 - 旁路失败不得影响主流程，但必须可观测
+        EVENT_DISPATCH_FAILURES_TOTAL.labels(event_type=event).inc()
+        logger.warning("event dispatch failed for %s: %s", event, exc, exc_info=True)
+    return None

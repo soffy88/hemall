@@ -120,7 +120,7 @@ async def _make_customer(pool) -> str:
     return str(customer_id)
 
 
-async def _make_order(pool, *, batch_id: str, qty: int = 1) -> str:
+async def _make_order(pool, *, batch_id: str, qty: int = 1, test_redis_url: str) -> str:
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
         AddLineItemInput,
@@ -155,7 +155,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1) -> str:
     cart_id = cart_result["cart_id"]
 
     add_result = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=batch_id, quantity=qty),
         Path("/tmp"),
         pool=pool,
@@ -187,7 +187,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1) -> str:
     assert authorize_result["status"] == "completed", authorize_result
 
     checkout_result = await complete_checkout(
-        CompleteCheckoutConfig(),
+        CompleteCheckoutConfig(redis_url=test_redis_url),
         CompleteCheckoutInput(cart_id=cart_id),
         Path("/tmp"),
         pool=pool,
@@ -427,7 +427,7 @@ async def test_reverse_auction_rejects_bid_below_margin(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_market_maker_probe_engine_clears_and_reprices(cn_pool, tmp_path):
+async def test_market_maker_probe_engine_clears_and_reprices(cn_pool, tmp_path, test_redis_url):
     from obase.uuid7 import uuid7
 
     from app.ext.oservi import build_market_maker_probe_engine
@@ -439,7 +439,7 @@ async def test_market_maker_probe_engine_clears_and_reprices(cn_pool, tmp_path):
     cleared_batch = await _make_batch(
         cn_pool, var_id=var_id, loc_id=loc_id, retail_price=3900
     )
-    await _make_order(cn_pool, batch_id=cleared_batch, qty=1)
+    await _make_order(cn_pool, batch_id=cleared_batch, qty=1, test_redis_url=test_redis_url)
     cleared_probe = uuid7()
     async with cn_pool.acquire() as conn:
         await conn.execute(

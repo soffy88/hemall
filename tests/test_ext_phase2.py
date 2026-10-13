@@ -117,7 +117,7 @@ async def _make_customer(pool) -> str:
     return str(customer_id)
 
 
-async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path):
+async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path, test_redis_url):
     """跑一遍共享 omodul 的建车->加车->授权支付->结账全链路，返回 complete_checkout 结果。"""
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
@@ -153,7 +153,7 @@ async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path):
     cart_id = cart_result["cart_id"]
 
     add_result = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=batch_id, quantity=quantity),
         tmp_path,
         pool=pool,
@@ -185,7 +185,7 @@ async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path):
     assert authorize_result["status"] == "completed", authorize_result
 
     return await complete_checkout(
-        CompleteCheckoutConfig(),
+        CompleteCheckoutConfig(redis_url=test_redis_url),
         CompleteCheckoutInput(cart_id=cart_id),
         tmp_path,
         pool=pool,
@@ -326,7 +326,7 @@ async def test_batch_settlement(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_confirm_batch_pick_finalizes_stock_and_records_wage(cn_pool, tmp_path):
+async def test_confirm_batch_pick_finalizes_stock_and_records_wage(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.confirm_batch_pick import (
         ConfirmBatchPickConfig,
         ConfirmBatchPickInput,
@@ -336,7 +336,7 @@ async def test_confirm_batch_pick_finalizes_stock_and_records_wage(cn_pool, tmp_
     loc_id, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=10)
     checkout = await _checkout_cart(
-        cn_pool, batch_id=batch_id, quantity=3, tmp_path=tmp_path
+        cn_pool, batch_id=batch_id, quantity=3, tmp_path=tmp_path, test_redis_url=test_redis_url
     )
     assert checkout["status"] == "completed", checkout
 
@@ -421,7 +421,7 @@ async def test_tote_deposit_charge_and_refund_cycle(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_process_drop_return_refunds_full_line(cn_pool, tmp_path):
+async def test_process_drop_return_refunds_full_line(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.process_drop_return import (
         ProcessDropReturnConfig,
         ProcessDropReturnInput,
@@ -433,7 +433,7 @@ async def test_process_drop_return_refunds_full_line(cn_pool, tmp_path):
         cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=10, retail_price=2000
     )
     checkout = await _checkout_cart(
-        cn_pool, batch_id=batch_id, quantity=2, tmp_path=tmp_path
+        cn_pool, batch_id=batch_id, quantity=2, tmp_path=tmp_path, test_redis_url=test_redis_url
     )
     assert checkout["status"] == "completed"
 

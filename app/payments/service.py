@@ -218,18 +218,23 @@ class PaymentService:
                 # The intent is the order's sole payment authority. Link it
                 # before calling the provider so every later callback/query
                 # resolves the same durable intent.
-                await conn.execute(
+                updated = await conn.fetchrow(
                     """
                     UPDATE customer_order
                     SET payment_provider_name = $1,
                         payment_intent_id = $2,
                         updated_at = NOW()
                     WHERE id = $3
+                    RETURNING id
                     """,
                     provider,
                     str(intent_id),
                     order["id"],
                 )
+                if updated is None:
+                    raise PaymentServiceError(
+                        f"order {order['id']} not found when linking payment intent"
+                    )
 
         return await self._read_intent(str(intent_id))
 
@@ -264,7 +269,7 @@ class PaymentService:
         try:
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute(
+                    updated = await conn.fetchrow(
                         """
                         UPDATE payment_intent
                         SET status = CASE
@@ -277,19 +282,29 @@ class PaymentService:
                             version = version + 1,
                             updated_at = NOW()
                         WHERE id = $3
+                        RETURNING id
                         """,
                         result.get("payment_intent_id") or result.get("prepay_id"),
                         _json({"provider_result": result}),
                         intent_id,
                     )
-                    await conn.execute(
+                    if updated is None:
+                        raise PaymentServiceError(
+                            f"payment_intent {intent_id} not found when updating status"
+                        )
+                    updated = await conn.fetchrow(
                         """
                         UPDATE payment_outbox
                         SET status = 'completed', locked_at = NULL, updated_at = NOW()
                         WHERE id = $1
+                        RETURNING id
                         """,
                         job["id"],
                     )
+                    if updated is None:
+                        raise PaymentServiceError(
+                            f"payment_outbox {job['id']} not found when marking completed"
+                        )
         except Exception:  # noqa: BLE001 - leave processing row for recovery
             logger.exception(
                 "provider succeeded but intent result could not be persisted: %s", intent_id
@@ -349,11 +364,15 @@ class PaymentService:
                     if refund["status"] == "succeeded":
                         return self._refund_result(refund)
                     refund_id = refund["id"]
-                    await conn.execute(
+                    updated = await conn.fetchrow(
                         "UPDATE payment_refund SET status = 'pending', last_error = NULL, "
-                        "updated_at = NOW() WHERE id = $1 AND status = 'failed'",
+                        "updated_at = NOW() WHERE id = $1 AND status = 'failed' RETURNING id",
                         refund_id,
                     )
+                    if updated is None:
+                        raise RefundConflictError(
+                            f"payment_refund {refund_id} not found or not in failed status"
+                        )
                 else:
                     original = int(intent["amount_cents"])
                     already = int(
@@ -456,27 +475,37 @@ class PaymentService:
             # retryable outbox row; a later attempt uses the same refund key.
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute(
+                    updated = await conn.fetchrow(
                         """
                         UPDATE payment_refund
                         SET status = 'processing',
                             provider_refund_no = COALESCE($1, provider_refund_no),
                             provider_result = $2::jsonb, last_error = NULL, updated_at = NOW()
                         WHERE id = $3
+                        RETURNING id
                         """,
                         provider_result.get("refund_id") or provider_result.get("id"),
                         _json(provider_result),
                         refund_id,
                     )
-                    await conn.execute(
+                    if updated is None:
+                        raise PaymentServiceError(
+                            f"payment_refund {refund_id} not found when marking processing"
+                        )
+                    updated = await conn.fetchrow(
                         """
                         UPDATE payment_outbox
                         SET status = 'pending', locked_at = NULL,
                             next_attempt_at = NOW() + INTERVAL '5 seconds', updated_at = NOW()
                         WHERE id = $1
+                        RETURNING id
                         """,
                         job["id"],
                     )
+                    if updated is None:
+                        raise PaymentServiceError(
+                            f"payment_outbox {job['id']} not found when marking pending"
+                        )
             return await self._read_refund(refund_id)
 
         if provider_status in {"failed", "canceled", "cancelled", "closed", "error"}:
@@ -491,18 +520,23 @@ class PaymentService:
         try:
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute(
+                    updated = await conn.fetchrow(
                         """
                         UPDATE payment_refund
                         SET status = 'succeeded', provider_refund_no = $1,
                             provider_result = $2::jsonb, last_error = NULL,
                             version = version + 1, updated_at = NOW()
                         WHERE id = $3
+                        RETURNING id
                         """,
                         refund_no,
                         _json(provider_result),
                         refund_id,
                     )
+                    if updated is None:
+                        raise PaymentServiceError(
+                            f"payment_refund {refund_id} not found when marking succeeded"
+                        )
                     refunded = await conn.fetchval(
                         """
                         SELECT COALESCE(SUM(amount_cents), 0)
@@ -514,7 +548,7 @@ class PaymentService:
                         """,
                         refund_id,
                     )
-                    await conn.execute(
+                    updated = await conn.fetchrow(
                         """
                         UPDATE payment_intent
                         SET refund_amount_cents = $1,
@@ -522,15 +556,24 @@ class PaymentService:
                                           ELSE 'partial_refund' END,
                             version = version + 1, updated_at = NOW()
                         WHERE id = (SELECT payment_intent_id FROM payment_refund WHERE id = $2)
+                        RETURNING id
                         """,
                         int(refunded or 0),
                         refund_id,
                     )
-                    await conn.execute(
+                    if updated is None:
+                        raise PaymentServiceError(
+                            f"payment_intent not found when updating refund status"
+                        )
+                    updated = await conn.fetchrow(
                         "UPDATE payment_outbox SET status = 'completed', locked_at = NULL, "
-                        "updated_at = NOW() WHERE id = $1",
+                        "updated_at = NOW() WHERE id = $1 RETURNING id",
                         job["id"],
                     )
+                    if updated is None:
+                        raise PaymentServiceError(
+                            f"payment_outbox {job['id']} not found when marking completed"
+                        )
         except Exception:  # noqa: BLE001
             logger.exception(
                 "provider refund succeeded but result could not be persisted: %s", refund_id

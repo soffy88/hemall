@@ -42,7 +42,7 @@ from .orders.router import router as orders_router
 from .middleware.metrics import MetricsMiddleware
 from .observability.health import check_redis_health
 from .observability.health import router as health_router
-from .observability.tracing import setup_tracing
+from .observability.tracing import setup_tracing, shutdown_tracing
 from .payments.router import router as payment_router
 from .push.service import PushManager
 from .realtime.hub import manager as realtime_manager
@@ -469,6 +469,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     events = getattr(app.state, "events", None)
     if events is not None:
         events.stop()
+
+    # Phase 0: 正确关闭 OpenTelemetry 追踪，flush 并 shutdown 所有 processor
+    shutdown_tracing()
 
 
 def create_app() -> FastAPI:

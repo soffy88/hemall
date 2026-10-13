@@ -190,12 +190,13 @@ class OrderService:
         operator_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         expected_version: int | None = None,
+        payment_intent_id: str | None = None,
     ) -> OrderSnapshot:
         """驱动订单状态转换。
 
         1. 查询当前状态
         2. 校验转换合法性
-        3. 更新订单状态
+        3. 更新订单状态 (可选同时写入 payment_intent_id)
         4. 写入历史记录
         5. 触发联动 (取消订单→释放库存, 确认→扣减库存等)
         """
@@ -227,18 +228,41 @@ class OrderService:
                 elif new_status == OrderStatus.SHIPPED:
                     await self._ship_order_inventory(conn, order_id)
 
-                updated = await conn.fetchrow(
-                    """
-                    UPDATE customer_order
-                    SET status = $1, version = version + 1, updated_at = NOW()
-                    WHERE id = $2 AND status = $3 AND version = $4
-                    RETURNING id, version
-                    """,
-                    new_status.value,
-                    order_id,
-                    old_status.value,
-                    current_version,
-                )
+                # 构建动态 UPDATE：如果提供 payment_intent_id，同步写入并加上
+                # status <> 'cancelled' 防御条件；两种写法共用 CAS 版本检查。
+                if payment_intent_id is not None:
+                    updated = await conn.fetchrow(
+                        """
+                        UPDATE customer_order
+                        SET status = $1,
+                            version = version + 1,
+                            updated_at = NOW(),
+                            payment_intent_id = $5
+                        WHERE id = $2
+                          AND status = $3
+                          AND version = $4
+                          AND status <> 'cancelled'
+                        RETURNING id, version
+                        """,
+                        new_status.value,
+                        order_id,
+                        old_status.value,
+                        current_version,
+                        payment_intent_id,
+                    )
+                else:
+                    updated = await conn.fetchrow(
+                        """
+                        UPDATE customer_order
+                        SET status = $1, version = version + 1, updated_at = NOW()
+                        WHERE id = $2 AND status = $3 AND version = $4
+                        RETURNING id, version
+                        """,
+                        new_status.value,
+                        order_id,
+                        old_status.value,
+                        current_version,
+                    )
                 if updated is None:
                     # 即使调用者没有显式传 expected_version，数据库条件仍保证
                     # 一个版本只能成功一次。
@@ -278,25 +302,17 @@ class OrderService:
         payment_intent_id: str | None = None,
         operator_id: str | None = None,
     ) -> OrderSnapshot:
-        """确认订单 (支付成功回调)。"""
-        # 先更新 payment_intent_id
-        async with self._pool.acquire() as conn:
-            if payment_intent_id:
-                await conn.execute(
-                    """
-                    UPDATE customer_order
-                    SET payment_intent_id = $1, updated_at = NOW()
-                    WHERE id = $2
-                    """,
-                    payment_intent_id,
-                    order_id,
-                )
+        """确认订单 (支付成功回调)。
 
+        payment_intent_id 的写入并入 transition_status 的同一个事务，
+        加上 status <> 'cancelled' 条件并检查行数，避免覆盖已取消订单。
+        """
         return await self.transition_status(
             order_id,
             OrderStatus.CONFIRMED,
             reason="payment confirmed",
             operator_id=operator_id,
+            payment_intent_id=payment_intent_id,
         )
 
     async def cancel_order(
@@ -408,15 +424,20 @@ class OrderService:
                 )
 
             released_qty = int(reservation["released_qty"]) + releasable
-            await conn.execute(
+            updated = await conn.fetchrow(
                 """
                 UPDATE inventory_reservation
                 SET released_qty = $1, status = 'released', updated_at = NOW()
                 WHERE id = $2
+                RETURNING id
                 """,
                 released_qty,
                 reservation["id"],
             )
+            if updated is None:
+                raise OrderInventoryConflictError(
+                    f"reservation {reservation['id']} could not be marked released"
+                )
             await conn.execute(
                 """
                 INSERT INTO stock_movement
@@ -492,15 +513,20 @@ class OrderService:
                 )
 
             consumed_qty = int(reservation["consumed_qty"]) + shippable
-            await conn.execute(
+            updated = await conn.fetchrow(
                 """
                 UPDATE inventory_reservation
                 SET consumed_qty = $1, status = 'consumed', updated_at = NOW()
                 WHERE id = $2
+                RETURNING id
                 """,
                 consumed_qty,
                 reservation["id"],
             )
+            if updated is None:
+                raise OrderInventoryConflictError(
+                    f"reservation {reservation['id']} could not be marked consumed"
+                )
             await conn.execute(
                 """
                 INSERT INTO stock_movement
@@ -523,20 +549,25 @@ class OrderService:
 
             line_id = reservation["order_line_item_id"]
             if line_id:
-                await conn.execute(
+                updated = await conn.fetchrow(
                     """
                     UPDATE order_line_item
                     SET fulfilled_qty = LEAST(quantity, fulfilled_qty + $1)
                     WHERE id = $2 AND order_id = $3
+                    RETURNING id
                     """,
                     shippable,
                     line_id,
                     order_id,
                 )
+                if updated is None:
+                    raise OrderInventoryConflictError(
+                        f"order_line_item {line_id} could not be updated for shipment"
+                    )
             else:
                 # 兼容迁移前未写 order_line_item_id 的 reservation，但仍然
                 # 只按 batch 精确绑定，不能按 product 汇总。
-                await conn.execute(
+                updated = await conn.fetchrow(
                     """
                     UPDATE order_line_item
                     SET fulfilled_qty = LEAST(quantity, fulfilled_qty + $1)
@@ -547,76 +578,17 @@ class OrderService:
                         ORDER BY id
                         LIMIT 1
                     )
+                    RETURNING id
                     """,
                     shippable,
                     order_id,
                     reservation["batch_id"],
                 )
-
-    # ── 状态联动 (内部) ──────────────────────────────────────────
-
-    async def _on_cancel(self, order: OrderSnapshot, reason: str | None) -> None:
-        """订单取消 → 释放预留库存。"""
-        try:
-            from app.inventory.service import InventoryService
-
-            inv_svc = InventoryService(self._pool)
-            items = await self.get_order_items(order.id)
-
-            for item in items:
-                # 尝试释放预留 (best-effort, 不阻塞取消)
-                try:
-                    await inv_svc.release_reservation(
-                        order_id=order.id,
-                        product_id=item["product_id"],
-                        quantity=item["quantity"],
-                        location_id=str(item.get("location_id", "")),
-                        variant_id=item.get("variant_id"),
+                if updated is None:
+                    raise OrderInventoryConflictError(
+                        f"order_line_item for order {order_id} batch {reservation['batch_id']} "
+                        f"could not be updated for shipment"
                     )
-                except Exception as exc:
-                    logger.warning(
-                        "failed to release inventory for order %s item %s: %s",
-                        order.id,
-                        item["id"],
-                        exc,
-                    )
-
-            logger.info("released inventory for cancelled order %s", order.id)
-        except Exception as exc:
-            logger.warning("cancel inventory release failed for order %s: %s", order.id, exc)
-
-    async def _on_confirm(self, order: OrderSnapshot) -> None:
-        """订单确认 → 预留库存 (如果尚未预留)。"""
-        # 注意: 实际场景中库存预留在 checkout 时已完成
-        # 这里作为兜底处理
-        logger.info("order %s confirmed, inventory already reserved at checkout", order.id)
-
-    async def _on_ship(self, order: OrderSnapshot) -> None:
-        """订单发货 → 扣减已预留库存。"""
-        try:
-            from app.inventory.service import InventoryService
-
-            inv_svc = InventoryService(self._pool)
-            items = await self.get_order_items(order.id)
-
-            for item in items:
-                try:
-                    await inv_svc.deduct_stock(
-                        order_id=order.id,
-                        product_id=item["product_id"],
-                        quantity=item["quantity"],
-                        location_id=str(item.get("location_id", "")),
-                        variant_id=item.get("variant_id"),
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "failed to deduct inventory for order %s item %s: %s",
-                        order.id,
-                        item["id"],
-                        exc,
-                    )
-        except Exception as exc:
-            logger.warning("ship inventory deduction failed for order %s: %s", order.id, exc)
 
     # ── 历史追踪 ─────────────────────────────────────────────────
 

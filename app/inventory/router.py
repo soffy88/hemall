@@ -23,11 +23,12 @@ logger = logging.getLogger("hemall.inventory.router")
 # ── 依赖注入 ────────────────────────────────────────────────────────
 
 
-def get_inventory_service(pool: Any = Depends(get_pool)):
-    """延迟导入 InventoryService (避免循环依赖)。"""
+def get_inventory_service(request: Request, pool: Any = Depends(get_pool)):
+    """延迟导入 InventoryService (避免循环依赖)，注入事件引擎用于安全库存告警派发。"""
     from .service import InventoryService
 
-    return InventoryService(pool)
+    event_engine = getattr(request.app.state, "events", None)
+    return InventoryService(pool, event_engine)
 
 
 # ── 请求/响应模型 ──────────────────────────────────────────────────

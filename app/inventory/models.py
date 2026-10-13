@@ -134,7 +134,6 @@ class StockAlert(BaseModel):
 
 # ── DDL ──────────────────────────────────────────────────────────────
 
-
 STOCK_MOVEMENT_DDL = """
 CREATE TABLE IF NOT EXISTS stock_movement (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -149,8 +148,13 @@ CREATE TABLE IF NOT EXISTS stock_movement (
     reference_id TEXT,
     reason TEXT,
     operator_id TEXT,
+    idempotency_key TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movement_idempotency
+    ON stock_movement(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_stock_mov_product ON stock_movement(product_id, variant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_mov_location ON stock_movement(location_id, created_at DESC);

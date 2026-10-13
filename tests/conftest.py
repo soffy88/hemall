@@ -19,6 +19,12 @@ from app.deps import get_settings
 from app.main import app
 
 
+@pytest.fixture(scope="session")
+def test_redis_url() -> str:
+    """Redis URL for integration tests (points to test container on port 56379)."""
+    return os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:56379/0")
+
+
 @pytest.fixture(scope="session", autouse=True)
 async def _ensure_test_database_schema():
     """在启用 TEST_PG_DSN 时用生产 bootstrap 初始化真实测试库。

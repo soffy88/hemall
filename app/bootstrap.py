@@ -140,6 +140,9 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
             from .p0_schema import ensure_p0_schema
 
             await ensure_p0_schema(pool)
+
+            # 启动自检：验证关键列和约束已就位，缺失则 fail-fast
+            await _verify_critical_schema(pool)
         finally:
             await lock_conn.execute("SELECT pg_advisory_unlock($1)", SCHEMA_LOCK_ID)
 
@@ -202,3 +205,56 @@ async def _ensure_order_lifecycle_schema(pool: PgPool, order_ddl: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(order_ddl)
     logger.info("order lifecycle schema ensured (order_status_history)")
+
+
+async def _verify_critical_schema(pool: PgPool) -> None:
+    """启动自检：验证关键表的必需列和索引存在，缺失则 fail-fast。
+
+    这能在应用启动时捕获 DDL 漂移（如 stock_movement 缺 idempotency_key
+    或唯一索引），而不是等到运行时抛 UndefinedColumn/唯一约束冲突。
+    """
+    async with pool.acquire() as conn:
+        # 检查 stock_movement.idempotency_key 列
+        has_idempotency_key = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'stock_movement' AND column_name = 'idempotency_key'
+            )
+            """
+        )
+        if not has_idempotency_key:
+            raise RuntimeError(
+                "stock_movement 表缺少 idempotency_key 列，请运行迁移或检查 DDL 顺序"
+            )
+
+        # 检查唯一索引 uq_stock_movement_idempotency
+        has_unique_index = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE indexname = 'uq_stock_movement_idempotency'
+            )
+            """
+        )
+        if not has_unique_index:
+            raise RuntimeError(
+                "stock_movement 表缺少 uq_stock_movement_idempotency 唯一索引"
+            )
+
+        # 检查 order_line_item.fulfilled_qty CHECK 约束
+        has_fulfilled_check = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'order_line_item_fulfilled_qty_check'
+            )
+            """
+        )
+        if not has_fulfilled_check:
+            raise RuntimeError(
+                "order_line_item 表缺少 fulfilled_qty CHECK 约束"
+            )
+
+    logger.info("critical schema verification passed (stock_movement.idempotency_key, "
+                "uq_stock_movement_idempotency, order_line_item_fulfilled_qty_check)")
