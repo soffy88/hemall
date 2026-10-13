@@ -15,6 +15,10 @@ services:
       - HEMALL_LOG_LEVEL=INFO
       - HEMALL_PG_DSN=postgresql://hemall:${POSTGRES_PASSWORD:?set a strong postgres password}@postgres:5432/hemall
       - HEMALL_REDIS_URL=redis://redis:6379/0
+      # 限流真实客户端 IP (audit P1-5): nginx 以 $proxy_add_x_forwarded_for
+      # 透传, 链长 = 前置可信反代层数 = 1。不设 (默认 0) 时限流键退化成
+      # nginx 容器 IP, 全站共享一个桶。
+      - HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS=1
       - HEMALL_ELASTICSEARCH_URL=https://elasticsearch:9200
       - HEMALL_ELASTICSEARCH_USERNAME=elastic
       - HEMALL_ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:?set a strong Elasticsearch password}

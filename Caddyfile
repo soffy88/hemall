@@ -6,6 +6,18 @@
 # Caddy 反代商城前端 (Next.js web 容器) + 反代后端 API (/store/* /health/* /docs 等)。
 # TLS 证书由 Cloudflare 自动管理，无需证书配置。
 
+# ── 可信反代声明 (audit P1-5) ─────────────────────────────────────────
+# 链路: 访客 → Cloudflare 边缘 → cloudflared → 本 Caddy → 上游。
+# cloudflared 把真实客户端 IP 写进 X-Forwarded-For 后连上来；Caddy 默认**丢弃**
+# 来路不明的 XFF (防伪造)，只有显式声明 trusted_proxies 后
+# `{http.request.client_ip}` 才会还原出真实客户端 IP —— 未声明时它等价于
+# {remote_host} (= cloudflared 容器 IP)，后端限流键会退化成"全站一个 60/min 桶"
+# (审计 P1-5)。只信任内网/回环: Caddy 在 mall compose 中仅绑 127.0.0.1:8092，
+# 公网无法直连伪造 XFF。
+(trusted_upstream) {
+	trusted_proxies private_ranges
+}
+
 :80 {
 	# 后端 API 路径反代到 Hemall API
 	# 注：用唯一容器名 hemal-api-1/hemal-web-1，而非服务名 api/web——
@@ -13,9 +25,10 @@
 	# 同名网络别名（如 mneme-api-1），Docker DNS 会解析到错误容器。
 	handle /store/* {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {http.request.client_ip}
+			header_up X-Forwarded-For {http.request.client_ip}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
 		}
@@ -23,9 +36,10 @@
 	# 智能体网关 (Agent Gateway): 手机指挥台 + Hermes/Cindy 接管协议
 	handle /agent/* {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {http.request.client_ip}
+			header_up X-Forwarded-For {http.request.client_ip}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
 		}
@@ -33,24 +47,27 @@
 	# 手机上传播放的实景媒体 (agent_ingest 输出)
 	handle /media/* {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {http.request.client_ip}
+			header_up X-Forwarded-For {http.request.client_ip}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
 		}
 	}
 	handle /recommend/* {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {http.request.client_ip}
+			header_up X-Forwarded-For {http.request.client_ip}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
 		}
 	}
 	handle /health/* {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
 		}
@@ -64,14 +81,16 @@
 		}
 		handle @admin_api {
 			reverse_proxy hemal-api-1:8000 {
+				import trusted_upstream
 				header_up Host {host}
 				header_up X-Forwarded-Proto {scheme}
 			}
 		}
 		handle {
 			reverse_proxy hemal-web-1:3000 {
+				import trusted_upstream
 				header_up Host {host}
-				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-For {http.request.client_ip}
 				header_up X-Forwarded-Proto {scheme}
 				header_up X-Forwarded-Port {server_port}
 			}
@@ -79,18 +98,21 @@
 	}
 	handle /docs* {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 	handle /openapi.json {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 	handle /metrics* {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
 		}
@@ -109,9 +131,10 @@
 	@omodul path_regexp api ^/(aftersales|ai|auth|batch|cache|cart|catalog|checkout|community|customers|domain|eventsourcing|ext|fulfillment|growth|inventory|marketing|membership|orders|payments|push|redoc|risk|search|settings|settlement|supply-chain|ws)(/.*)?$
 	handle @omodul {
 		reverse_proxy hemal-api-1:8000 {
+			import trusted_upstream
 			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {http.request.client_ip}
+			header_up X-Forwarded-For {http.request.client_ip}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
 		}
@@ -120,8 +143,9 @@
 	# 其余路径：反代到 Next.js 商城前端 (含根路径 /，容器内自行重定向到 /shop)
 	handle {
 		reverse_proxy hemal-web-1:3000 {
+			import trusted_upstream
 			header_up Host {host}
-			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-For {http.request.client_ip}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
 		}
