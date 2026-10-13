@@ -1,0 +1,46 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled }}
+{{- /*
+  PrometheusRule 此前同样只是 values 里的一个死开关（audit P2-6）：
+  `templates/` 下没有对应文件，集群里的 Prometheus 拿不到任何告警规则。
+
+  规则内容直接复用仓库根目录的 prometheus.rules.yml（compose 侧
+  `rule_files` 加载的就是它）。Helm 的 `.Files` 只能读 chart 目录内的文件，
+  所以这里有一份同源副本 —— 两者由
+  tests/test_helm_monitoring_rules_parity.py 断言字节级一致，
+  改一份忘了另一份会直接挂测试。
+
+  label 必须是 Prometheus 的 ruleSelector 能选中的那些（见 values.yaml
+  的 monitoring.additionalLabels / ruleSelectorMatchLabels）。
+*/ -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}-api
+  labels:
+    app: hemall-api
+    release: {{ .Release.Name }}
+    {{- with .Values.monitoring.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.monitoring.ruleSelectorMatchLabels }}
+  ruleSelector:
+    matchLabels:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+  {{- with .Values.monitoring.groupSelectorMatchLabels }}
+  groupSelector:
+    matchLabels:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+  {{- $rules := .Files.Get "files/prometheus.rules.yml" }}
+  {{- if not $rules }}
+  {{- fail "charts/hemal/files/prometheus.rules.yml 缺失，PrometheusRule 将渲染为空（0 条告警）" }}
+  {{- end }}
+  {{- $parsed := $rules | fromYaml }}
+  {{- if not $parsed.groups }}
+  {{- fail "charts/hemal/files/prometheus.rules.yml 解析不出 groups —— 告警规则为空，等于没配" }}
+  {{- end }}
+  groups:
+    {{- toYaml $parsed.groups | nindent 4 }}
+{{- end }}

@@ -55,16 +55,25 @@ spec:
             memory: {{ .Values.api.resources.limits.memory }}
         # 环境变量配置
         env:
-        - name: LOG_LEVEL
-          value: {{ .Values.api.env.LOG_LEVEL | default "INFO" | quote }}
-        - name: DATABASE_POOL_SIZE
-          value: {{ .Values.api.env.DATABASE_POOL_SIZE | default "20" | quote }}
-        - name: REDIS_CONNECTION_POOL_SIZE
-          value: {{ .Values.api.env.REDIS_CONNECTION_POOL_SIZE | default "20" | quote }}
-        - name: GUNICORN_WORKERS
-          value: {{ .Values.api.env.GUNICORN_WORKERS | default "4" | quote }}
-        - name: GUNICORN_TIMEOUT
-          value: {{ .Values.api.env.GUNICORN_TIMEOUT | default "30" | quote }}
+        #
+        # 全部使用 HEMALL_ 前缀且必须是 app/config.py 里**真实存在**的
+        # Settings 字段。Settings 是 env_prefix="HEMALL_" + extra="ignore"：
+        # 无前缀、或字段名对不上的键会被静默丢弃，不报错也不告警 ——
+        # 运维在 values.yaml 里改半天，容器里根本没生效（audit P2-6）。
+        # （原来的 LOG_LEVEL / DATABASE_POOL_SIZE / REDIS_CONNECTION_POOL_SIZE
+        #   无一命中；REDIS_* 在 Settings 里压根没有对应字段，已随
+        #   无处落地的配置一并移除，而不是换个名字继续骗人。）
+        - name: HEMALL_LOG_LEVEL
+          value: {{ .Values.api.env.HEMALL_LOG_LEVEL | default "INFO" | quote }}
+        - name: HEMALL_PG_POOL_MAX
+          value: {{ .Values.api.env.HEMALL_PG_POOL_MAX | default "10" | quote }}
+        - name: HEMALL_PG_POOL_MIN
+          value: {{ .Values.api.env.HEMALL_PG_POOL_MIN | default "2" | quote }}
+        # 以下两个由 gunicorn.conf.py 自己读取，不经过 Settings
+        - name: HEMALL_GUNICORN_WORKERS
+          value: {{ .Values.api.env.HEMALL_GUNICORN_WORKERS | default "4" | quote }}
+        - name: HEMALL_GUNICORN_TIMEOUT
+          value: {{ .Values.api.env.HEMALL_GUNICORN_TIMEOUT | default "30" | quote }}
         # 限流真实客户端 IP (audit P1-5)。Settings 只读 HEMALL_* 前缀, 且缺省为 0
         # (=只认 ASGI 对端)。Ingress 是唯一入口且已在最后一跳写入单值
         # X-Forwarded-For/X-Real-IP, 故可信跳数=1; 不设则全网共享一个限流桶。

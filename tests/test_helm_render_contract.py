@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -298,3 +299,153 @@ def test_uid_alignment_is_what_makes_gunicorn_deprivilege_a_noop():
     assert int(pod_sc["runAsUser"]) == uid and int(pod_sc["runAsGroup"]) == gid, (
         "runAsUser/runAsGroup 必须等于 hemall 的 uid/gid, 两个 setX 才会短路成 no-op"
     )
+
+
+# --------------------------------------------------------------------------
+# P2-6 — 声明了等于没有: 无前缀的 env 键 + 渲染不出东西的 monitoring 开关
+# --------------------------------------------------------------------------
+
+
+def _settings_field_names() -> set[str]:
+    """从**真实** Settings 类取字段名，而不是抄一份清单。
+
+    Settings 是 `env_prefix="HEMALL_"` + `extra="ignore"`：环境变量名必须
+    是 `HEMALL_<字段名>`，少前缀、少字段都**静默丢弃**，不报错、不告警。
+    所以这里直接反射 Settings 模型，而不是维护一份会过期的名单。
+    """
+    from app.config import Settings
+
+    return {name for name in Settings.model_fields}
+
+
+def _deployment_env_names(values_file: str) -> list[str]:
+    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["containers"][0]
+    return [e["name"] for e in container.get("env") or []]
+
+
+@ALL_VALUES
+def test_deployment_env_keys_are_real_hemall_settings(values_file: str):
+    """Deployment 注入的每个 env 键都必须是 Settings 真实认识的键。
+
+    无前缀的键 (`LOG_LEVEL`) 与不存在的键 (`DATABASE_POOL_SIZE`) 会被
+    `extra="ignore"` 静默吞掉 —— 运维在 values 里改半天，容器里根本没生效，
+    而且没有任何报错。
+    """
+    fields = _settings_field_names()
+    # 这两个由 gunicorn.conf.py 自己读，不走 Settings
+    gunicorn_managed = {"HEMALL_GUNICORN_WORKERS", "HEMALL_GUNICORN_TIMEOUT"}
+
+    for name in _deployment_env_names(values_file):
+        if name in gunicorn_managed:
+            continue
+        assert name.startswith("HEMALL_"), (
+            f"{values_file}: env 键 {name!r} 没有 HEMALL_ 前缀 —— "
+            f"Settings(env_prefix='HEMALL_', extra='ignore') 会静默丢弃它"
+        )
+        field = name[len("HEMALL_") :].lower()
+        assert field in fields, (
+            f"{values_file}: env 键 {name!r} 对应不到任何 Settings 字段 "
+            f"(hemall.{field} 不存在) → 被静默忽略"
+        )
+
+
+def test_gunicorn_conf_actually_reads_the_injected_env():
+    """GUNICORN_WORKERS / GUNICORN_TIMEOUT 必须真被 gunicorn.conf.py 读到。
+
+    修复前 conf 是 `workers = 4` 硬编码，values 里的 GUNICORN_WORKERS
+    改多少遍都没用。这里**真跑** conf 文件并断言取值跟着环境变量走，
+    顺带确认缺省值仍然合理。
+    """
+    import runpy
+
+    conf = REPO_ROOT / "gunicorn.conf.py"
+
+    def load(env: dict[str, str]) -> dict:
+        saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            return runpy.run_path(str(conf))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    defaults = load({})
+    assert defaults["workers"] >= 1
+    assert defaults["timeout"] >= 1
+
+    tuned = load({"HEMALL_GUNICORN_WORKERS": "7", "HEMALL_GUNICORN_TIMEOUT": "45"})
+    assert tuned["workers"] == 7, "gunicorn.conf.py 没有读 HEMALL_GUNICORN_WORKERS"
+    assert tuned["timeout"] == 45, "gunicorn.conf.py 没有读 HEMALL_GUNICORN_TIMEOUT"
+
+    # 非法值不能把服务搞崩 —— 回落默认值并留下可见信号
+    bad = load({"HEMALL_GUNICORN_WORKERS": "not-a-number"})
+    assert bad["workers"] == defaults["workers"], "非法 worker 数应回落默认值"
+
+
+@ALL_VALUES
+def test_monitoring_switches_render_real_resources(values_file: str):
+    """values 里的 monitoring.serviceMonitor/prometheusRule 开关必须渲染出资源。
+
+    修复前 `templates/` 下根本没有对应文件，开了等于没开。
+    """
+    index = _rendered(values_file)
+    values = yaml.safe_load((CHART_DIR / values_file).read_text(encoding="utf-8"))
+    monitoring = values.get("monitoring") or {}
+
+    if monitoring.get("serviceMonitor", {}).get("enabled"):
+        key = ("ServiceMonitor", "hemall-api")
+        assert key in index, f"{values_file}: serviceMonitor.enabled=true 但没渲染出 ServiceMonitor"
+        sm = index[key]
+        assert sm["spec"]["selector"]["matchLabels"], "ServiceMonitor 必须有 selector 才能选到 pod"
+        assert sm["spec"]["endpoints"], "ServiceMonitor 必须声明抓取端点"
+
+    if monitoring.get("prometheusRule", {}).get("enabled"):
+        key = ("PrometheusRule", "hemall-api")
+        assert key in index, f"{values_file}: prometheusRule.enabled=true 但没渲染出 PrometheusRule"
+        rule = index[key]
+        assert rule["spec"]["groups"], "PrometheusRule 必须带 groups，否则没有告警规则"
+        alerts = [r["alert"] for g in rule["spec"]["groups"] for r in g.get("rules", [])]
+        assert alerts, "PrometheusRule 的 groups 里没有 alert 规则"
+
+
+@ALL_VALUES
+def test_monitoring_selectors_match_the_deployment_pod_labels(values_file: str):
+    """ServiceMonitor 的 selector 必须真的能选中 API pod，否则抓不到指标。"""
+    index = _rendered(values_file)
+    sm = index.get(("ServiceMonitor", "hemall-api"))
+    if sm is None:
+        pytest.skip(f"{values_file}: 未启用 ServiceMonitor")
+    pod_labels = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["metadata"]["labels"]
+    for key, value in sm["spec"]["selector"]["matchLabels"].items():
+        assert pod_labels.get(key) == value, (
+            f"{values_file}: ServiceMonitor selector {key}={value} 与 pod labels {pod_labels} 不匹配 → 抓不到指标"
+        )
+
+
+@ALL_VALUES
+def test_values_env_keys_are_real_hemall_settings(values_file: str):
+    """values 里的 `api.env` 键必须也是真实 Settings 字段。
+
+    values 是运维唯一会去改的地方。里面的死键比模板里的死键更隐蔽：改完
+    没报错、没告警、指标一切正常，只是配置从来没生效过。
+    """
+    values = yaml.safe_load((CHART_DIR / values_file).read_text(encoding="utf-8"))
+    declared = (values.get("api") or {}).get("env") or {}
+    if not declared:
+        pytest.skip(f"{values_file}: 没有自定义 api.env")
+
+    fields = _settings_field_names()
+    gunicorn_managed = {"HEMALL_GUNICORN_WORKERS", "HEMALL_GUNICORN_TIMEOUT"}
+
+    for key in declared:
+        if key in gunicorn_managed:
+            continue
+        assert key.startswith("HEMALL_"), (
+            f"{values_file}: api.env.{key} 没有 HEMALL_ 前缀 → Settings 会静默忽略它"
+        )
+        assert key[len("HEMALL_") :].lower() in fields, (
+            f"{values_file}: api.env.{key} 对应不到任何 Settings 字段 → 静默忽略"
+        )

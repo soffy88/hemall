@@ -18,12 +18,15 @@ api:
   healthCheck: /health/ready
   livenessThreshold: 60
   env:
-    LOG_LEVEL: INFO
-    DATABASE_POOL_SIZE: 30
-    REDIS_CONNECTION_POOL_SIZE: 30
-    GUNICORN_WORKERS: 4
-    GUNICORN_TIMEOUT: 30
-    CORS_ORIGINS: "https://mall.sxueji.com,https://www.mall.sxueji.com"
+    HEMALL_LOG_LEVEL: INFO
+    HEMALL_PG_POOL_MAX: 30
+    HEMALL_PG_POOL_MIN: 7
+    HEMALL_GUNICORN_WORKERS: 4
+    HEMALL_GUNICORN_TIMEOUT: 30
+    # HEMALL_CORS_ORIGINS 不在这里设：允许的来源属于生产凭据的一部分，
+    # 由 secrets.existingSecret 提供（见 values.yaml 顶部的必需键清单）。
+    # 之前这里写的是无前缀的 `CORS_ORIGINS`，模板从不引用它 —— 又一个
+    # 改了不会生效的静默死键。
 
 # Ingress 配置
 ingress:

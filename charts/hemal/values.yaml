@@ -28,11 +28,11 @@ api:
     fsGroup: 10001
   # 生产环境额外配置
   env:
-    LOG_LEVEL: INFO
-    DATABASE_POOL_SIZE: 20
-    REDIS_CONNECTION_POOL_SIZE: 20
-    GUNICORN_WORKERS: 4
-    GUNICORN_TIMEOUT: 30
+    HEMALL_LOG_LEVEL: INFO
+    HEMALL_PG_POOL_MAX: 20
+    HEMALL_PG_POOL_MIN: 5
+    HEMALL_GUNICORN_WORKERS: 4
+    HEMALL_GUNICORN_TIMEOUT: 30
 
 ingress:
   enabled: true
@@ -87,13 +87,28 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80
 
 # 监控配置
+#
+# enabled 是 serviceMonitor / prometheusRule 的总开关；三者同时打开时才会
+# 渲染出资源。修复前这三个键在 templates/ 里都没有对应文件（audit P2-6）。
 monitoring:
   enabled: true
+  # ServiceMonitor selector 固定为 app=hemall-api，与 deployment.yaml 的 pod
+  # labels 绑定（由 tests/test_helm_render_contract.py 断言）。
   serviceMonitor:
     enabled: true
     interval: 30s
+    scrapeTimeout: 10s
+    # 可选：给 ServiceMonitor 追加标签（Helm release 侧的选择器用）
+    labels: {}
+  # PrometheusRule：规则内容复用仓库根目录 prometheus.rules.yml
+  # （chart 内副本 charts/hemal/files/prometheus.rules.yml，两者由测试保持一致）。
+  # 下面两个 selector 要和集群里 Prometheus 的 ruleSelector/groupSelector
+  # 对得上，否则规则渲染出来也不会被加载。
   prometheusRule:
     enabled: true
+  additionalLabels: {}
+  ruleSelectorMatchLabels: {}
+  groupSelectorMatchLabels: {}
 
 # 生产凭据必须来自外部 Secret 管理（External Secrets / Sealed Secrets / Vault）。
 # Secret 至少应提供 HEMALL_PG_DSN、HEMALL_REDIS_URL、HEMALL_ENVIRONMENT=production、
