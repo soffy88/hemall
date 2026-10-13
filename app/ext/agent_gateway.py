@@ -26,6 +26,7 @@ from typing import Any
 
 from fastapi import HTTPException, UploadFile
 
+from ..security.op_roles import assert_command_kind_role, assert_op_role
 from .registry import all_endpoint_specs as ext_all_endpoint_specs
 
 
@@ -70,8 +71,17 @@ def discover_tools() -> list[dict[str, Any]]:
 
 
 def find_tool(tool: str) -> Any:
-    """按 "domain/name" 查找 omodul spec，找不到抛 404。"""
+    """按 "domain/name" 查找 omodul spec，找不到抛 404。
+
+    必须同时查两套 registry（app.registry 共享域 + app.ext.registry 扩展域）：
+    discover_tools() 会把两套的并集当成"可执行工具清单"发给 agent，但这里原本
+    只 import 了共享 registry —— 于是 /agent/tools 广告出来的
+    ``settlement/dispatch_host_dividend``、``supply-chain/batch_settlement``
+    等扩展工具在 /agent/execute 上永远 404，命令编排器的"佣金/结算/广播"分支
+    也全部走不通。发现与执行必须看同一张表。
+    """
     from ..registry import all_endpoint_specs as std_all_endpoint_specs
+    from .registry import all_endpoint_specs as ext_all_endpoint_specs
 
     for spec in list(std_all_endpoint_specs()) + list(ext_all_endpoint_specs()):
         if f"{spec.domain}/{spec.name}" == tool or spec.path == f"/{tool}":
@@ -99,6 +109,13 @@ async def execute_tool(
     # 需要鉴权的工具必须来自已登录管理员 (get_current_user 已保证非匿名)
     if spec.require_auth and not principal.get("user_id"):
         raise HTTPException(401, "admin token required for this tool")
+
+    # 最小权限: 与 HTTP 写端点共用 app.security.op_roles 的同一张 op→角色表。
+    # /agent/execute 自身已要求 admin，但 /agent/command (任意员工) 与编排器
+    # 内部的 execute_command 也走这里——没有这道闸，"退款"/"结算"/"广播"
+    # 三个自然语言命令就绕开了 /agent/execute 的 admin 限制。
+    if spec.require_auth:
+        assert_op_role(tool, principal)
 
     cfg = spec.config_cls()
     # 注入 redis_url (与 app/storefront.py _cfg 同一约定): 容器内 localhost 是
@@ -380,6 +397,10 @@ async def execute_command(
         }
 
     kind = routed["kind"]
+    # 意图级最小权限：编排器里 adjust_price 分支直接 UPDATE SQL 改批次零售价，
+    # 不经过 execute_tool，绕开了 op 表；多步编排也只有每一步才过一次表。
+    # 所以命令入口在动手之前先按意图卡一次角色。
+    assert_command_kind_role(kind, principal)
     ent = routed["entities"]
     title = ent.get("title") or ""
     money = ent.get("money_cents")

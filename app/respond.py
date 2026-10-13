@@ -25,6 +25,7 @@ from .deps import (
     get_pool,
     get_settings,
 )
+from .security.op_roles import assert_op_role
 from .config import Settings
 
 # omodul 状态 → HTTP 状态码
@@ -56,6 +57,22 @@ def _jsonable(obj: Any) -> Any:
     return str(obj)
 
 
+def require_op_role_for(op_key: str) -> Callable[..., Any]:
+    """为单个 op 生成最小权限依赖（闭包捕获登记表键）。
+
+    做成依赖而不是写在 handler 里，是为了让 FastAPI 在**解析依赖阶段**就完成
+    鉴权——鉴权依赖必须排在 :func:`app.deps.get_pool` 前面，否则数据库一挂，
+    所有写端点先回 503，鉴权分支根本走不到（既没法区分"没权限"与"库不可用"，
+    也让"库不可用"成为绕过角色检查的挡箭牌）。
+    """
+
+    async def _require(principal: dict = Depends(get_current_user)) -> dict:
+        return assert_op_role(op_key, principal)
+
+    _require.__name__ = f"require_op_role_{op_key.replace('/', '_')}"
+    return _require
+
+
 def omodul_endpoint(
     fn: Callable[..., Any],
     config_cls: type,
@@ -64,6 +81,7 @@ def omodul_endpoint(
     success_status: int = 200,
     require_auth: bool = True,
     post_hook: Callable[[dict, Request], Any] | None = None,
+    op_name: str | None = None,
 ) -> Callable[..., Any]:
     """为单个 omodul 生成一个 FastAPI 路由处理函数。
 
@@ -75,20 +93,25 @@ def omodul_endpoint(
         require_auth: True 时强制 Bearer JWT; False 为公开端点 (用匿名主体)。
         post_hook: completed 后调用的旁路回调 (如派发事件); 收 (result, request),
             其异常不影响主响应。
+        op_name: 该 op 在 :mod:`app.security.op_roles` 登记表里的键 (通常
+            ``"domain/name"``)。``require_auth=True`` 时按这张表做最小权限检查 ——
+            只认"是员工"不够，退款/结算/改价/create_user/广播这类高危 op 要求
+            admin 或 support 角色。未传时退回 ``config_cls._omodul_name``。
 
     Returns:
         一个 async 路由处理函数, 签名含 FastAPI 依赖注入。
     """
     omodul_name = getattr(config_cls, "_omodul_name", "") or fn.__name__
+    role_key = op_name or omodul_name
 
     if require_auth:
 
         async def handler(
             body: input_cls,  # type: ignore[valid-type]
             request: Request,
-            pool: PgPool = Depends(get_pool),
-            principal: dict = Depends(get_current_user),
+            principal: dict = Depends(require_op_role_for(role_key)),
             settings: Settings = Depends(get_settings),
+            pool: PgPool = Depends(get_pool),
         ) -> JSONResponse:
             return await _invoke(
                 fn, config_cls, body, omodul_name, pool, principal, settings, success_status, request, post_hook
@@ -99,8 +122,8 @@ def omodul_endpoint(
         async def handler(
             body: input_cls,  # type: ignore[valid-type]
             request: Request,
-            pool: PgPool = Depends(get_pool),
             settings: Settings = Depends(get_settings),
+            pool: PgPool = Depends(get_pool),
         ) -> JSONResponse:
             return await _invoke(
                 fn, config_cls, body, omodul_name, pool, ANONYMOUS_PRINCIPAL, settings, success_status, request, post_hook

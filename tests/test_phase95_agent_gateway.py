@@ -5,6 +5,8 @@
   - find_tool (工具查找)
   - route_command (自然语言命令路由 + 参数提取)
   - _clean_filename (视频文件名清洗)
+  - execute_command 的意图级最小权限 (app.security.op_roles.COMMAND_KIND_MIN_ROLES):
+    principal 必须带 role claim，普通 staff 不能借命令入口触发退款/结算/广播。
 """
 
 from __future__ import annotations
@@ -147,7 +149,7 @@ class TestExecuteCommand:
                     "上架 测试橙子 8.8元 20件",
                     pool=None,
                     out_root=Path(td),
-                    principal={"user_id": "test-user"},
+                    principal={"user_id": "test-user", "claims": {"role": "admin"}},
                 )
 
         res = asyncio.run(run())
@@ -168,7 +170,7 @@ class TestExecuteCommand:
                     "丹东草莓降价",
                     pool=None,
                     out_root=Path(td),
-                    principal={"user_id": "test-user"},
+                    principal={"user_id": "test-user", "claims": {"role": "admin"}},
                 )
 
         res = asyncio.run(run())
@@ -186,7 +188,7 @@ class TestExecuteCommand:
                     "给用户补天赔付",
                     pool=None,
                     out_root=Path(td),
-                    principal={"user_id": "test-user"},
+                    principal={"user_id": "test-user", "claims": {"role": "admin"}},
                 )
 
         res = asyncio.run(run())
@@ -205,11 +207,73 @@ class TestExecuteCommand:
                     "今天天气怎么样",
                     pool=None,
                     out_root=Path(td),
-                    principal={"user_id": "test-user"},
+                    principal={"user_id": "test-user", "claims": {"role": "admin"}},
                 )
 
         res = asyncio.run(run())
         assert res["status"] == "unrouted"
+
+
+class TestCommandLeastPrivilege:
+    """/agent/command 的意图级最小权限。
+
+    execute_command 里的 adjust_price 分支直接 UPDATE inventory_batch 改零售价，
+    根本不经过 execute_tool，因此命令层自己也要有一张 意图→角色 表。
+    """
+
+    DANGEROUS = [
+        "给订单 11111111-1111-1111-1111-111111111111 退款 50 元",
+        "给批次 11111111-1111-1111-1111-111111111111 结算",
+        "给某批次 11111111-1111-1111-1111-111111111111 广播 视频号",
+        "报废 11111111-1111-1111-1111-111111111111",
+        "佣金 50 元",
+        "工资 200 元",
+    ]
+
+    @pytest.mark.parametrize("text", DANGEROUS)
+    def test_plain_staff_cannot_run_dangerous_commands(self, text):
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from fastapi import HTTPException
+
+        from app.ext.agent_gateway import execute_command
+
+        async def run():
+            with tempfile.TemporaryDirectory() as td:
+                return await execute_command(
+                    text,
+                    pool=None,
+                    out_root=Path(td),
+                    principal={"user_id": "u1", "claims": {"role": "staff"}},
+                )
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(run())
+        assert exc.value.status_code == 403
+
+    def test_reprice_needs_at_least_support_role(self):
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from fastapi import HTTPException
+
+        from app.ext.agent_gateway import execute_command
+
+        async def run(role):
+            with tempfile.TemporaryDirectory() as td:
+                return await execute_command(
+                    "丹东草莓降价到 9.9",
+                    pool=None,
+                    out_root=Path(td),
+                    principal={"user_id": "u1", "claims": {"role": role}},
+                )
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(run("staff"))
+        assert exc.value.status_code == 403
+        # support 过了角色闸，随后因缺 pool 明确报错（不是 403）。
+        assert asyncio.run(run("support"))["status"] == "needs_input"
 
 
 class TestCleanFilename:
