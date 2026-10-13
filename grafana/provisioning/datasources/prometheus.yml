@@ -9,3 +9,4 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: false
+    uid: P18264E4Z

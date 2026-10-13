@@ -5,6 +5,10 @@
 #
 # Caddy 反代商城前端 (Next.js web 容器) + 反代后端 API (/store/* /health/* /docs 等)。
 # TLS 证书由 Cloudflare 自动管理，无需证书配置。
+#
+# 生产安全限制 (audit P2-7):
+#   - /metrics 仅允许内网访问 (Prometheus 抓取)
+#   - /docs /openapi.json 在生产关闭 (FastAPI 以 --no-docs 启动，此处再加双重防线)
 
 # ── 可信反代声明 (audit P1-5) ─────────────────────────────────────────
 # 链路: 访客 → Cloudflare 边缘 → cloudflared → 本 Caddy → 上游。
@@ -19,6 +23,7 @@
 }
 
 :80 {
+
 	# 后端 API 路径反代到 Hemall API
 	# 注：用唯一容器名 hemal-api-1/hemal-web-1，而非服务名 api/web——
 	# 本 Caddy 同时加入共享网络 helios-net，该网络上存在其他项目的
@@ -96,22 +101,19 @@
 			}
 		}
 	}
+	# 生产关闭 /docs 和 /openapi.json (audit P2-7): 返回 404，不反代
 	handle /docs* {
-		reverse_proxy hemal-api-1:8000 {
-			import trusted_upstream
-			header_up Host {host}
-			header_up X-Forwarded-Proto {scheme}
-		}
+		respond "Not Found" 404
 	}
 	handle /openapi.json {
-		reverse_proxy hemal-api-1:8000 {
-			import trusted_upstream
-			header_up Host {host}
-			header_up X-Forwarded-Proto {scheme}
-		}
+		respond "Not Found" 404
 	}
+	# /metrics 仅允许内网访问 (audit P2-7)
 	handle /metrics* {
-		reverse_proxy hemal-api-1:8000 {
+		@denied not remote_ip private_ranges
+		respond @denied "Not Found" 404
+		@allowed remote_ip private_ranges
+		reverse_proxy @allowed hemal-api-1:8000 {
 			import trusted_upstream
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
