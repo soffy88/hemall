@@ -66,7 +66,7 @@ async def _make_variant(pool) -> tuple[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_intake_to_checkout_full_chain(cn_pool, tmp_path):
+async def test_intake_to_checkout_full_chain(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.create_inventory_batch import (
         CreateInventoryBatchConfig,
         CreateInventoryBatchInput,
@@ -124,7 +124,7 @@ async def test_intake_to_checkout_full_chain(cn_pool, tmp_path):
     cart_id = cart_result["cart_id"]
 
     add_result = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=batch_id, quantity=3),
         tmp_path,
         pool=cn_pool,
@@ -137,7 +137,7 @@ async def test_intake_to_checkout_full_chain(cn_pool, tmp_path):
     import uuid
 
     fake_add = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=str(uuid.uuid4()), quantity=1),
         tmp_path,
         pool=cn_pool,
@@ -194,7 +194,7 @@ async def test_intake_to_checkout_full_chain(cn_pool, tmp_path):
     assert authorize_result["status"] == "completed", authorize_result
 
     checkout_result = await complete_checkout(
-        CompleteCheckoutConfig(),
+        CompleteCheckoutConfig(redis_url=test_redis_url),
         CompleteCheckoutInput(cart_id=cart_id),
         tmp_path,
         pool=cn_pool,

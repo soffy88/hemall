@@ -124,7 +124,7 @@ async def _make_batch(
     return str(batch_id)
 
 
-async def _make_order(pool, *, batch_id: str, qty: int = 1) -> tuple[str, str]:
+async def _make_order(pool, *, batch_id: str, qty: int = 1, test_redis_url: str) -> tuple[str, str]:
     """建车+加车+授权支付+结账 (共享 omodul 链路)，拿到 (order_id, order_line_item_id)。"""
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
@@ -160,7 +160,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1) -> tuple[str, str]:
     cart_id = cart_result["cart_id"]
 
     add_result = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=batch_id, quantity=qty),
         Path("/tmp"),
         pool=pool,
@@ -192,7 +192,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1) -> tuple[str, str]:
     assert authorize_result["status"] == "completed", authorize_result
 
     checkout_result = await complete_checkout(
-        CompleteCheckoutConfig(),
+        CompleteCheckoutConfig(redis_url=test_redis_url),
         CompleteCheckoutInput(cart_id=cart_id),
         Path("/tmp"),
         pool=pool,
@@ -299,7 +299,7 @@ async def test_claim_origin_workflow_rejects_bad_polygon(cn_pool, tmp_path):
 
 @pytest.mark.asyncio
 async def test_execute_slashing_workflow_debits_and_freezes_below_red_line(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from app.ext.omodul.execute_slashing_workflow import (
         ExecuteSlashingWorkflowConfig,
@@ -312,7 +312,7 @@ async def test_execute_slashing_workflow_debits_and_freezes_below_red_line(
     batch_id = await _make_batch(
         cn_pool, var_id=var_id, loc_id=loc_id, supplier_id=supplier_id
     )
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
 
     result = await execute_slashing_workflow(
         ExecuteSlashingWorkflowConfig(),
@@ -342,7 +342,8 @@ async def test_execute_slashing_workflow_debits_and_freezes_below_red_line(
 
 
 @pytest.mark.asyncio
-async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_path):
+@pytest.mark.asyncio
+async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.execute_slashing_workflow import (
         ExecuteSlashingWorkflowConfig,
         ExecuteSlashingWorkflowInput,
@@ -354,7 +355,7 @@ async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_
     batch_id = await _make_batch(
         cn_pool, var_id=var_id, loc_id=loc_id, supplier_id=supplier_id
     )
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
 
     result = await execute_slashing_workflow(
         ExecuteSlashingWorkflowConfig(),
@@ -383,7 +384,7 @@ async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_
 
 @pytest.mark.asyncio
 async def test_report_phantom_stock_workflow_zeroes_stock_and_refunds(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from app.ext.omodul.report_phantom_stock_workflow import (
         ReportPhantomStockWorkflowConfig,
@@ -395,7 +396,7 @@ async def test_report_phantom_stock_workflow_zeroes_stock_and_refunds(
     batch_id = await _make_batch(
         cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=10, cost_price=2000
     )
-    order_id, oli_id = await _make_order(cn_pool, batch_id=batch_id, qty=1)
+    order_id, oli_id = await _make_order(cn_pool, batch_id=batch_id, qty=1, test_redis_url=test_redis_url)
 
     result = await report_phantom_stock_workflow(
         ReportPhantomStockWorkflowConfig(),
@@ -427,6 +428,7 @@ async def test_report_phantom_stock_workflow_zeroes_stock_and_refunds(
 # ── execute_ambient_intake_workflow ──────────────────────────────────────────
 
 
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_execute_ambient_intake_workflow_activates_pending_batch(
     cn_pool, tmp_path
@@ -494,7 +496,7 @@ async def test_execute_ambient_intake_workflow_fails_when_cv_cannot_identify(
 
 @pytest.mark.asyncio
 async def test_execute_peer_delivery_workflow_releases_tote_and_pays_neighbor(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from obase.uuid7 import uuid7
 
@@ -506,7 +508,7 @@ async def test_execute_peer_delivery_workflow_releases_tote_and_pays_neighbor(
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id)
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
 
     tote_id = uuid7()
     async with cn_pool.acquire() as conn:
@@ -540,7 +542,7 @@ async def test_execute_peer_delivery_workflow_releases_tote_and_pays_neighbor(
 
 @pytest.mark.asyncio
 async def test_process_credit_gated_rma_workflow_instant_refunds_high_trust(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from app.ext.omodul.process_credit_gated_rma_workflow import (
         ProcessCreditGatedRmaWorkflowConfig,
@@ -550,7 +552,7 @@ async def test_process_credit_gated_rma_workflow_instant_refunds_high_trust(
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id)
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
     user_id = await _make_customer(cn_pool)
 
     result = await process_credit_gated_rma_workflow(
@@ -570,7 +572,7 @@ async def test_process_credit_gated_rma_workflow_instant_refunds_high_trust(
 
 
 @pytest.mark.asyncio
-async def test_process_credit_gated_rma_workflow_honeypot_low_trust(cn_pool, tmp_path):
+async def test_process_credit_gated_rma_workflow_honeypot_low_trust(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.process_credit_gated_rma_workflow import (
         ProcessCreditGatedRmaWorkflowConfig,
         ProcessCreditGatedRmaWorkflowInput,
@@ -579,7 +581,7 @@ async def test_process_credit_gated_rma_workflow_honeypot_low_trust(cn_pool, tmp
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id)
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
     user_id = await _make_customer(cn_pool)
 
     result = await process_credit_gated_rma_workflow(
