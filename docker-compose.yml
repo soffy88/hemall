@@ -21,11 +21,10 @@ services:
       HEMALL_PG_POOL_MAX: 10
       # Redis
       HEMALL_REDIS_URL: redis://redis:6379/0
-      # 限流真实客户端 IP (audit P1-5): Caddy/nginx 是唯一入口, 它把已还原的
-      # 真实客户端 IP 以单值 X-Forwarded-For / X-Real-IP 透传下来, 故可信跳数=1。
-      # 不设 (默认 0) 时 ratelimit.py 只认 ASGI 对端 = 反代容器 IP → 全站共享
-      # 一个 60/min 桶, 打满即全站 429 (含 /store/* 下单面)。
-      HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS: '1'
+      # 开发环境默认 0: 无前置反代, 直连 8000, ASGI 对端即真实客户端; 开启
+      # 反而会让客户端伪造的 XFF 生效。若本机另套了 nginx/Caddy 再改成 1。
+      # 生产/预发 (docker-compose.prod.yml / mall-sxueji) 前置一层反代, 故为 1。
+      HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS: ${HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS:-0}
       # JWT
       HEMALL_JWT_SECRET: dev-secret-change-in-production
       HEMALL_JWT_ALGORITHM: HS256
@@ -103,12 +102,36 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.dev.yml:/etc/prometheus/prometheus.yml
+      # audit P1-6: rule_files 是 glob，文件缺失时 Prometheus 不报错也不加载
+      # → 0 条告警。必须挂载。
+      - ./prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # ── Alertmanager (告警收件人, audit P1-6) ────────────────────────────
+  # 此前全仓库无收件人，prometheus.rules.yml 的生死告警只停在 UI 页面。
+  # 入口脚本渲染 ${...} 占位符；任一缺失即拒绝启动（fail-closed），
+  # 避免"跑着但没人收"的静默失联。
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    environment:
+      # 收件地址 (企业微信 / 钉钉 / Slack / 飞书 incoming webhook 任选)。
+      # 镜像内无 envsubst，渲染由 entrypoint.sh 用 sed 完成。
+      HEMALL_ALERT_WEBHOOK_URL: ${HEMALL_ALERT_WEBHOOK_URL:?set an alert receiver webhook URL}
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/entrypoint.sh:/alertmanager/entrypoint.sh:ro
+      - alertmanager_data:/alertmanager
+    entrypoint: ["/bin/sh", "/alertmanager/entrypoint.sh"]
+    ports:
+      - "127.0.0.1:9093:9093"
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
   # ── Grafana (可视化) ──────────────────────────────────────────────────
@@ -133,3 +156,4 @@ volumes:
   redis_data:
   prometheus_data:
   grafana_data:
+  alertmanager_data:

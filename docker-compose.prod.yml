@@ -149,12 +149,36 @@ services:
     image: prom/prometheus:v2.48.0
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      # audit P1-6: rule_files 是 glob，文件缺失时 Prometheus 不报错也不加载
+      # → 0 条告警。必须挂载。
+      - ./prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml
       - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     restart: unless-stopped
     networks:
       - hemall-network
+
+  # ── Alertmanager (告警收件人, audit P1-6) ────────────────────────────
+  # 此前全仓库无收件人，prometheus.rules.yml 的生死告警只停在 UI 页面。
+  # 入口脚本渲染 ${...} 占位符；任一缺失即拒绝启动（fail-closed），
+  # 避免"跑着但没人收"的静默失联。
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    environment:
+      # 收件地址 (企业微信 / 钉钉 / Slack / 飞书 incoming webhook 任选)。
+      # 镜像内无 envsubst，渲染由 entrypoint.sh 用 sed 完成。
+      - HEMALL_ALERT_WEBHOOK_URL=${HEMALL_ALERT_WEBHOOK_URL:?set an alert receiver webhook URL}
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/entrypoint.sh:/alertmanager/entrypoint.sh:ro
+      - alertmanager_data:/alertmanager
+    entrypoint: ["/bin/sh", "/alertmanager/entrypoint.sh"]
+    ports:
+      - "127.0.0.1:9093:9093"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
 
   # Grafana 可视化
   grafana:
@@ -192,6 +216,7 @@ volumes:
   elasticsearch_certs:
   prometheus_data:
   grafana_data:
+  alertmanager_data:
 
 networks:
   hemall-network:
