@@ -46,7 +46,18 @@ RUN uv sync --frozen --no-dev --extra observability --extra phase2
 FROM python:3.12-slim
 
 # 创建非 root 用户
-RUN groupadd -r hemall && useradd -r -g hemall hemall
+#
+# uid/gid 必须**写死**。`useradd -r` 不带 -u 时会挑一个空闲的系统号
+# (Debian: 100..999)，具体取到几号取决于基础镜像里已存在的用户 ——
+# 换个 python:3.12-slim 的 digest 就可能变。Helm 侧的
+# securityContext.runAsUser/runAsGroup 是硬编码数字，两边一旦漂移：
+#   pod 以 uid 1000 启动 → gunicorn master 读 conf 里 user="hemall"
+#   → 对 worker 调 setgid/setuid → 非 root 下抛 EPERM → CrashLoopBackOff。
+# 固定为 10001（远高于 Debian 系统用户区间 100..999，不会和包管理器分配冲突）。
+# 刻意不用 ARG 覆盖：charts/hemal 的 securityContext 是硬编码数字，两边
+# 一旦漂移就是 CrashLoopBackOff（audit P1-1）。改这里必须同时改那里。
+RUN groupadd -g 10001 hemall && \
+    useradd -u 10001 -g 10001 -m -d /home/hemall -s /usr/sbin/nologin hemall
 
 # 安装运行时依赖
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \

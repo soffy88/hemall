@@ -144,3 +144,157 @@ def test_ingress_service_name_is_not_the_stale_api_service():
         assert "-api-service" not in line, f"ingress 又引回了不存在的 `{line.strip()}`"
 
 
+# --------------------------------------------------------------------------
+# P1-1 — pod securityContext 必须和镜像里的 hemall 用户对得上
+# --------------------------------------------------------------------------
+
+
+def _dockerfile_runtime_stage() -> str:
+    """取 Dockerfile.prod 的运行阶段 (最后一个 FROM 之后)。"""
+    text = (REPO_ROOT / "Dockerfile.prod").read_text(encoding="utf-8")
+    stages = text.split("\nFROM ")
+    return "\nFROM " + stages[-1] if len(stages) > 1 else text
+
+
+def _declared_runtime_user() -> tuple[int, int] | None:
+    """从 Dockerfile.prod 解析出 hemall 的 uid/gid; 必须是显式写死的。
+
+    解析不出固定数字意味着 uid 取决于构建时已存在的系统用户 (Debian 的
+    `useradd -r` 会挑一个空闲的 SYS_UID_MAX 以内的号), 换个基础镜像就变,
+    Helm 里写死的 runAsUser 必然漂移 → CrashLoopBackOff。
+    """
+    stage = _dockerfile_runtime_stage()
+    gid_match = __import__("re").search(r"groupadd[^\n]*?-g\s+(\d+)", stage)
+    uid_match = __import__("re").search(r"useradd[^\n]*?-u\s+(\d+)", stage)
+    if not (gid_match and uid_match):
+        return None
+    return int(uid_match.group(1)), int(gid_match.group(1))
+
+
+@ALL_VALUES
+def test_pod_runs_as_the_uid_that_exists_in_the_image(values_file: str):
+    """runAsUser/runAsGroup 必须等于 Dockerfile.prod 里 hemall 的 uid/gid。"""
+    declared = _declared_runtime_user()
+    assert declared is not None, (
+        "Dockerfile.prod 运行阶段必须用 `useradd -u <uid>` / `groupadd -g <gid>` "
+        "把 hemall 的 uid/gid 写死, 否则 Helm 侧无从对齐"
+    )
+    uid, gid = declared
+
+    pod_sc = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["securityContext"]
+    assert pod_sc.get("runAsNonRoot") is True, "runAsNonRoot 必须为 true (安全基线)"
+    assert int(pod_sc["runAsUser"]) == uid, (
+        f"{values_file}: runAsUser={pod_sc['runAsUser']} 但镜像里 hemall 是 uid={uid} → "
+        f"gunicorn 对 worker 调 setuid(uid) 抛 EPERM → CrashLoopBackOff"
+    )
+    assert int(pod_sc["runAsGroup"]) == gid, (
+        f"{values_file}: runAsGroup={pod_sc['runAsGroup']} 但镜像里 hemall 是 gid={gid}"
+    )
+    assert int(pod_sc["fsGroup"]) == gid, "fsGroup 必须与运行 gid 一致, 否则挂载卷不可写"
+
+
+@ALL_VALUES
+def test_container_does_not_override_image_entrypoint(values_file: str):
+    """`command:` 会覆盖镜像 ENTRYPOINT, 让 entrypoint.sh 的属主修复被跳过。
+
+    这里要求: Deployment 不覆盖 command; 若确实需要传 gunicorn 参数, 只能走
+    `args:` (ENTRYPOINT 会被保留)。
+    """
+    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["containers"][0]
+    assert "command" not in container, (
+        "Deployment 不能用 command: 覆盖镜像 ENTRYPOINT —— entrypoint.sh 要先修数据卷属主再 exec"
+    )
+
+
+def test_gunicorn_user_matches_the_image_user():
+    """gunicorn.conf.py 的降权目标必须是镜像里真实存在的用户。"""
+    text = (REPO_ROOT / "Dockerfile.prod").read_text(encoding="utf-8")
+    assert "useradd" in text and "hemall" in text
+    gunicorn = (REPO_ROOT / "gunicorn.conf.py").read_text(encoding="utf-8")
+    assert 'user = "hemall"' in gunicorn and 'group = "hemall"' in gunicorn
+
+
+def test_entrypoint_tolerates_already_unprivileged_start():
+    """非 root 启动 (Helm 路径) 时 entrypoint 不能因为 chown 失败而退出。"""
+    body = (REPO_ROOT / "deploy-tools" / "entrypoint.sh").read_text(encoding="utf-8")
+    chown_lines = [ln for ln in body.splitlines() if ln.strip().startswith("chown")]
+    assert chown_lines, "entrypoint 应当仍然负责修属主 (compose 以 root 启动时需要)"
+    assert all("|| true" in ln for ln in chown_lines), (
+        "非 root 启动时 chown 必然 EPERM; entrypoint 必须把 chown 当作 best-effort, "
+        "否则 runAsNonRoot 的 pod 会在 chown 处直接退出"
+    )
+
+
+def _entrypoint_branches(body: str) -> tuple[list[str], list[str]]:
+    """拆出 entrypoint.sh 的 (root 分支, 非 root 分支) 命令行。
+
+    刻意只看**命令行**: 日志文案里出现 "chown" 这个词是合理的
+    ("skipping chown (needs root)")，把它当成 chown 命令会误判。
+    """
+    lines = [ln.strip() for ln in body.splitlines()]
+    start = next(i for i, ln in enumerate(lines) if ln == 'if [ "$(id -u)" = "0" ]; then')
+    else_idx = next(i for i in range(start + 1, len(lines)) if lines[i] == "else")
+    fi_idx = next(i for i in range(else_idx + 1, len(lines)) if lines[i] == "fi")
+    root = [ln for ln in lines[start + 1 : else_idx] if ln]
+    non_root = [ln for ln in lines[else_idx + 1 : fi_idx] if ln]
+    return root, non_root
+
+
+def test_entrypoint_reports_which_start_path_it_took():
+    """两条启动路径必须各说各话，别再无脑打 "fixing data dir ownership"。
+
+    非 root 路径下 chown 根本不会执行，日志却声称修了 —— 排查 K8s 写权限
+    问题的人会被这句日志直接带偏。
+    """
+    body = (REPO_ROOT / "deploy-tools" / "entrypoint.sh").read_text(encoding="utf-8")
+    root_branch, non_root_branch = _entrypoint_branches(body)
+
+    root_chown = [ln for ln in root_branch if ln.startswith("chown ")]
+    assert root_chown, "root 分支必须真的修数据卷属主 (compose 路径靠它)"
+
+    non_root_chown = [ln for ln in non_root_branch if ln.startswith("chown ")]
+    assert not non_root_chown, f"非 root 分支里不该有 chown 命令: {non_root_chown}"
+
+    # 分支要各说各话, 否则排查 K8s 写权限时会被 root 路径的日志误导
+    assert any("root" in ln for ln in root_branch if ln.startswith("echo"))
+    assert any("uid" in ln for ln in non_root_branch if ln.startswith("echo"))
+
+
+def test_uid_alignment_is_what_makes_gunicorn_deprivilege_a_noop():
+    """钉死 P1-1 的失效机理: uid 对齐后 gunicorn 的降权调用才会变成 no-op。
+
+    `gunicorn.util.set_owner_process` 是这么写的（无 root 检查）::
+
+        elif gid != os.getgid():
+            os.setgid(gid)
+        if uid and uid != os.getuid():
+            os.setuid(uid)
+
+    容器以 uid 1000 启动时，两行都会执行 → 非 root 下 EPERM → master 退出 →
+    CrashLoopBackOff。只有当容器 uid/gid **就是** hemall 的 uid/gid 时，
+    两个分支都被短路，降权退化成 no-op。
+
+    所以"Helm 里写什么 uid"不是风格问题，而是崩不崩的问题 —— 这里直接读
+    gunicorn 的真实源码来确认这个短路条件还在，不靠记忆。
+    """
+    try:
+        import inspect
+
+        import gunicorn.util
+    except ImportError:  # pragma: no cover - gunicorn 是 dev 依赖
+        pytest.skip("gunicorn 未安装")
+
+    src = inspect.getsource(gunicorn.util.set_owner_process)
+    assert "os.setuid(uid)" in src, "gunicorn 换了实现, 本测试的前提需重新确认"
+    assert "if uid and uid != os.getuid():" in src, (
+        "gunicorn 不再按 uid 短路 setuid —— 若它变成无条件降权, 非 root 启动将再次崩溃"
+    )
+    assert "gid != os.getgid()" in src, "同上: setgid 也必须按 gid 短路"
+
+    declared = _declared_runtime_user()
+    assert declared is not None
+    uid, gid = declared
+    pod_sc = _of("values.yaml", "Deployment", "hemall-api")["spec"]["template"]["spec"]["securityContext"]
+    assert int(pod_sc["runAsUser"]) == uid and int(pod_sc["runAsGroup"]) == gid, (
+        "runAsUser/runAsGroup 必须等于 hemall 的 uid/gid, 两个 setX 才会短路成 no-op"
+    )

@@ -22,11 +22,21 @@ spec:
         version: {{ .Chart.AppVersion }}
     spec:
       # 安全上下文
+      #
+      # runAsUser/runAsGroup/fsGroup 必须等于镜像里 hemall 的 uid/gid。
+      # 该数字在 Dockerfile.prod 里用 `useradd -u 10001` / `groupadd -g 10001`
+      # 写死（不写死的话 `useradd -r` 会挑空闲系统号，基础镜像一变就漂移）。
+      # 两边对不上的后果不是"权限不足"而是直接崩：gunicorn master 读
+      # gunicorn.conf.py 的 user="hemall" 后对 worker 调 setgid/setuid，
+      # 非 root 下抛 EPERM → master 退出 → CrashLoopBackOff。
+      #
+      # 这里不覆盖容器 ENTRYPOINT：entrypoint.sh 会先按实际 uid 决定要不要
+      # 修数据卷属主（compose 以 root 跑时需要，K8s 非 root 跑时跳过）。
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 3000
-        fsGroup: 2000
+        runAsUser: {{ .Values.api.securityContext.runAsUser | default 10001 }}
+        runAsGroup: {{ .Values.api.securityContext.runAsGroup | default 10001 }}
+        fsGroup: {{ .Values.api.securityContext.fsGroup | default 10001 }}
       containers:
       - name: api
         image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
@@ -88,11 +98,9 @@ spec:
           capabilities:
             drop:
             - ALL
-        # 启动命令
-        command: ["gunicorn"]
-        args: 
-        - "-c"
-        - "gunicorn.conf.py"
-        - "app.main:app"
+        # 不设 command：镜像 ENTRYPOINT (entrypoint.sh) 负责修数据卷属主后
+        # exec CMD。历史上这里写死 command: ["gunicorn"] + args，把
+        # ENTRYPOINT 整个覆盖掉了 —— compose 路径的属主修复在 K8s 上被跳过。
+        # 需要调参时只改 args（ENTRYPOINT 会被保留）。
       # 优雅终止
       terminationGracePeriodSeconds: 30

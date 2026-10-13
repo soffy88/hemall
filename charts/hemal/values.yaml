@@ -19,6 +19,13 @@ api:
   healthCheck: /health/ready
   livenessCheck: /health/live
   livenessThreshold: 60
+  # 与 Dockerfile.prod 里写死的 hemall uid/gid 是同一个契约。
+  # 换基础镜像或改 Dockerfile 的 useradd 时必须同步改这里，否则 pod
+  # 会因为 gunicorn 的 setuid EPERM 而 CrashLoopBackOff（audit P1-1）。
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
   # 生产环境额外配置
   env:
     LOG_LEVEL: INFO
