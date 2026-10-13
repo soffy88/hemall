@@ -44,10 +44,9 @@ build_image() {
 
     log "构建 Docker 镜像: ${registry}/hemall:${tag}"
 
-    # 3O 平台包在构建上下文之外，须经 BuildKit additional context 引入
-    # （Dockerfile.prod 注释 + docker-compose 的 additional_contexts 同理）。
+    # 3O 平台包由 uv sync --frozen 依 pyproject.toml [tool.uv.sources] 的固定
+    # git rev 拉取安装，无需 additional build context（审计 P2-1）。
     docker build -f Dockerfile.prod \
-        --build-context platform3o=../platform/3O \
         -t ${registry}/hemall:${tag} .
     
     # 推送到仓库

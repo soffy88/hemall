@@ -6,8 +6,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
-      additional_contexts:
-        platform3o: ../platform/3O
     image: hemall/backend:v1.0.0-ghost-ignition
     # API is reachable through nginx only; do not publish the worker port on the host.
     environment:
