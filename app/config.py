@@ -122,6 +122,15 @@ class Settings(BaseSettings):
     ai_similarity_threshold: float = 0.7
     ai_max_history_turns: int = 10
     ai_timeout_seconds: int = 30
+    # AI 成本闸: /ai/* 每个端点都真金白银调 LLM。鉴权只回答"是不是员工"，
+    # 不回答"这个员工今天烧了多少"——按已认证主体的双窗口配额。
+    ai_quota_calls_per_minute: int = 10
+    ai_quota_calls_per_hour: int = 120
+    # 单条 prompt 长度上限: token 按字符计价，超长既是成本炸弹也会把 RAG
+    # 上下文顶出窗口。
+    ai_max_message_chars: int = 8000
+    # 进程内会话上限: _sessions 只增不减会让内存被慢慢吃光。
+    ai_max_sessions: int = 1000
 
     # ── Elasticsearch (搜索层; 缺省时搜索降级) ─────────────────────────
     # 二选一: ELASTICSEARCH_URL 环境变量 / 这两个字段之一。留空则用代码内默认地址。
