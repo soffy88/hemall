@@ -8,6 +8,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from app.main import app
 from app.realtime.hub import ConnectionManager, manager
 
 
@@ -71,9 +72,40 @@ class TestConnectionManager:
 
     @pytest.mark.asyncio
     async def test_send_to_disconnected_user(self):
-        """测试向已断开用户发送 (不抛异常)。"""
+        """向没有连接的用户发送必须是 no-op，且**不凭空建出连接集**。
+
+        原实现这条测试零断言：把 `send_to_user` 整个换成 `raise RuntimeError`
+        或者反过来加一条 `_connections[user_id] = set()` 的副作用，它照样绿。
+        """
         cm = ConnectionManager()
         await cm.send_to_user("nonexistent", {"event": "test"})
+
+        assert "nonexistent" not in cm._connections, (
+            "给未知用户发消息不得创建连接集"
+        )
+        assert cm._connections == {}
+
+        # 对已存在的用户，发送后连接仍应保留（不会被误清)。
+        ws = MockWebSocket()
+        await cm.connect(ws, "user1")
+        await cm.send_to_user("nonexistent", {"event": "test"})
+        assert "user1" in cm._connections
+        assert ws.messages == []
+
+    @pytest.mark.asyncio
+    async def test_send_to_user_drops_dead_sockets(self):
+        """发送失败的连接要被剔除，空集合要被清理——这是 send_to_user 的真实职责。"""
+
+        class _DeadSocket(MockWebSocket):
+            async def send_text(self, text: str) -> None:
+                raise RuntimeError("connection reset")
+
+        cm = ConnectionManager()
+        dead = _DeadSocket()
+        await cm.connect(dead, "user1")
+        await cm.send_to_user("user1", {"event": "x"})
+        assert "user1" not in cm._connections, "发送失败的连接应被剔除"
+        assert cm._connections == {}
 
     @pytest.mark.asyncio
     async def test_broadcast_local(self):
@@ -224,6 +256,111 @@ class TestRealtimeIntegration:
         from app.realtime.hub import manager as m2
         assert manager is m2
 
-    def test_websocket_requires_token(self):
-        """测试 WebSocket 端点需要 token。"""
-        client = TestClient(app=None)
+    def test_websocket_rejects_missing_and_invalid_token(self):
+        """/ws 必须鉴权：缺 token / 垃圾 token 一律 4001 关闭。
+
+        这条测试原本是 `TestClient(app=None)` 的 no-op——不发请求、不断言，
+        却顶着"验证 WS 端点需要 token"的名字。实际后果是 /ws 里那处
+        `jwt_decode(..., algorithms=[...])` 的形参笔误（应为 algorithm）长期
+        无人发现：TypeError 被 except 吞掉，WS 端点实际上永远连不上。
+        """
+        from fastapi import WebSocketDisconnect
+
+        with TestClient(app) as client:
+            for bad in ("", "not-a-jwt", "a.b.c"):
+                with pytest.raises(WebSocketDisconnect) as exc:
+                    with client.websocket_connect(f"/ws?token={bad}"):
+                        pass
+                assert exc.value.code == 4001, f"token={bad!r} 应被 4001 拒绝"
+
+    def test_websocket_accepts_staff_and_customer_tokens(self):
+        """合法主体令牌（staff / customer）能连上，并可用 ping/pong 心跳。"""
+        from app.deps import get_settings
+        from app.security.tokens import (
+            TOKEN_TYPE_CUSTOMER,
+            TOKEN_TYPE_STAFF,
+            sign_token,
+        )
+
+        settings = get_settings()
+        cases = [
+            (TOKEN_TYPE_STAFF, {"sub": "u1"}),
+            (TOKEN_TYPE_CUSTOMER, {"customer_id": "c1"}),
+        ]
+        with TestClient(app) as client:
+            for typ, body in cases:
+                token = sign_token(
+                    body, typ=typ, secret=settings.jwt_secret,
+                    algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+                )
+                with client.websocket_connect(f"/ws?token={token}") as ws:
+                    ws.send_text("ping")
+                    assert json.loads(ws.receive_text())["event"] == "pong"
+
+    @pytest.mark.parametrize("typ", ["cart", "receipt", "pickup"])
+    def test_websocket_rejects_capability_tokens(self, typ):
+        """能力令牌（购物车/收据/取货码）不得订阅实时推送。"""
+        from fastapi import WebSocketDisconnect
+
+        from app.deps import get_settings
+        from app.security.tokens import sign_token
+
+        settings = get_settings()
+        token = sign_token(
+            {"cart_id": "c1", "order_id": "o1", "node_name": "n"}, typ=typ,
+            secret=settings.jwt_secret, algorithm=settings.jwt_algorithm,
+            expires_in_minutes=10,
+        )
+        with TestClient(app) as client:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect(f"/ws?token={token}"):
+                    pass
+            assert exc.value.code == 4001
+
+    def test_websocket_rejects_untyped_token(self):
+        """没有 typ 的裸令牌一律拒绝（黑名单的老形状）。"""
+        from fastapi import WebSocketDisconnect
+
+        from obase.crypto.util import CryptoUtil
+
+        from app.deps import get_settings
+
+        settings = get_settings()
+        token = CryptoUtil.jwt_sign(
+            payload={"sub": "attacker", "customer_id": "victim"},
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+        )
+        with TestClient(app) as client:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect(f"/ws?token={token}"):
+                    pass
+            assert exc.value.code == 4001
+
+    def test_websocket_subject_comes_from_the_right_claim(self):
+        """staff 取 sub、customer 取 customer_id —— 别把两者搞混。"""
+        from app.deps import get_settings
+        from app.security.tokens import (
+            TOKEN_TYPE_CUSTOMER,
+            TOKEN_TYPE_STAFF,
+            sign_token,
+        )
+
+        settings = get_settings()
+        cases = [
+            (TOKEN_TYPE_STAFF, {"sub": "staff-1"}, "staff-1"),
+            (TOKEN_TYPE_CUSTOMER, {"customer_id": "cust-9"}, "cust-9"),
+        ]
+        with TestClient(app) as client:
+            for typ, body, expected in cases:
+                token = sign_token(
+                    body, typ=typ, secret=settings.jwt_secret,
+                    algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+                )
+                with client.websocket_connect(f"/ws?token={token}") as ws:
+                    ws.send_text("ping")
+                    ws.receive_text()
+                    assert expected in manager._connections, (
+                        f"typ={typ} 应当以 {expected} 注册连接"
+                    )
+                    manager.disconnect(list(manager._connections[expected])[0], expected)

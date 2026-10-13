@@ -33,39 +33,65 @@ class TestOrderStateMachine:
             (OrderStatus.DELIVERED, OrderStatus.COMPLETED),
         ]
         for from_s, to_s in path:
-            validate_order_transition("test-order", from_s, to_s)
+            assert validate_order_transition("test-order", from_s, to_s) is None
+            # 断言转换表本身: 表被清空时空函数实现骗不过这条。
+            assert to_s in VALID_ORDER_TRANSITIONS.get(from_s, set())
 
     def test_pending_cancel(self):
         """pending → cancelled (超时未支付 / 用户取消)"""
-        validate_order_transition("o1", OrderStatus.PENDING, OrderStatus.CANCELLED)
+        assert validate_order_transition(
+            "o1", OrderStatus.PENDING, OrderStatus.CANCELLED
+        ) is None
+        assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.PENDING]
 
     def test_confirmed_cancel(self):
         """confirmed → cancelled (商家取消)"""
-        validate_order_transition("o1", OrderStatus.CONFIRMED, OrderStatus.CANCELLED)
+        assert validate_order_transition(
+            "o1", OrderStatus.CONFIRMED, OrderStatus.CANCELLED
+        ) is None
+        assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.CONFIRMED]
 
     def test_processing_cancel(self):
         """processing → cancelled"""
-        validate_order_transition("o1", OrderStatus.PROCESSING, OrderStatus.CANCELLED)
+        assert validate_order_transition(
+            "o1", OrderStatus.PROCESSING, OrderStatus.CANCELLED
+        ) is None
+        assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.PROCESSING]
 
     def test_packed_cancel(self):
         """packed → cancelled (打包后仍可取消)"""
-        validate_order_transition("o1", OrderStatus.PACKED, OrderStatus.CANCELLED)
+        assert validate_order_transition(
+            "o1", OrderStatus.PACKED, OrderStatus.CANCELLED
+        ) is None
+        assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.PACKED]
 
     def test_shipped_return(self):
         """shipped → returning (退货)"""
-        validate_order_transition("o1", OrderStatus.SHIPPED, OrderStatus.RETURNING)
+        assert validate_order_transition(
+            "o1", OrderStatus.SHIPPED, OrderStatus.RETURNING
+        ) is None
+        assert OrderStatus.RETURNING in VALID_ORDER_TRANSITIONS[OrderStatus.SHIPPED]
 
     def test_delivered_return(self):
         """delivered → returning"""
-        validate_order_transition("o1", OrderStatus.DELIVERED, OrderStatus.RETURNING)
+        assert validate_order_transition(
+            "o1", OrderStatus.DELIVERED, OrderStatus.RETURNING
+        ) is None
+        assert OrderStatus.RETURNING in VALID_ORDER_TRANSITIONS[OrderStatus.DELIVERED]
 
     def test_returning_refund(self):
         """returning → refunded (退货成功)"""
-        validate_order_transition("o1", OrderStatus.RETURNING, OrderStatus.REFUNDED)
+        assert validate_order_transition(
+            "o1", OrderStatus.RETURNING, OrderStatus.REFUNDED
+        ) is None
+        assert OrderStatus.REFUNDED in VALID_ORDER_TRANSITIONS[OrderStatus.RETURNING]
 
     def test_returning_completed(self):
         """returning → completed (退货被拒, 交易完成)"""
-        validate_order_transition("o1", OrderStatus.RETURNING, OrderStatus.COMPLETED)
+        assert validate_order_transition(
+            "o1", OrderStatus.RETURNING, OrderStatus.COMPLETED
+        ) is None
+        assert OrderStatus.COMPLETED in VALID_ORDER_TRANSITIONS[OrderStatus.RETURNING]
 
     # ── 非法转换 ────────────────────────────────────────────────
 

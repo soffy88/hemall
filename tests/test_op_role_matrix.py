@@ -204,7 +204,10 @@ def test_admin_only_ops_reject_staff_and_support(op):
 
 @pytest.mark.parametrize("op", sorted(ADMIN_ONLY))
 def test_admin_only_ops_accept_admin(op):
-    assert_op_role(op, _principal(ADMIN_ROLE)) is not None
+    assert_op_role(op, _principal(ADMIN_ROLE))
+    # 显式断言返回的是同一个 principal（调用方要继续拿 user_id 用）。
+    principal = _principal(ADMIN_ROLE)
+    assert assert_op_role(op, principal) is principal
 
 
 def test_support_can_read_pii_like_ops_but_not_admin_only_ones():
@@ -216,8 +219,9 @@ def test_support_can_read_pii_like_ops_but_not_admin_only_ones():
 
 
 def test_plain_staff_keeps_access_to_low_risk_ops():
-    assert_op_role("cart/create_cart", _principal("staff"))
-    assert_op_role("catalog/create_product", _principal("staff"))
+    principal = _principal("staff")
+    assert assert_op_role("cart/create_cart", principal) is principal
+    assert assert_op_role("catalog/create_product", principal) is principal
 
 
 # ── agent_gateway.execute_tool 强制同一张表 ───────────────────────────────

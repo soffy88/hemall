@@ -43,15 +43,51 @@ async def test_subscriber_error_captured_not_raised():
 
 
 async def test_fire_event_none_engine_is_noop():
-    await fire_event(None, "x", {})  # 不应抛
+    """engine=None 是"没装配事件引擎"的常态，必须静默 no-op 且返回 None。"""
+    assert await fire_event(None, "x", {}) is None
+    assert await fire_event(None, "order.placed", {"order_id": "o1"}) is None
 
 
-async def test_fire_event_swallows_dispatch_errors():
+async def test_fire_event_swallows_dispatch_errors(caplog):
+    """旁路失败要"吞异常 + 留证据"。
+
+    原实现只写日志但测试一条断言都没有（审计 P2-1）：把 except 整段删掉、
+    或者把 logger.warning 改成 logger.debug，这个测试照样绿。现在断言日志里
+    真的留下了 event 名和异常。
+    """
+    import logging
+
     class BadEngine:
         async def dispatch(self, event, payload, *, on_step=None):
             raise RuntimeError("dispatch down")
 
-    await fire_event(BadEngine(), "x", {})  # 旁路失败只记日志, 不抛
+    with caplog.at_level(logging.WARNING, logger="hemall.events"):
+        assert await fire_event(BadEngine(), "checkout.completed", {"order_id": "o1"}) is None
+
+    warnings = [r for r in caplog.records if r.name == "hemall.events"]
+    assert warnings, "旁路失败必须留下 WARNING 日志，不能静默吞掉"
+    assert any("checkout.completed" in r.getMessage() for r in warnings)
+    assert any("dispatch down" in r.getMessage() for r in warnings)
+
+
+async def test_fire_event_returns_none_on_success(caplog):
+    """成功路径不产生 WARNING。"""
+
+    class OkEngine:
+        def __init__(self):
+            self.calls = []
+
+        async def dispatch(self, event, payload, *, on_step=None):
+            self.calls.append((event, payload))
+            return {"status": "completed"}
+
+    import logging
+
+    engine = OkEngine()
+    with caplog.at_level(logging.WARNING, logger="hemall.events"):
+        assert await fire_event(engine, "order.placed", {"k": 1}) is None
+    assert engine.calls == [("order.placed", {"k": 1})]
+    assert [r for r in caplog.records if r.name == "hemall.events"] == []
 
 
 async def test_default_logging_subscriber():
