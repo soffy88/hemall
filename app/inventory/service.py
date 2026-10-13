@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any
 
 from obase.persistence.pool import PgPool
@@ -25,6 +26,8 @@ from .models import (
     StockMovementType,
     StockSnapshot,
 )
+
+from ..events import fire_event
 
 logger = logging.getLogger("hemall.inventory")
 
@@ -49,11 +52,24 @@ class ReservationConflictError(Exception):
     """预留记录与库存账本不一致。"""
 
 
+class InventoryBatchNotFoundError(Exception):
+    """目标批次不存在，或不处于可入库的 active 状态。
+
+    入库必须以批次更新成功为前提：否则会写出"账面入库、库存不变"的假流水，
+    使 stock_movement 台账与 inventory_batch 真实余量永久分叉。
+    """
+
+    def __init__(self, batch_id: str | None, reason: str = "not found or not active") -> None:
+        self.batch_id = batch_id
+        super().__init__(f"inventory batch {batch_id} {reason}")
+
+
 class InventoryService:
     """库存服务 — 封装所有库存相关操作。"""
 
-    def __init__(self, pool: PgPool) -> None:
+    def __init__(self, pool: PgPool, event_engine: Any | None = None) -> None:
         self._pool = pool
+        self._event_engine = event_engine
 
     # ── 实时库存查询 ─────────────────────────────────────────────
 
@@ -399,7 +415,9 @@ class InventoryService:
                     )
                     remaining -= to_reserve
 
-        await self._check_safety_stock(product_id, variant_id, location_id)
+        await self._check_safety_stock(
+            product_id, variant_id, location_id, self._event_engine
+        )
         return allocations
 
     # ── 库存扣减 (发货时调用) ────────────────────────────────────
@@ -492,16 +510,21 @@ class InventoryService:
                         >= int(reservation["quantity"])
                         else "reserved"
                     )
-                    await conn.execute(
+                    reservation_updated = await conn.fetchrow(
                         """
                         UPDATE inventory_reservation
                         SET consumed_qty = $1, status = $2, updated_at = NOW()
                         WHERE id = $3
+                        RETURNING id
                         """,
                         new_consumed,
                         new_status,
                         reservation["id"],
                     )
+                    if reservation_updated is None:
+                        raise ReservationConflictError(
+                            f"reservation {reservation['id']} could not be marked consumed"
+                        )
                     await conn.execute(
                         """
                         INSERT INTO stock_movement
@@ -624,16 +647,21 @@ class InventoryService:
                         if consumed + new_released >= int(reservation["quantity"])
                         else "partially_released"
                     )
-                    await conn.execute(
+                    reservation_updated = await conn.fetchrow(
                         """
                         UPDATE inventory_reservation
                         SET released_qty = $1, status = $2, updated_at = NOW()
                         WHERE id = $3
+                        RETURNING id
                         """,
                         new_released,
                         status,
                         reservation["id"],
                     )
+                    if reservation_updated is None:
+                        raise ReservationConflictError(
+                            f"reservation {reservation['id']} could not be marked released"
+                        )
                     await conn.execute(
                         """
                         INSERT INTO stock_movement
@@ -678,7 +706,7 @@ class InventoryService:
         location_id: str,
         movement_type: StockMovementType = StockMovementType.RECEIPT,
         variant_id: str | None = None,
-        unit_cost: float | None = None,
+        unit_cost: Decimal | None = None,
         reference_type: str | None = None,
         reference_id: str | None = None,
         reason: str | None = None,
@@ -691,16 +719,21 @@ class InventoryService:
         """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                # 增加库存
-                await conn.execute(
+                # 增加库存。必须确认命中行：asyncpg 的 execute() 只返回
+                # "UPDATE n" 状态串，忽略它会让不存在的/已归档的批次也写出
+                # receipt 流水，造成台账与真实余量静默分叉。
+                updated = await conn.fetchrow(
                     """
                     UPDATE inventory_batch
-                    SET stock_qty = stock_qty + $1
-                    WHERE id = $2
+                    SET stock_qty = stock_qty + $1, updated_at = NOW()
+                    WHERE id = $2 AND status = 'active'
+                    RETURNING id
                     """,
                     quantity,
                     batch_id,
                 )
+                if updated is None:
+                    raise InventoryBatchNotFoundError(batch_id)
 
                 # 写流水
                 movement_id = await conn.fetchval(
@@ -741,8 +774,13 @@ class InventoryService:
         product_id: str,
         variant_id: str | None,
         location_id: str,
+        event_engine: Any | None = None,
     ) -> list[StockAlert] | None:
-        """检查安全库存 (内部调用, 出入库后触发)。"""
+        """检查安全库存 (内部调用, 出入库后触发)。
+
+        如果 available <= threshold，派发 safety_stock_alert 事件；
+        派发失败会记录指标并抛出异常，不静默吞掉。
+        """
         available = await self.get_available_stock(product_id, location_id, variant_id)
 
         # 查询安全库存阈值 (默认 10)
@@ -777,6 +815,20 @@ class InventoryService:
                 available,
                 threshold,
                 alert_type,
+            )
+
+            # 派发事件：失败会记录指标并抛出，不静默吞掉
+            await fire_event(
+                event_engine,
+                "safety_stock_alert",
+                {
+                    "product_id": product_id,
+                    "variant_id": variant_id,
+                    "location_id": location_id,
+                    "safety_threshold": threshold,
+                    "current_available": available,
+                    "alert_type": alert_type,
+                },
             )
             return [alert]
         return None

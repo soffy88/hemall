@@ -19,6 +19,7 @@ from typing import Any
 
 from .config import Settings
 from .ext.oservi_compat import EventWebhookDispatcherEngine
+from .middleware.metrics import EVENT_DISPATCH_FAILURES_TOTAL
 
 logger = logging.getLogger("hemall.events")
 
@@ -108,10 +109,18 @@ def build_event_dispatcher(
 
 
 async def fire_event(engine: Any, event: str, payload: dict[str, Any]) -> None:
-    """best-effort 派发事件; 派发失败只记日志, 不影响主业务流。"""
+    """派发事件；派发失败记录指标并重新抛出，不静默吞掉。
+
+    这样监控系统可以对 event_dispatch_failures_total 告警，而不是
+    让失败悄无声息地丢失。
+    """
     if engine is None:
         return
     try:
         await engine.dispatch(event, payload)
-    except Exception as exc:  # noqa: BLE001 - 事件派发是旁路, 不阻断下单
-        logger.warning("event dispatch failed for %s: %s", event, exc)
+    except Exception as exc:  # noqa: BLE001 - 派发失败需可观测
+        EVENT_DISPATCH_FAILURES_TOTAL.labels(event_type=event).inc()
+        logger.error(
+            "event dispatch failed for %s: %s", event, exc, exc_info=True
+        )
+        raise

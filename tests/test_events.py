@@ -6,6 +6,7 @@ import pytest
 
 from app.config import Settings
 from app.events import build_event_dispatcher, fire_event, logging_subscriber
+from app.middleware.metrics import EVENT_DISPATCH_FAILURES_TOTAL
 
 
 def test_dispatcher_builds_and_healthy():
@@ -46,12 +47,28 @@ async def test_fire_event_none_engine_is_noop():
     await fire_event(None, "x", {})  # 不应抛
 
 
-async def test_fire_event_swallows_dispatch_errors():
+async def test_fire_event_dispatch_error_raises_and_records_metric():
+    """fire_event 现在会重新抛出派发异常，并记录失败指标。"""
+    # 重置指标
+    EVENT_DISPATCH_FAILURES_TOTAL._metrics.clear()
+
     class BadEngine:
         async def dispatch(self, event, payload, *, on_step=None):
             raise RuntimeError("dispatch down")
 
-    await fire_event(BadEngine(), "x", {})  # 旁路失败只记日志, 不抛
+    with pytest.raises(RuntimeError, match="dispatch down"):
+        await fire_event(BadEngine(), "test_event", {})
+
+    # 验证指标已记录
+    samples = list(EVENT_DISPATCH_FAILURES_TOTAL.collect())
+    assert len(samples) == 1
+    for sample in samples[0].samples:
+        if sample.name == "event_dispatch_failures_total":
+            assert sample.labels.get("event_type") == "test_event"
+            assert sample.value == 1.0
+            break
+    else:
+        pytest.fail("event_dispatch_failures_total metric not found")
 
 
 async def test_default_logging_subscriber():

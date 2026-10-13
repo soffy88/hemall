@@ -110,8 +110,20 @@ ALTER TABLE order_line_item
 ALTER TABLE order_line_item
     ADD COLUMN IF NOT EXISTS reservation_id UUID REFERENCES inventory_reservation(id);
 ALTER TABLE order_line_item
-    ADD COLUMN IF NOT EXISTS fulfilled_qty INTEGER NOT NULL DEFAULT 0
-        CHECK (fulfilled_qty >= 0 AND fulfilled_qty <= quantity);
+    ADD COLUMN IF NOT EXISTS fulfilled_qty INTEGER NOT NULL DEFAULT 0;
+
+-- fulfilled_qty CHECK 约束：独立幂等补齐（ADD COLUMN IF NOT EXISTS 不会补建约束）
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'order_line_item_fulfilled_qty_check'
+    ) THEN
+        ALTER TABLE order_line_item
+            ADD CONSTRAINT order_line_item_fulfilled_qty_check
+            CHECK (fulfilled_qty >= 0 AND fulfilled_qty <= quantity);
+    END IF;
+END $$;
 
 ALTER TABLE stock_movement ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movement_idempotency
