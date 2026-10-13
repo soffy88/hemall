@@ -78,7 +78,7 @@ services:
 
   # PostgreSQL 数据库
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:f7d23353e1b15400d22ebe31189f4d314b87a4c129cc400c8c2d8d4ca127bf81
     environment:
       - POSTGRES_DB=hemall
       - POSTGRES_USER=hemall
@@ -97,7 +97,7 @@ services:
 
   # Redis 缓存
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -112,7 +112,7 @@ services:
 
   # Elasticsearch 搜索引擎
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0@sha256:ec72548cf833e58578d8ff40df44346a49480b2c88a4e73a91e1b85ec7ef0d44
     environment:
       - discovery.type=single-node
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
@@ -136,7 +136,7 @@ services:
   #   - 证书/私钥/域名全部从必填环境变量注入，入口脚本先校验再 `nginx -t`；
   #   - 证书目录以 :ro 挂载，容器改不了宿主证书。
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     ports:
       - "80:80"
       - "443:443"
@@ -159,7 +159,7 @@ services:
 
   # Prometheus 监控
   prometheus:
-    image: prom/prometheus:v2.48.0
+    image: prom/prometheus:v2.48.0@sha256:b440bc0e8aa5bab44a782952c09516b6a50f9d7b2325c1ffafac7bc833298e2e
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       # audit P1-6: rule_files 是 glob，文件缺失时 Prometheus 不报错也不加载
@@ -177,7 +177,7 @@ services:
   # 入口脚本渲染 ${...} 占位符；任一缺失即拒绝启动（fail-closed），
   # 避免"跑着但没人收"的静默失联。
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     environment:
       # 收件地址 (企业微信 / 钉钉 / Slack / 飞书 incoming webhook 任选)。
       # 镜像内无 envsubst，渲染由 entrypoint.sh 用 sed 完成。
@@ -211,7 +211,7 @@ services:
 
   # Jaeger 分布式追踪
   jaeger:
-    image: jaegertracing/all-in-one:1.52
+    image: jaegertracing/all-in-one:1.52@sha256:7885400a153ac908d8bfbf72c27e3389dbab1942a35dd0ce3228611dc48cbf9f
     environment:
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
     ports:

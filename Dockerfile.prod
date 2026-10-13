@@ -10,7 +10,7 @@
 # 成为构建硬依赖，CI 与新机器必断。审计 P2-1 已移除。
 
 # ── 构建阶段 ────────────────────────────────────────────────────────────
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 
 WORKDIR /build
 
@@ -43,7 +43,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv sync --frozen --no-dev --extra observability --extra phase2
 
 # ── 生产阶段 ────────────────────────────────────────────────────────────
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 # 创建非 root 用户
 #

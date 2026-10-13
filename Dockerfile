@@ -2,7 +2,7 @@
 # Phase 0: 多阶段构建，生产镜像 <200MB，非 root 运行
 
 # ── 构建阶段 ────────────────────────────────────────────────────────────
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 
 WORKDIR /build
 
@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && git config --global http.lowSpeedLimit 0 \
     && git config --global http.lowSpeedTime 600
 
-# 安装 uv (快速 Python 包管理)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+# 安装 uv (快速 Python 包管理) — 钉版本避免构建时漂移
+COPY --from=ghcr.io/astral-sh/uv:0.4.30 /uv /bin/uv
 
 # 复制项目文件；3O 依赖由 pyproject 的固定 Git 提交解析，不能依赖 sibling 目录。
 COPY pyproject.toml uv.lock ./
@@ -28,10 +28,10 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 ENV UV_CONCURRENT_DOWNLOADS=4
 RUN uv venv /opt/venv && \
     uv sync --frozen --no-dev --extra observability && \
-    uv pip install --python /opt/venv/bin/python --no-cache gunicorn
+    uv pip install --python /opt/venv/bin/python --no-cache "gunicorn==23.0.0"
 
 # ── 生产阶段 ────────────────────────────────────────────────────────────
-FROM python:3.12-slim AS production
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS production
 
 # 创建非 root 用户
 RUN useradd --create-home --shell /bin/bash hemall

@@ -7,17 +7,69 @@
 #
 # 用法:
 #   HARDWARE_SECRET=<与 hemall 的 HEMALL_HARDWARE_SECRET 一致> \
+#   HEMALL_EMQX_DASHBOARD_PASSWORD=<openssl rand -base64 24> \
+#   HEMALL_EMQX_EDGE_PASSWORD=<openssl rand -base64 24> \
 #     docker compose -f docker-compose.yml -f docker-compose.iot.yml up -d
+#
+# 审计 P1-8 的加固 (三项都是 fail-closed，改动时请保持):
+#   1. Dashboard 只绑 127.0.0.1，且口令从环境变量读、缺失即拒绝启动。
+#      出厂默认是 admin/public，拿到 broker 等于拿到全部设备数据与控制权。
+#   2. 1883 启用 password_based + built_in_database 认证。
+#      原本完全匿名：任何能连到这个口的主机都能向 broker 发消息，而
+#      iot-bridge 会用 HARDWARE_SECRET 签名转发 —— 匿名发布直接等于
+#      "伪造订单/库存/闸口事件"，且上游验签必然通过。
+#   3. 授权链 no_match=deny + 文件 ACL (emqx/acl.conf)，只允许 edge_bridge
+#      账号在硬件主题上 publish/subscribe。
+#      deny_action=disconnect（而不是 ignore）：否则越权尝试被静默丢弃，
+#      运维完全看不到有人在试探 ACL。
+#      cache.enable=false：否则刚改的 ACL 在 TTL 内继续放行，
+#      等同于"改 ACL 没用"。
 
 services:
   # 1. 轻量开源 MQTT Broker (物理硬件入口)
   emqx:
-    image: emqx:5.3
+    image: emqx:5.3@sha256:140e405b10cc8ebf026be5065ee50d73c9c3aa9423cf965d3125b1502227eab5
     container_name: hemall-emqx
     ports:
-      - "1883:1883"    # 物理车库硬件 MQTT 端口
-      - "18083:18083"  # EMQX Dashboard (admin/public)
+      - "1883:1883"         # 物理车库硬件 MQTT 端口 (已启用认证 + ACL)
+      - "127.0.0.1:18083:18083"  # EMQX Dashboard —— 只绑回环, 远程访问走 SSH 隧道/VPN
+    environment:
+      # Dashboard 口令。缺失即 compose 报错，不允许退回出厂 admin/public。
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: "${HEMALL_EMQX_DASHBOARD_PASSWORD:?set HEMALL_EMQX_DASHBOARD_PASSWORD (openssl rand -base64 24); the EMQX factory default is admin/public}"
+      # MQTT 认证链：内置数据库 + sha256(salt 后缀)。用户名/口令由
+      # emqx-bootstrap 一次性 sidecar 写入运行时数据库。
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
+      EMQX_AUTHENTICATION__1__USER_ID_TYPE: username
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME: sha256
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__SALT_POSITION: suffix
+      # 授权链：默认拒绝 + 显式断开 + 不缓存，规则见 emqx/acl.conf
+      EMQX_AUTHORIZATION__NO_MATCH: deny
+      EMQX_AUTHORIZATION__DENY_ACTION: disconnect
+      EMQX_AUTHORIZATION__CACHE__ENABLE: "false"
+      EMQX_AUTHORIZATION__SOURCES__1__TYPE: file
+      EMQX_AUTHORIZATION__SOURCES__1__ENABLE: "true"
+      EMQX_AUTHORIZATION__SOURCES__1__PATH: /opt/emqx/etc/acl.conf
+    volumes:
+      - ./emqx/acl.conf:/opt/emqx/etc/acl.conf:ro   # 只读: 运行时不允许改 ACL
     restart: unless-stopped
+
+  # 1b. 一次性引导：创建 MQTT 账号 (emqx:5.3 镜像内无 curl/wget，无法自举)
+  emqx-bootstrap:
+    image: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+    container_name: hemall-emqx-bootstrap
+    entrypoint: ["sh", "/work/bootstrap.sh"]
+    environment:
+      EMQX_BOOTSTRAP_URL: http://emqx:18083
+      HEMALL_EMQX_DASHBOARD_USERNAME: admin
+      HEMALL_EMQX_DASHBOARD_PASSWORD: "${HEMALL_EMQX_DASHBOARD_PASSWORD:?set HEMALL_EMQX_DASHBOARD_PASSWORD}"
+      HEMALL_EMQX_EDGE_USERNAME: "${HEMALL_EMQX_EDGE_USERNAME:-edge_bridge}"
+      HEMALL_EMQX_EDGE_PASSWORD: "${HEMALL_EMQX_EDGE_PASSWORD:?set HEMALL_EMQX_EDGE_PASSWORD (openssl rand -base64 24)}"
+    volumes:
+      - ./emqx:/work:ro
+    depends_on:
+      - emqx
+    restart: "no"   # 跑完即退出; 重跑幂等 (账号已存在按 409 处理)
 
   # 2. 独立外挂网桥 (MQTT → HTTP 防腐层)
   iot-bridge:
@@ -26,6 +78,9 @@ services:
     container_name: hemall-iot-bridge
     environment:
       - MQTT_BROKER=emqx
+      # 1883 已启用认证：不给凭据就等于匿名连接，broker 会直接拒绝
+      - MQTT_USERNAME=${HEMALL_EMQX_EDGE_USERNAME:-edge_bridge}
+      - MQTT_PASSWORD=${HEMALL_EMQX_EDGE_PASSWORD:?set HEMALL_EMQX_EDGE_PASSWORD; the bridge needs broker credentials}
       - HEMALL_API_URL=http://app:8000/ext/hardware/webhook
       - HARDWARE_SECRET=${HARDWARE_SECRET:?set HARDWARE_SECRET in .env}
       - DLQ_PATH=/data/dlq.sqlite
@@ -33,8 +88,14 @@ services:
     volumes:
       - bridge-dlq:/data   # 死信队列持久化：网桥重启不丢硬件事件
     depends_on:
-      - emqx
-      - app                 # 必须等主干启动
+      emqx:
+        condition: service_started
+      # 必须等账号创建完成：只等 started 的话网桥会在账号存在之前就去连
+      # 1883，拿到一个连不上的 broker
+      emqx-bootstrap:
+        condition: service_completed_successfully
+      app:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
