@@ -29,6 +29,18 @@ from typing import Any
 
 logger = logging.getLogger("hemall.payments.wechat")
 
+#: 真正的微信支付 V3 实现（商户 API 签名 / 平台证书验签 / AES-256-GCM 解密）
+#: **尚未落地**。在它落地之前，"生产模式"（配了 WECHAT_PAY_MCH_ID）等于
+#: "选到一条必然抛 NotImplementedError 的路径"：
+#:   - 回调 handle_notify 抛异常 → 支付状态永不回写，订单永久卡在 pending；
+#:   - 退款必 500。
+#:
+#: 真正的收款走 app/ext/payment_gateways.py（WechatPayNativeGateway），由
+#: HEMALL_PAYMENT_GATEWAY_PROVIDER + 密钥装配，与本 SDK 无关。
+#:
+#: 因此：配到生产模式就**构造即失败**，而不是运行到某个回调才 500。
+PRODUCTION_IMPLEMENTED: bool = False
+
 
 # ── 统一下单请求/响应 ─────────────────────────────────────────────────
 
@@ -119,6 +131,19 @@ class WeChatPayProvider:
         # 内存态订单存储 (沙箱模式)
         self._orders: dict[str, dict[str, Any]] = {}
         self._refunds: dict[str, dict[str, Any]] = {}
+
+        # fail-fast: 选了生产模式但生产实现不存在 —— 拒绝构造。
+        # 不这么做的话，部署时一切正常，直到某个用户付款回调进来才 500，
+        # 而那时订单已经创建、钱可能已经扣了。
+        if not self._sandbox and not PRODUCTION_IMPLEMENTED:
+            raise NotImplementedError(
+                "WeChatPayProvider production mode is selected (WECHAT_PAY_MCH_ID is set) "
+                "but the V3 implementation (merchant signing / platform-cert verification / "
+                "AES-256-GCM notify decryption) is not implemented; all production branches "
+                "raise NotImplementedError. Use app/ext/payment_gateways.py "
+                "(HEMALL_PAYMENT_GATEWAY_PROVIDER=wechat) for real collection, or unset "
+                "WECHAT_PAY_MCH_ID for sandbox mode."
+            )
 
         if self._sandbox:
             logger.warning(

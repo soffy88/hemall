@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # 轮换引擎每 12h 拉 /v3/certificates 热更新内存网关 + 写此文件，重启后
     # bootstrap 读文件继续用，消灭"到期运维手动更新"。
     wechat_platform_cert_store: str = "var/wechat_platform_cert.json"
+    # 微信视频号（channels）access_token。社交播报引擎的凭据——刻意不给默认值，
+    # 留空表示"未接入"，由调用方显式传下去，别让硬编码占位符进生产。
+    wechat_channel_access_token: str = ""
     # Stripe
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -242,6 +245,23 @@ class Settings(BaseSettings):
                 Fernet(encryption_key.encode("ascii"))
             except (ValueError, TypeError, UnicodeEncodeError):
                 problems.append("ENCRYPTION_KEY 必须是有效的 Fernet base64 key")
+
+        # 遗留支付 SDK (app/payments/{wechat,alipay}.py) 的生产分支是 8 处
+        # NotImplementedError: 回调不验签 → 支付状态永不回写 / 任何人都能把订单
+        # 标 paid; 退款必 500。真正的收款走 HEMALL_PAYMENT_GATEWAY_PROVIDER
+        # + app/ext/payment_gateways.py。生产下配了这两个遗留开关 = 选到了
+        # 未实现的分支，必须在启动期就拒绝。
+        for legacy_env, provider_cls in (
+            ("WECHAT_PAY_MCH_ID", "WeChatPayProvider"),
+            ("ALIPAY_APP_ID", "AlipayProvider"),
+        ):
+            if os.getenv(legacy_env, "").strip():
+                problems.append(
+                    f"{legacy_env} 已设置，但 app/payments 的遗留 {provider_cls} 生产分支"
+                    f"（回调验签 / 查单 / 退款）全部是 NotImplementedError；"
+                    f"生产收款必须走 HEMALL_PAYMENT_GATEWAY_PROVIDER"
+                    f"（当前={self.payment_gateway_provider.strip().lower()}）"
+                )
 
         if problems:
             raise RuntimeError(

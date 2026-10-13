@@ -54,6 +54,7 @@ from .oservi import (
     build_weather_arbitrage_engine,
     build_wechat_cert_rotation_engine,
 )
+from .oservi import UNCONFIGURED_TOKEN as _UNCONFIGURED_TOKEN
 from .oservi_ghost_engine import build_ghost_ignition_engine
 
 logger = logging.getLogger("hemall.ext.oservi_lifecycle")
@@ -171,7 +172,13 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         settings=settings,
         notification_provider=settings.default_notification_provider,
     )
-    social_broadcast = build_social_broadcast_engine(pool, settings=settings)
+    social_broadcast = build_social_broadcast_engine(
+        pool,
+        settings=settings,
+        # 显式解析，不靠函数签名里的硬编码占位符；未接入时用显式占位值并在
+        # 引擎内标记"未接入"（见 _reject_mock_access_token 的说明）。
+        access_token=settings.wechat_channel_access_token or _UNCONFIGURED_TOKEN,
+    )
     market_maker_probe = build_market_maker_probe_engine(pool)
     mercenary_routing = build_mercenary_routing_engine(pool)
     affiliate_settlement = build_affiliate_settlement_engine(pool)

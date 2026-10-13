@@ -27,6 +27,12 @@ from typing import Any
 
 logger = logging.getLogger("hemall.payments.alipay")
 
+#: 真正的支付宝实现（RSA2 签名 / 异步通知验签）尚未落地。与 wechat.py 同理：
+#: 配了 ALIPAY_APP_ID 就等于选到一条必然抛 NotImplementedError 的路径
+#: （回调不验签 = 任何人都能把订单标 paid）。真正的收款走
+#: app/ext/payment_gateways.py。因此选了生产模式就构造即失败。
+PRODUCTION_IMPLEMENTED: bool = False
+
 
 # ── 请求/响应模型 ─────────────────────────────────────────────────────
 
@@ -103,6 +109,17 @@ class AlipayProvider:
         # 内存态订单存储 (沙箱模式)
         self._orders: dict[str, dict[str, Any]] = {}
         self._refunds: dict[str, dict[str, Any]] = {}
+
+        # fail-fast: 选了生产模式但生产实现不存在 —— 拒绝构造。
+        # 支付宝异步通知不验签等于任何人可把订单标 paid，必须在启动/构造期
+        # 就把这条配置挡掉。
+        if not self._sandbox and not PRODUCTION_IMPLEMENTED:
+            raise NotImplementedError(
+                "AlipayProvider production mode is selected (ALIPAY_APP_ID is set) but the "
+                "RSA2 signing / async-notify verification is not implemented; all production "
+                "branches raise NotImplementedError. Use app/ext/payment_gateways.py for real "
+                "collection, or unset ALIPAY_APP_ID for sandbox mode."
+            )
 
         if self._sandbox:
             logger.warning(

@@ -815,13 +815,48 @@ def build_spatial_fomo_engine(
 # ── v4.0 微信视频号社交播报引擎 ──────────────────────────────────────────────
 
 
+#: 曾经硬编码在生产函数签名里的占位符。现在任何引擎都不许收下它。
+_PLACEHOLDER_ACCESS_TOKENS = frozenset(
+    {"MOCK_WECHAT_TOKEN_XXX", "MOCK_DY_TOKEN", "MOCK_TOKEN", "placeholder"}
+)
+
+#: 显式的"未接入"哨兵：调用方主动声明"这个引擎没有凭据"，与伪装成真凭据的
+#: 占位符区分开。构造照常成功，播报在调用真接口前会因凭据无效而失败。
+UNCONFIGURED_TOKEN = "UNCONFIGURED"
+
+
+def _reject_mock_access_token(access_token: str, engine_name: str) -> None:
+    """占位符 access_token 一律拒绝——带假 token 调真接口只会静默失败。
+
+    :data:`UNCONFIGURED_TOKEN` 是唯一被接受的"没有凭据"表达：调用方显式声明
+    未接入，引擎照常装配（开发/测试环境能跑），而不是伪装成有凭据。
+    """
+    token = str(access_token)
+    if token == UNCONFIGURED_TOKEN:
+        logger.warning(
+            "%s: no access_token configured (UNCONFIGURED); real broadcasts will fail",
+            engine_name,
+        )
+        return
+    if not token.strip():
+        raise ValueError(
+            f"{engine_name}: access_token must not be empty; wire a real credential "
+            f"or pass UNCONFIGURED_TOKEN to declare it intentionally unset"
+        )
+    if token in _PLACEHOLDER_ACCESS_TOKENS:
+        raise ValueError(
+            f"{engine_name}: refusing placeholder access_token {token!r}; "
+            f"pass the real credential explicitly"
+        )
+
+
 def build_social_broadcast_engine(
     pool: Any,
     *,
     settings: Settings,
     llm_provider: str = "manual",
     wechat_provider: str = "manual",
-    access_token: str = "MOCK_WECHAT_TOKEN_XXX",
+    access_token: str,
     stagger_seconds: float = 60.0,
 ) -> CronSchedulerEngine:
     """社交播报引擎 (on_interval，每 15 分钟)。
@@ -838,13 +873,17 @@ def build_social_broadcast_engine(
     优先级排序——"距销毁时间"这个概念对刚入库的批次没有意义，calculate_
     broadcast_priority 自己的语义就是给清仓场景用的。
 
-    access_token 是硬编码占位符 ("MOCK_WECHAT_TOKEN_XXX"，SPEC 原文自己也是
-    这么注释的"此处简化处理，实际需调用中控服务")——真实接入需要微信 OAuth
-    access_token 刷新流程，这个引擎没有实现，是诚实的已知空白。
+    access_token 是微信视频号 access_token。**必填 kwarg，没有默认值**：
+    以前这里硬编码着 "MOCK_WECHAT_TOKEN_XXX"，调用方漏传真实 token 也不会报错，
+    引擎带着假 token 去调微信 API，失败还只是一条 warning。
+    现在漏传在调用期就 TypeError；真实 token 由调用方从配置显式解析
+    （app/ext/oservi_lifecycle.py 传 settings.wechat_channel_access_token）。
+    真实的 OAuth access_token 刷新流程本引擎没有实现，是诚实的已知空白。
 
     stagger_seconds 对应 SPEC "错峰发布，防止触发微信风控封禁"的要求，默认
     60 秒；测试时会把它调成 0，否则 run_once() 在有多个候选批次时要跑几分钟。
     """
+    _reject_mock_access_token(access_token, "wechat_channel")
 
     async def broadcast_tick(**_: Any) -> dict[str, Any]:
         fresh_batches = await db_query_many(
@@ -1091,7 +1130,7 @@ def build_market_maker_probe_engine(
 
 
 def build_mercenary_routing_engine(
-    pool: Any, *, douyin_provider: str = "manual", access_token: str = "MOCK_DY_TOKEN"
+    pool: Any, *, douyin_provider: str = "manual", access_token: str = UNCONFIGURED_TOKEN
 ) -> CronSchedulerEngine:
     """嗜血雇佣兵引擎 (on_interval，每 10 分钟)。
 
@@ -1109,8 +1148,11 @@ def build_mercenary_routing_engine(
         pool: obase.persistence.PgPool。
         douyin_provider: 抖音网关 provider 名，默认 "manual"
             (ManualDouyinProvider，内存态占位实现)。
-        access_token: 抖音开放平台 access_token，演示环境用占位字符串。
+        access_token: 抖音开放平台 access_token。默认是显式的"未接入"哨兵
+            (UNCONFIGURED_TOKEN)；传真实凭据时若给的是伪装成真凭据的占位符
+            会被 :func:`_reject_mock_access_token` 挡下。
     """
+    _reject_mock_access_token(access_token, "mercenary_routing")
 
     async def route_mercenaries(**_: Any) -> dict[str, Any]:
         danger_batches = await db_query_many(
