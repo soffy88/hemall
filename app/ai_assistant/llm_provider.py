@@ -7,12 +7,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 logger = logging.getLogger("hemall.ai.llm_provider")
+
+#: 上游报错时回给调用方的**固定**文案。
+#:
+#: 原来这里是把 `str(exc)` 原样塞进响应体（``content=f"[ERROR] ...{exc}"``）。
+#: SDK 异常的 repr 里可能带请求 URL、请求头、乃至 api key 的片段——把上游
+#: 异常回传给调用方等于把凭据与内网拓扑一起送出门。细节只进服务端日志。
+_ERROR_CONTENT = "[ERROR] upstream LLM provider is unavailable; see server logs"
+_ERROR_STREAM_CHUNK = "[ERROR] upstream LLM provider is unavailable; see server logs"
+
+#: 出现在上游异常里就必须打码的片段（api key / bearer token）。
+_SECRET_PATTERN = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{8,}|sk_live_[A-Za-z0-9]{8,}|"
+    r"Bearer\s+[A-Za-z0-9._\-]{8,}|x-api-key[\"':= ]+[A-Za-z0-9._\-]{8,})",
+    re.IGNORECASE,
+)
+
+
+def _safe_error(exc: BaseException) -> str:
+    """异常文本进日志前先打码：只留下异常类型 + 脱敏后的消息。"""
+    text = _SECRET_PATTERN.sub("<redacted>", str(exc))
+    return f"{type(exc).__name__}: {text}"
+
+
+def _redact(value: str) -> str:
+    return _SECRET_PATTERN.sub("<redacted>", value)
 
 
 @dataclass
@@ -111,6 +137,10 @@ class OpenAIProvider(LLMProvider):
         self._client = None
         self._initialized = False
 
+    def __repr__(self) -> str:
+        # 凭据不进 repr: provider 会被 logger / 调试器打印。
+        return f"{type(self).__name__}(model_name={self._model_name!r}, api_base={self._api_base!r})"
+
     async def _ensure_client(self) -> None:
         """延迟初始化 OpenAI 客户端。"""
         if not self._initialized:
@@ -128,7 +158,7 @@ class OpenAIProvider(LLMProvider):
                 logger.warning("openai package not installed, using fallback mode")
                 self._initialized = True
             except Exception as exc:
-                logger.error("Failed to initialize OpenAI client: %s", exc)
+                logger.error("Failed to initialize OpenAI client: %s", _safe_error(exc))
                 self._initialized = True
 
     async def chat(
@@ -181,9 +211,9 @@ class OpenAIProvider(LLMProvider):
                 latency_ms=latency,
             )
         except Exception as exc:
-            logger.error("OpenAI chat error: %s", exc)
+            logger.error("OpenAI chat error: %s", _safe_error(exc))
             return LLMResponse(
-                content=f"[ERROR] LLM request failed: {exc}",
+                content=_ERROR_CONTENT,
                 finish_reason="error",
                 model=self._model_name,
             )
@@ -244,9 +274,9 @@ class OpenAIProvider(LLMProvider):
                 tool_calls=tool_calls,
             )
         except Exception as exc:
-            logger.error("OpenAI chat_with_tools error: %s", exc)
+            logger.error("OpenAI chat_with_tools error: %s", _safe_error(exc))
             return LLMResponse(
-                content=f"[ERROR] LLM tool call failed: {exc}",
+                content=_ERROR_CONTENT,
                 finish_reason="error",
                 model=model,
                 tool_calls=None,
@@ -280,8 +310,8 @@ class OpenAIProvider(LLMProvider):
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except Exception as exc:
-            logger.error("OpenAI stream error: %s", exc)
-            yield f"[ERROR] {exc}"
+            logger.error("OpenAI stream error: %s", _safe_error(exc))
+            yield _ERROR_STREAM_CHUNK
 
     async def embed(self, text: str) -> list[float]:
         """OpenAI Embedding API。"""
@@ -298,7 +328,7 @@ class OpenAIProvider(LLMProvider):
             )
             return response.data[0].embedding
         except Exception as exc:
-            logger.error("OpenAI embed error: %s", exc)
+            logger.error("OpenAI embed error: %s", _safe_error(exc))
             return [0.0] * 1536
 
 
@@ -317,6 +347,9 @@ class AnthropicProvider(LLMProvider):
         self._client = None
         self._initialized = False
 
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(model_name={self._model_name!r})"
+
     async def _ensure_client(self) -> None:
         if not self._initialized:
             try:
@@ -332,7 +365,7 @@ class AnthropicProvider(LLMProvider):
                 logger.warning("anthropic package not installed, using fallback mode")
                 self._initialized = True
             except Exception as exc:
-                logger.error("Failed to initialize Anthropic client: %s", exc)
+                logger.error("Failed to initialize Anthropic client: %s", _safe_error(exc))
                 self._initialized = True
 
     async def chat(
@@ -384,9 +417,9 @@ class AnthropicProvider(LLMProvider):
                 latency_ms=latency,
             )
         except Exception as exc:
-            logger.error("Anthropic chat error: %s", exc)
+            logger.error("Anthropic chat error: %s", _safe_error(exc))
             return LLMResponse(
-                content=f"[ERROR] {exc}", finish_reason="error", model=self._model_name
+                content=_ERROR_CONTENT, finish_reason="error", model=self._model_name
             )
 
     async def chat_stream(
@@ -418,8 +451,8 @@ class AnthropicProvider(LLMProvider):
                 async for text in stream.text_stream:
                     yield text
         except Exception as exc:
-            logger.error("Anthropic stream error: %s", exc)
-            yield f"[ERROR] {exc}"
+            logger.error("Anthropic stream error: %s", _safe_error(exc))
+            yield _ERROR_STREAM_CHUNK
 
     async def embed(self, text: str) -> list[float]:
         # Anthropic 不提供 embedding API，使用 OpenAI 替代
@@ -477,9 +510,9 @@ class LocalLLMProvider(LLMProvider):
                 model=self._model_name,
             )
         except Exception as exc:
-            logger.error("Local LLM error: %s", exc)
+            logger.error("Local LLM error: %s", _safe_error(exc))
             return LLMResponse(
-                content=f"[ERROR] {exc}", finish_reason="error", model=self._model_name
+                content=_ERROR_CONTENT, finish_reason="error", model=self._model_name
             )
 
     async def chat_stream(
@@ -513,8 +546,8 @@ class LocalLLMProvider(LLMProvider):
                         ).get("content"):
                             yield chunk["choices"][0]["delta"]["content"]
         except Exception as exc:
-            logger.error("Local LLM stream error: %s", exc)
-            yield f"[ERROR] {exc}"
+            logger.error("Local LLM stream error: %s", _safe_error(exc))
+            yield _ERROR_STREAM_CHUNK
 
     async def embed(self, text: str) -> list[float]:
         try:
@@ -526,7 +559,7 @@ class LocalLLMProvider(LLMProvider):
             data = response.json()
             return data["data"][0]["embedding"]
         except Exception as exc:
-            logger.error("Local LLM embed error: %s", exc)
+            logger.error("Local LLM embed error: %s", _safe_error(exc))
             return [0.0] * 768
 
     async def close(self) -> None:

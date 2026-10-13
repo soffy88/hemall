@@ -25,12 +25,33 @@ from ..config import Settings
 from ..deps import get_current_user, get_settings
 from .knowledge import FAQItem, KnowledgeBase, KnowledgeCategory
 from .models import AIResponse, ChatRequest, ProductDescriptionRequest, ProductQuestion
+from .quota import enforce_message_budget, get_quota_guard
 from .service import AIAssistantService
 
 # AI 助手端点全程调 LLM (烧钱)，无鉴权即敞口刷账单。顾客前端未接此路由 (走
 # /store)，故一律要求员工 JWT；将来若要面向顾客，应加顾客 token + 限流的专用变体。
 router = APIRouter(prefix="/ai", tags=["ai"], dependencies=[Depends(get_current_user)])
 logger = logging.getLogger("hemall.ai.router")
+
+
+def ai_cost_gate(
+    prompt: str, principal: dict[str, Any] = Depends(get_current_user)
+) -> dict[str, Any]:
+    """每个 LLM 端点的成本闸：按已认证主体计一次配额 + 校验入参长度。
+
+    放在各端点里显式调用（而不是 router 级 dependencies），是因为要拿到
+    principal 才知道"谁在烧钱"——全局一视同仁的限额等于没有限额。prompt
+    从**已解析的请求模型**取，不去偷读请求体流。
+    """
+    get_quota_guard().consume(str(principal.get("user_id") or ""))
+    enforce_message_budget(prompt, max_chars=Settings().ai_max_message_chars)
+    return principal
+
+
+def _bind_owner(request_model, principal: dict[str, Any]):
+    """把已认证主体盖进请求模型，覆盖任何客户端自报的 owner_id。"""
+    request_model.owner_id = str(principal.get("user_id") or "")
+    return request_model
 
 
 _kb: KnowledgeBase | None = None
@@ -65,9 +86,12 @@ def get_ai_service(
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> dict[str, Any]:
     """多轮对话接口。"""
+    ai_cost_gate(request.message, principal)
+    _bind_owner(request, principal)
     response = await svc.chat(request)
     return {"data": response.model_dump(mode="json")}
 
@@ -75,9 +99,12 @@ async def chat(
 @router.post("/chat/stream")
 async def chat_stream(
     request: ChatRequest,
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> StreamingResponse:
     """流式对话接口 (Server-Sent Events)。"""
+    ai_cost_gate(request.message, principal)
+    _bind_owner(request, principal)
 
     async def event_generator():
         async for chunk in svc.chat_stream(request):
@@ -98,9 +125,11 @@ async def chat_stream(
 @router.post("/product/ask")
 async def ask_about_product(
     request: ProductQuestion,
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> dict[str, Any]:
     """商品智能问答。"""
+    ai_cost_gate(request.question, principal)
     response = await svc.ask_about_product(request)
     return {"data": response.model_dump(mode="json")}
 
@@ -108,9 +137,11 @@ async def ask_about_product(
 @router.post("/product/description")
 async def generate_description(
     request: ProductDescriptionRequest,
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> dict[str, Any]:
     """AI 生成商品描述。"""
+    ai_cost_gate(" ".join(request.keywords), principal)
     result = await svc.generate_product_description(request)
     return {"data": result}
 
@@ -118,9 +149,11 @@ async def generate_description(
 @router.post("/sentiment")
 async def analyze_sentiment(
     text: str = Query(..., description="待分析文本"),
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> dict[str, Any]:
     """情感分析。"""
+    ai_cost_gate(text, principal)
     result = await svc.analyze_sentiment(text)
     return {"data": result.model_dump(mode="json")}
 
@@ -130,39 +163,43 @@ async def analyze_review(
     product_id: str = Query(..., description="商品 ID"),
     review_id: str = Query(..., description="评论 ID"),
     review_text: str = Query(..., description="评论文本"),
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> dict[str, Any]:
     """评论分析。"""
+    ai_cost_gate(review_text, principal)
     result = await svc.analyze_review(product_id, review_id, review_text)
     return {"data": result.model_dump(mode="json")}
 
 
 @router.get("/sessions")
 async def list_sessions(
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> dict[str, Any]:
-    """获取所有对话会话。"""
-    sessions = [
-        {
-            "session_id": s.session_id,
-            "user_id": s.user_id,
-            "message_count": len(s.messages),
-            "created_at": s.created_at.isoformat(),
-            "updated_at": s.updated_at.isoformat(),
-        }
-        for s in svc._sessions.values()
-    ]
-    return {"data": sessions}
+    """获取**当前主体自己的**对话会话。
+
+    原实现遍历 svc._sessions 全量返回——任何一个员工令牌都能列出所有人的
+    会话 id 和 user_id（PII）。会话归属强制绑定到已认证主体。
+    """
+    return {"data": svc.sessions_for_owner(str(principal.get("user_id") or ""))}
 
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(
     session_id: str,
+    principal: dict[str, Any] = Depends(get_current_user),
     svc: AIAssistantService = Depends(get_ai_service),
 ) -> dict[str, Any]:
-    """删除对话会话。"""
-    if session_id in svc._sessions:
-        del svc._sessions[session_id]
+    """删除对话会话（仅限自己的）。"""
+    try:
+        deleted = svc.delete_session_owned(
+            session_id, owner_id=str(principal.get("user_id") or "")
+        )
+    except PermissionError as exc:
+        # 对越权者回 404 而不是 403——不泄露"这个 session 存在"。
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    if deleted:
         return {"status": "deleted", "session_id": session_id}
     raise HTTPException(status_code=404, detail="Session not found")
 

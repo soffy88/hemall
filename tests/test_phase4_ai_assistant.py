@@ -279,16 +279,24 @@ async def test_ai_service_session_management():
     config = AIConfig(provider="openai", api_key="")
     service = AIAssistantService(config)
 
-    # 创建会话
-    session = service._get_or_create_session("test-session", "user-123")
+    # 创建会话 (归属 = 已认证主体; user_id 只是业务标注)
+    session = service.get_or_create_session(
+        "test-session", owner_id="staff-1", claimed_user_id="user-123"
+    )
     assert session.session_id == "test-session"
+    assert session.owner_id == "staff-1"
+    assert session.user_id == "user-123"
 
     # 获取已存在会话
-    session2 = service._get_or_create_session("test-session", "user-123")
+    session2 = service.get_or_create_session(
+        "test-session", owner_id="staff-1", claimed_user_id="user-123"
+    )
     assert session2 is session
 
     # 创建新会话 (无 session_id)
-    session3 = service._get_or_create_session(None, "user-456")
+    session3 = service.get_or_create_session(
+        None, owner_id="staff-1", claimed_user_id="user-456"
+    )
     assert session3.session_id != "test-session"
 
 

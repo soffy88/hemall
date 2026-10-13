@@ -100,15 +100,73 @@ class AIAssistantService:
 
     # ── 对话管理 ────────────────────────────────────────────────
 
-    def _get_or_create_session(self, session_id: str | None, user_id: str | None) -> Conversation:
-        """获取或创建对话会话。"""
+    def get_or_create_session(
+        self,
+        session_id: str | None,
+        *,
+        owner_id: str,
+        claimed_user_id: str | None = None,
+    ) -> Conversation:
+        """获取或创建对话会话 —— 归属强制绑定到已认证主体。
+
+        owner_id 来自 staff JWT 的 sub，服务端取。请求体里的 user_id 只当作
+        "这段对话在谈哪个顾客"的业务标注存下来（claimed_user_id），**永远
+        不参与授权**——否则任何员工都能把会话挂到别人名下。
+        """
         if session_id and session_id in self._sessions:
-            return self._sessions[session_id]
+            existing = self._sessions[session_id]
+            if existing.owner_id is not None and existing.owner_id != owner_id:
+                raise PermissionError("session belongs to another principal")
+            return existing
 
         new_session_id = session_id or str(uuid.uuid4())
-        conversation = Conversation(session_id=new_session_id, user_id=user_id)
+        conversation = Conversation(
+            session_id=new_session_id,
+            user_id=claimed_user_id,
+            owner_id=owner_id,
+        )
+        self._evict_if_needed()
         self._sessions[new_session_id] = conversation
         return conversation
+
+    def _evict_if_needed(self) -> None:
+        """会话表只增不减会慢慢吃光内存——满了就丢最久没动的一条。"""
+        from app.config import Settings
+
+        limit = Settings().ai_max_sessions
+        if limit <= 0 or len(self._sessions) < limit:
+            return
+        oldest = min(
+            self._sessions.values(),
+            key=lambda c: c.updated_at,
+            default=None,
+        )
+        if oldest is not None:
+            self._sessions.pop(oldest.session_id, None)
+
+    def sessions_for_owner(self, owner_id: str) -> list[dict[str, Any]]:
+        """只返回该主体自己的会话摘要（不含消息正文）。"""
+        return [
+            {
+                "session_id": s.session_id,
+                "user_id": s.user_id,
+                "message_count": len(s.messages),
+                "created_at": s.created_at.isoformat(),
+                "updated_at": s.updated_at.isoformat(),
+            }
+            for s in self._sessions.values()
+            if s.owner_id == owner_id
+        ]
+
+    def delete_session_owned(self, session_id: str, *, owner_id: str) -> bool:
+        """删除会话；不是自己的会话抛 PermissionError（而不是静默成功）。"""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        if session.owner_id is not None and session.owner_id != owner_id:
+            raise PermissionError("session belongs to another principal")
+        del self._sessions[session_id]
+        return True
 
     async def chat(self, request: ChatRequest) -> AIResponse:
         """处理聊天请求 (完整流程)。
@@ -123,8 +181,12 @@ class AIAssistantService:
         if not self._initialized:
             await self.initialize()
 
-        # 获取会话
-        session = self._get_or_create_session(request.session_id, request.user_id)
+        # 获取会话 —— 归属取自已认证主体；请求体里的 user_id 只是业务标注。
+        session = self.get_or_create_session(
+            request.session_id,
+            owner_id=request.owner_id or "",
+            claimed_user_id=request.user_id,
+        )
 
         # 添加用户消息
         session.add_message("user", request.message)
@@ -175,7 +237,11 @@ class AIAssistantService:
         if not self._initialized:
             await self.initialize()
 
-        session = self._get_or_create_session(request.session_id, request.user_id)
+        session = self.get_or_create_session(
+            request.session_id,
+            owner_id=request.owner_id or "",
+            claimed_user_id=request.user_id,
+        )
         session.add_message("user", request.message)
 
         context_docs = await self._rag.retrieve_context(request.message)
