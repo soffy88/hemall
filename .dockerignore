@@ -43,6 +43,10 @@ htmlcov/
 # Docs
 docs/
 *.md
+# 例外：README.md 是 Dockerfile.prod 构建阶段的显式 COPY 源。
+# 缺少本行时 `COPY pyproject.toml uv.lock README.md ./` 报
+# "file not found in build context"，所有 prod/mall 构建失败（审计 P0-1）。
+!README.md
 
 # Misc
 *.log
