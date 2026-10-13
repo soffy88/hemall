@@ -449,3 +449,141 @@ def test_values_env_keys_are_real_hemall_settings(values_file: str):
         assert key[len("HEMALL_") :].lower() in fields, (
             f"{values_file}: api.env.{key} 对应不到任何 Settings 字段 → 静默忽略"
         )
+
+
+# --------------------------------------------------------------------------
+# P2-5 — NetworkPolicy 出站覆盖不全 → 依赖被静默丢弃
+# --------------------------------------------------------------------------
+
+
+#: API 进程在运行期真正会主动连出去的目的地 (协议/端口)。
+#: 这张表是"部署要能跑"的最小集，与 app 的实际配置一一对应：
+#:   5432  PostgreSQL           HEMALL_PG_DSN
+#:   6379  Redis                HEMALL_REDIS_URL (共享限流桶 / 缓存)
+#:   9200  Elasticsearch        HEMALL_ELASTICSEARCH_URL (商品检索)
+#:   4317  Jaeger OTLP/gRPC     OTEL_EXPORTER_OTLP_ENDPOINT (app/observability/tracing.py:48
+#:                             默认 http://localhost:4317) —— 缺了不会报错，
+#:                             lifespan 只打一行 "tracing setup failed (non-fatal)" warning
+#:   443   外部 HTTPS           支付网关 / AI provider / ES over TLS
+REQUIRED_EGRESS_PORTS = {53, 443, 4317, 5432, 6379, 9200}
+
+
+def _egress_openings(policy_doc: dict) -> dict[int, set[str]]:
+    """把渲染出的 egress 规则折成 {port: {该 port 被允许的协议}}。
+
+    传入整个 NetworkPolicy 文档；`to` 为空表示"不限目的地"（裸端口规则）。
+    """
+    spec = policy_doc.get("spec") or {}
+    openings: dict[int, set[str]] = {}
+    for rule in spec.get("egress") or []:
+        for entry in rule.get("ports") or []:
+            port = int(entry["port"])
+            openings.setdefault(port, set()).add(entry.get("protocol", "TCP"))
+    return openings
+
+
+@ALL_VALUES
+def test_networkpolicy_egress_covers_every_runtime_dependency(values_file: str):
+    """出站规则必须覆盖 API 运行期真正需要的每个端口。
+
+    NetworkPolicy 的 egress 一旦声明就默认拒绝全部未列出项。缺哪条不会
+    报错、不会 CrashLoop，只会安静地连不上 —— 最典型的就是 Jaeger 4317：
+    `app/observability/tracing.py` 里 tracing 失败只 warning，监控就此静默缺失。
+    """
+    policy = _of(values_file, "NetworkPolicy", "hemall-api-network-policy")
+    assert "Egress" in policy["spec"]["policyTypes"], "policyTypes 必须包含 Egress，否则下面的端口规则没有意义"
+
+    openings = _egress_openings(policy)
+    missing = {p for p in REQUIRED_EGRESS_PORTS if p not in openings}
+    assert not missing, (
+        f"{values_file}: egress 缺少端口 {sorted(missing)} —— NetworkPolicy 下未列出的出站"
+        f"全部被静默拒绝；已声明的端口为 {sorted(openings)}"
+    )
+
+
+def test_networkpolicy_allows_dns_over_both_udp_and_tcp():
+    """DNS 必须同时放行 UDP 与 TCP。
+
+    只放 UDP 时响应包超过 MTU 会回落到 TCP/5353，解析静默失败，表现为
+    "偶发连不上数据库" 而不是明确的 DNS 错误，极难排查。
+    """
+    policy = _of("values.yaml", "NetworkPolicy", "hemall-api-network-policy")
+    protocols = _egress_openings(policy).get(53, set())
+    assert {"UDP", "TCP"} <= protocols, f"DNS 只放行了 {sorted(protocols)}，缺 TCP 则大响应会解析失败"
+
+
+def test_networkpolicy_allows_same_namespace_egress():
+    """必须放行同 ns 出站，否则同 ns 部署的 Jaeger/OTel collector 全被拒。"""
+    policy = _of("values.yaml", "NetworkPolicy", "hemall-api-network-policy")
+    same_ns_ports: set[int] = set()
+    for rule in (policy.get("spec") or {}).get("egress") or []:
+        for target in rule.get("to") or []:
+            if target.get("podSelector") == {}:
+                same_ns_ports.update(int(p["port"]) for p in rule.get("ports") or [])
+    assert same_ns_ports, "没有任何一条 egress 放行同命名空间（podSelector: {}）"
+    assert 4317 in same_ns_ports, (
+        "同 ns 的 Jaeger OTLP 4317 必须显式放行 —— 它不在任何带 namespaceSelector 的规则里"
+    )
+
+
+def test_networkpolicy_has_no_null_namespace_selector():
+    """`to: [{namespaceSelector: {matchLabels: null}}]` 会被 API server 拒绝。
+
+    "允许任意目的地"的正确写法是**整条规则不写 to**（NetworkPolicy 语义：
+    只写 ports 即不限目的地）。模板若对缺 namespaceSelector 的条目硬吐
+    `matchLabels: null`，集群里 apply 会直接失败。
+    """
+    policy = _of("values.yaml", "NetworkPolicy", "hemall-api-network-policy")
+    for rule in (policy.get("spec") or {}).get("egress") or []:
+        for target in rule.get("to") or []:
+            ns = target.get("namespaceSelector")
+            if ns is not None:
+                assert ns.get("matchLabels"), f"渲染出空的 namespaceSelector: {ns} —— apply 会被 API server 拒绝"
+
+
+def test_networkpolicy_egress_destinations_are_configurable():
+    """egress 目的地必须能从 values 配，不能写死 ns 标签。
+
+    写死 `namespaceSelector.matchLabels.name=database` 意味着：换一个不带该
+    标签的 namespace，DB 流量会被静默拒绝，而 chart 没有任何提示。
+    """
+    text = (CHART_DIR / "templates" / "networkpolicy.yaml").read_text(encoding="utf-8")
+    assert ".Values.security.networkPolicies.egress" in text, "networkpolicy 必须从 values 读 egress 目的地配置"
+    assert "toYaml" in text
+
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """按 Helm 的语义做深合并 (overlay 覆盖 base, 映射递归合并)。"""
+    out = dict(base)
+    for key, value in (overlay or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _merged_values(values_file: str) -> dict:
+    """values.yaml + overlay 的合并结果, 等价于 `helm -f <overlay>` 看到的值。"""
+    base = yaml.safe_load((CHART_DIR / "values.yaml").read_text(encoding="utf-8")) or {}
+    if values_file == "values.yaml":
+        return base
+    overlay = yaml.safe_load((CHART_DIR / values_file).read_text(encoding="utf-8")) or {}
+    return _deep_merge(base, overlay)
+
+
+@ALL_VALUES
+def test_egress_destination_config_exists_for_each_observed_dependency(values_file: str):
+    """values 里必须为每个已知依赖 (5432/6379/9200/4317) 声明一条 egress。
+
+    按 Helm 的语义读：values.yaml 是底，overlay 做深合并 —— 只看 overlay
+    文件会误判"没配"。
+    """
+    values = _merged_values(values_file)
+    np_values = ((values.get("security") or {}).get("networkPolicies") or {})
+    egress = np_values.get("egress") or {}
+    assert egress, f"{values_file}: security.networkPolicies.egress 为空 —— 会渲染出没有出站规则的 policy"
+
+    configured_ports = {int(p) for entry in egress.values() for p in (entry.get("ports") or [])}
+    missing = {p for p in REQUIRED_EGRESS_PORTS if p != 53 and p not in configured_ports}
+    assert not missing, f"{values_file}: security.networkPolicies.egress 缺少 {sorted(missing)}"

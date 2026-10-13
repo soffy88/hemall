@@ -122,5 +122,45 @@ secrets:
 security:
   networkPolicies:
     enabled: true
+    # ingress-nginx 所在的 namespace 标签。集群的标签体系各不相同，
+    # 写死在模板里意味着换个集群就静默丢流量 —— 放到 values 里改。
+    ingressNamespaceSelector:
+      name: ingress-nginx
+    dnsNamespaceSelector:
+      name: kube-system
+    # 出站目的地。NetworkPolicy 的 egress 默认拒绝全部未列项，漏一条的
+    # 表现是"安静地连不上"，不报错、不崩（audit P2-5）。
+    #
+    #   namespaceSelector : 目标 namespace 的标签
+    #   sameNamespace     : true 则放行本 release 所在 ns 内的 pod
+    #   ports             : 端口列表
+    #   protocols         : {端口: 协议}，默认 TCP
+    egress:
+      postgresql:
+        namespaceSelector:
+          name: database
+        ports: [5432]
+      redis:
+        namespaceSelector:
+          name: cache
+        ports: [6379]
+      elasticsearch:
+        namespaceSelector:
+          name: logging
+        ports: [9200]
+      # Jaeger / OTLP collector。app/observability/tracing.py 默认连
+      # http://localhost:4317，缺这条规则时 tracing 只会打一行
+      # "tracing setup failed (non-fatal)" warning —— 监控静默缺失。
+      otlp:
+        namespaceSelector:
+          name: observability
+        ports: [4317, 4318]
+      # 同 ns 的服务（OTel collector sidecar、内部依赖、Prometheus 抓取端）
+      otlp-same-namespace:
+        sameNamespace: true
+        ports: [4317, 4318]
+      # 外部 HTTPS：支付网关 / AI provider / ES over TLS
+      https-egress:
+        ports: [443]
   podSecurityStandards:
     enabled: true
