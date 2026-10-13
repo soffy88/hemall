@@ -38,7 +38,7 @@ from scripts.export_route_prefixes import (  # noqa: E402
 )
 
 CADDYFILE = REPO_ROOT / "Caddyfile"
-NGINX_CONFS = sorted(REPO_ROOT.glob("nginx*.conf"))
+NGINX_CONFS = sorted(REPO_ROOT.glob("nginx*.conf.template"))
 
 # 后端根路由 "/" 由网关默认兜底处理，不参与前缀覆盖断言。
 _BACKEND_PREFIXES = frozenset(
@@ -223,4 +223,4 @@ def test_nginx_conf_has_backend_catchall(conf: Path):
 
 
 def test_nginx_confs_are_not_empty():
-    assert NGINX_CONFS, "未找到 nginx*.conf，P0-2 的 nginx 核对形同虚设"
+    assert NGINX_CONFS, "未找到 nginx*.conf.template，P0-2 的 nginx 核对形同虚设"

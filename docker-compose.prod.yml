@@ -130,14 +130,27 @@ services:
       retries: 5
 
   # Nginx 反向代理 (生产环境推荐)
+  #
+  # audit P1-7: 原来挂 ./ssl (仓库里不存在) + 写死的证书路径与占位 server_name，
+  # 容器起来即 `[emerg] cannot open certificate` 反复重启。现在:
+  #   - 证书/私钥/域名全部从必填环境变量注入，入口脚本先校验再 `nginx -t`；
+  #   - 证书目录以 :ro 挂载，容器改不了宿主证书。
   nginx:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # 入口域名：必须与证书 CN/SAN 一致。缺配置直接启动失败，不给占位入口。
+      - HEMALL_API_SERVER_NAME=${HEMALL_API_SERVER_NAME:?set the public API hostname matching the TLS cert}
+      - HEMALL_SSL_CERT_PATH=${HEMALL_SSL_CERT_PATH:?set the fullchain cert path inside the mounted ./ssl dir}
+      - HEMALL_SSL_KEY_PATH=${HEMALL_SSL_KEY_PATH:?set the privkey path inside the mounted ./ssl dir}
+      - HEMALL_SSL_SOURCE_DIR=/etc/nginx/ssl
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-      - ./ssl:/etc/nginx/ssl
+      - ./nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./nginx/nginx-entrypoint.sh:/usr/local/bin/nginx-entrypoint.sh:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/nginx-entrypoint.sh"]
     depends_on:
       - api
     restart: unless-stopped

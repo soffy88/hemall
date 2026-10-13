@@ -293,7 +293,9 @@ def test_caddyfile_declares_trusted_proxies():
     assert "trusted_proxies" in text, "Caddyfile 未声明 trusted_proxies，{client_ip} 会退化成下一跳"
 
 
-@pytest.mark.parametrize("conf", ["nginx.conf", "nginx.mall-sxueji.conf"])
+@pytest.mark.parametrize(
+    "conf", ["nginx.conf.template", "nginx.mall-sxueji.conf.template"]
+)
 def test_nginx_passes_client_ip_through(conf: str):
     from pathlib import Path
 
