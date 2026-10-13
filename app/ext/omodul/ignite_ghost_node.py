@@ -16,7 +16,13 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from omodul._base import (
+    BaseConfig,
+    Trail,
+    build_result,
+    compute_fingerprint,
+    write_report,
+)
 
 logger = logging.getLogger("hemall.ext.omodul.ignite_ghost_node")
 

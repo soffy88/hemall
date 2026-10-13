@@ -123,11 +123,19 @@ class PushManager:
     # ── 设备管理 ────────────────────────────────────────────────
 
     async def register_device(self, device_token: DeviceToken) -> bool:
-        """注册/更新设备 token。"""
-        if device_token.user_id not in self._device_tokens:
-            self._device_tokens[device_token.user_id] = []
-        
-        # 移除旧 token (同一平台)
+        """注册/更新设备 token。
+
+        原来下面三行用的是 `user_id`——这个函数根本没有这个局部变量（形参是
+        device_token，用户 id 在 device_token.user_id 上）。NameError 让"注册设备"
+        这条路径 100% 失败，任何推送都发不出去。
+        """
+        user_id = device_token.user_id
+        if user_id not in self._device_tokens:
+            self._device_tokens[user_id] = []
+
+        # 去重: 同一 platform + 同一 device_token 只留一条 (重复注册幂等)。
+        # 同一 platform 下**不同** device_token 是不同设备 (用户可以有多个),
+        # 全部保留——所以这里不是"同平台换 token"。
         self._device_tokens[user_id] = [
             d for d in self._device_tokens[user_id]
             if not (d.platform == device_token.platform and d.device_token == device_token.device_token)

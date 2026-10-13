@@ -69,8 +69,6 @@ from .ai_assistant.service import AIAssistantService
 from .ext.admin_agent_chat import router as agent_chat_router
 
 
-from .cache.service import CacheManager
-
 from .routers import build_router, public_zero_login_paths
 
 # 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)

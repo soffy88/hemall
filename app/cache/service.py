@@ -160,14 +160,30 @@ class CacheManager:
             return 0
 
     async def get_rank(self, key: str) -> list[tuple[str, int]]:
-        """获取 Sorted Set 排行榜前 N 名。"""
+        """获取 Sorted Set 排行榜前 N 名。
+
+        `zrevrange(..., withscores=True)` 返回的是 `[(member, score), ...]`
+        二元组——原实现写的是 `for item in results` 然后同时用 `item` 和
+        `score`，`score` 是未定义名（F821）。NameError 又被 `except Exception`
+        吞掉，于是排行榜**永远**返回空列表，且没有任何日志。
+        """
         if not self.is_available:
             return []
         try:
             results = await self._pool.zrevrange(key, 0, 9, withscores=True)
-            return [(item.decode() if isinstance(item, bytes) else item, score) for item in results]
-        except Exception:
+        except (redis.RedisError, UnicodeDecodeError) as exc:
+            # 只有"Redis 连不上 / 返回值编码坏了"才降级成空榜。
+            logger.warning("cache GET_RANK failed for %s: %s", key, exc)
             return []
+        return [
+            (
+                member.decode("utf-8", errors="replace")
+                if isinstance(member, bytes)
+                else member,
+                score,
+            )
+            for member, score in results
+        ]
 
     # ── 缓存预热 ────────────────────────────────────────────────
 
