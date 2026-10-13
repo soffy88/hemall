@@ -6,8 +6,10 @@ api:
   replicas: 2
   image:
     repository: registry.example.com/hemall/backend
-    tag: latest
-    pullPolicy: Always
+    # 不用 latest：预发环境同样要可复现、可回滚。要追新构建就由
+    # scripts/deploy.sh <env> <tag> 显式传 tag，而不是让 chart 漂移 (audit P2-8)。
+    tag: 0.3.0
+    pullPolicy: IfNotPresent
   resources:
     requests:
       cpu: 250m

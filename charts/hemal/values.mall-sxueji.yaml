@@ -6,8 +6,11 @@ api:
   replicas: 3
   image:
     repository: registry.sxueji.com/hemall/backend
-    tag: latest
-    pullPolicy: Always
+    # tag 必须是具体版本：latest 让部署不可复现、回滚回滚到另一个 latest
+    # (audit P2-8)。需要追新版本时由 scripts/deploy.sh 显式传 tag 覆盖。
+    tag: 0.3.0
+    # tag 已钉死，Always 只会让每次 Pod 重建都依赖 registry 可用性
+    pullPolicy: IfNotPresent
   resources:
     requests:
       cpu: 500m

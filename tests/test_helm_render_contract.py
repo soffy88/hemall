@@ -587,3 +587,61 @@ def test_egress_destination_config_exists_for_each_observed_dependency(values_fi
     configured_ports = {int(p) for entry in egress.values() for p in (entry.get("ports") or [])}
     missing = {p for p in REQUIRED_EGRESS_PORTS if p != 53 and p not in configured_ports}
     assert not missing, f"{values_file}: security.networkPolicies.egress 缺少 {sorted(missing)}"
+
+
+# --------------------------------------------------------------------------
+# P2-8 — 镜像 tag 漂移：部署不可复现，回滚无意义
+# --------------------------------------------------------------------------
+
+#: 浮动 tag —— 解析到 registry 上的"当前最新"，同一个 commit 在不同时刻
+#: 装出来的 Pod 不一样，回滚也只是回到另一个 latest。
+FLOATING_TAGS = {"latest", "main", "master", "edge", "stable"}
+
+
+@ALL_VALUES
+def test_image_tag_is_pinned_to_a_specific_version(values_file: str):
+    values = _merged_values(values_file)
+    image = (values.get("api") or {}).get("image") or {}
+    tag = str(image.get("tag") or "")
+    assert tag, f"{values_file}: api.image.tag 为空"
+    assert tag.lower() not in FLOATING_TAGS, (
+        f"{values_file}: api.image.tag={tag!r} 是浮动 tag —— 同一 commit 不同时刻部署出不同镜像，"
+        f"且回滚会回滚到另一个 latest"
+    )
+    assert image.get("repository"), f"{values_file}: api.image.repository 为空"
+
+
+@ALL_VALUES
+def test_pull_policy_does_not_defeat_tag_pinning(values_file: str):
+    """`Always` 会在每次 Pod 重建时去 registry 拉同名 tag。
+
+    tag 钉死后 `Always` 危害小些，但生产上仍让重启行为依赖 registry 可用性
+    —— registry 抖动就把健康的应用拉挂了。生产用 IfNotPresent。
+    """
+    values = _merged_values(values_file)
+    image = (values.get("api") or {}).get("image") or {}
+    policy = image.get("pullPolicy")
+    if str(image.get("tag", "")).lower() in FLOATING_TAGS:
+        assert policy == "Always", f"{values_file}: 浮动 tag 必须配 Always，否则 tag 永远不会更新"
+    else:
+        assert policy != "Always", (
+            f"{values_file}: tag 已钉到 {image.get('tag')!r}，pullPolicy=Always 仍会让每次 Pod "
+            f"重建去拉 registry —— registry 抖动就会把健康的 Pod 拉挂"
+        )
+
+
+@ALL_VALUES
+def test_rendered_image_is_fully_qualified_and_immutable(values_file: str):
+    """渲染出的 image 必须是 完整的 repo:固定tag，不能带浮动 tag。"""
+    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["containers"][0]
+    image = container["image"]
+    assert ":" in image, f"{values_file}: 渲染出的 image {image!r} 没有显式 tag"
+    repo, _, tag = image.rpartition(":")
+    assert "/" in repo, f"{values_file}: image {image!r} 缺少 registry/仓库路径"
+    assert tag.lower() not in FLOATING_TAGS, f"{values_file}: 渲染出的 image {image!r} 使用浮动 tag"
+
+
+def test_chart_app_version_is_not_latest():
+    chart = yaml.safe_load((CHART_DIR / "Chart.yaml").read_text(encoding="utf-8"))
+    assert str(chart.get("appVersion")) not in FLOATING_TAGS
+    assert str(chart.get("version")) not in FLOATING_TAGS

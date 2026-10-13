@@ -7,7 +7,9 @@ api:
   image:
     repository: registry.example.com/hemall/backend
     tag: 0.3.0
-    pullPolicy: Always
+    # tag 已钉死；Always 会让每次 Pod 重建都去拉 registry，registry 抖动
+    # 就能把健康的 Pod 拉挂 (audit P2-8)。
+    pullPolicy: IfNotPresent
   resources:
     requests:
       cpu: 500m
