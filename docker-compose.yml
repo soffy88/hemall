@@ -150,6 +150,35 @@ services:
       - prometheus
     restart: unless-stopped
 
+# ── PostgreSQL 自动备份 (audit P2-4) ───────────────────────────────────
+#   每天凌晨 3 点执行 pg_dump，保留 30 天，可选上传到 S3 兼容存储
+#   恢复: docker compose exec backup /backup/restore.sh latest
+  backup:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: hemall
+      BACKUP_DIR: /backups
+      BACKUP_SCHEDULE: "0 3 * * *"
+      BACKUP_RETENTION_DAYS: "30"
+      # 可选: 异地备份到 S3 兼容存储
+      # S3_ENDPOINT: https://s3.example.com
+      # S3_BUCKET: hemall-backups
+      # S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      # S3_SECRET_KEY: ${S3_SECRET_KEY}
+      # S3_REGION: us-east-1
+    volumes:
+      - backup_data:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 # ── 数据卷 ──────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
@@ -157,3 +186,4 @@ volumes:
   prometheus_data:
   grafana_data:
   alertmanager_data:
+  backup_data:
