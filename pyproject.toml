@@ -77,6 +77,9 @@ oservi = { git = "https://github.com/helios-plat/oservice.git", rev = "1a4f44b15
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "slow: 需要起真实容器/服务的端到端验证 (默认 CI 不跑; 用 -m slow 显式执行)",
+]
 
 [tool.ruff]
 target-version = "py312"

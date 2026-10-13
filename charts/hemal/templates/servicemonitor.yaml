@@ -1,0 +1,40 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled }}
+{{- /*
+  ServiceMonitor 此前在 values 里被声明为 `enabled: true`，但 templates/ 下
+  从来没有对应文件 —— 开关是纸面的，Prometheus Operator 收不到任何抓取配置，
+  指标只能靠 prometheus.yml 里的静态 scrape_configs（audit P2-6）。
+
+  selector 必须与 templates/deployment.yaml 的 pod labels 一致，否则
+  ServiceMonitor 会被正常创建、但一个 pod 也选不中。
+*/ -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}-api
+  labels:
+    app: hemall-api
+    release: {{ .Release.Name }}
+  {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+    - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app: hemall-api
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: {{ .Values.monitoring.serviceMonitor.interval | default "30s" }}
+    scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout | default "10s" }}
+    {{- with .Values.monitoring.serviceMonitor.relabelings }}
+    relabelings:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.monitoring.serviceMonitor.metricRelabelings }}
+    metricRelabelings:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}

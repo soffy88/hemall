@@ -38,6 +38,23 @@ from handlers import (
 MQTT_BROKER = os.getenv("MQTT_BROKER", "emqx")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_KEEPALIVE = int(os.getenv("MQTT_KEEPALIVE", "60"))
+# Broker 凭据 (audit P1-8)。1883 已启用 password_based 认证，缺凭据就是
+# 匿名连接，会被 broker 直接拒掉 (CONNACK 4/5)。
+#
+# 为什么网桥必须有凭据：它收到任何 MQTT 消息都会用 HARDWARE_SECRET 签名
+# POST /ext/hardware/webhook。也就是说"能向 broker 发消息"直接等于
+# "能让主干接收一条合法签名的伪造硬件事件"。认证 + ACL (emqx/acl.conf)
+# 是这条链的第一道闸门。
+MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
+if not MQTT_USERNAME or not MQTT_PASSWORD:
+    # 启动即失败，不给"匿名降级"留后路：匿名能跑起来的网桥恰恰是最危险的
+    # 那种 —— 它看起来一切正常，硬件却已经可以被任意主机伪造。
+    raise SystemExit(
+        "MQTT_USERNAME/MQTT_PASSWORD 未设置。Broker 已启用认证 (audit P1-8)，"
+        "缺少凭据的网桥会被拒绝连接；请在 compose 中注入 "
+        "HEMALL_EMQX_EDGE_USERNAME / HEMALL_EMQX_EDGE_PASSWORD。"
+    )
 # 订阅两个信号：重力货架 pick + 闸口称重 req。
 MQTT_SUB_TOPICS = os.getenv("MQTT_SUB_TOPICS", "cn/v1/+/s/+/pick,cn/v1/+/g/+/req")
 HEMALL_API_URL = os.getenv(
@@ -257,13 +274,15 @@ class Bridge:
         )
         client.on_connect = self.on_connect
         client.on_message = self.on_message
+        # 认证必须在 connect 之前设置；account 对应 emqx/acl.conf 里的客户端标识
+        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
         client.connect_async(MQTT_BROKER, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
         client.loop_start()  # paho 网络线程；回调经 run_coroutine_threadsafe 进本循环
 
         dlq_task = asyncio.create_task(self._dlq_worker())
         logger.info(
-            "clearnode-iot-bridge up: broker=%s:%d hemall=%s topics=%s",
-            MQTT_BROKER, MQTT_PORT, HEMALL_API_URL, MQTT_SUB_TOPICS,
+            "clearnode-iot-bridge up: broker=%s:%d mqtt_user=%s hemall=%s topics=%s",
+            MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, HEMALL_API_URL, MQTT_SUB_TOPICS,
         )
         try:
             await asyncio.Event().wait()  # 常驻

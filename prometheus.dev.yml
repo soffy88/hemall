@@ -1,0 +1,31 @@
+# Prometheus 配置 - 开发环境 (audit P1-6)
+#
+# 与 prometheus.yml 的唯一实质差别：抓取目标。
+# dev compose 里应用服务名是 `app` (docker-compose.yml:6)，而生产 compose 里
+# 是 `api`。沿用生产的 `api:8000` 会让 dev 的 job 恒无数据 —— 告警表达式里
+# `job="hemall-backend"` 的指标不存在，规则既不触发也不报错，属于最难发现
+# 的静默失效。
+#
+# 防漂移门禁: pytest tests/test_prometheus_alerting.py
+#   （断言抓取目标的 host 必须是挂载该配置的 compose 中真实存在的服务）
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/prometheus.rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+      timeout: 10s
+
+scrape_configs:
+  # dev compose 的应用服务名为 app
+  - job_name: 'hemall-backend'
+    static_configs:
+      - targets: ['app:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s

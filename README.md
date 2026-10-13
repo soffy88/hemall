@@ -60,10 +60,15 @@ docker compose -f docker-compose.prod.yml up -d
   ```
   生产环境必须用 `HEMALL_WEBHOOK_SECRET` 覆盖默认值。
 - **限流防刷**: 全部零登录公开端点 (ext 自助操作 + 整个 `/store/*` 商城面) 按
-  IP + `X-Device-Id` 令牌桶限流 (默认 60 请求/分钟)，超限 429。
+  真实客户端 IP 令牌桶限流 (默认 60 请求/分钟)，超限 429。客户端若带
+  `X-Device-Id` 会**追加**一层更严的设备级配额 (默认 IP 配额的 1/4)：它只会
+  收紧、绝不会放宽 IP 配额，所以轮换该头无法绕过限流；共享 NAT 出口下多台设备
+  也不会被单台设备挤占干净。IP 由可信反代经 `X-Forwarded-For`/`X-Real-IP`
+  还原，故 compose/Helm 必须设置 `HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS`
+  (单层 Caddy/nginx = `1`)，否则键会退化成反代容器 IP 而全站共享一个桶。
 - **收款网关预留**: `ManualPaymentGateway` 已实装统一下单 (Prepay) 与退款
   (Refund) 的入参/出参契约，接入真实微信支付/Stripe 密钥时替换 provider 实现即可
-  (环境变量约定 `HEMALL_WECHAT_MCH_ID` / `HEMALL_WECHAT_API_V3_KEY` /
+  (环境变量约定 `HEMALL_WECHAT_PAY_MCHID` / `HEMALL_WECHAT_PAY_API_V3_KEY` /
   `HEMALL_STRIPE_SECRET_KEY`)。
 
 ## 🔧 环境配置

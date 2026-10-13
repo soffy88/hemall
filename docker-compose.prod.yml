@@ -6,8 +6,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
-      additional_contexts:
-        platform3o: ../platform/3O
     image: hemall/backend:v1.0.0-ghost-ignition
     # API is reachable through nginx only; do not publish the worker port on the host.
     environment:
@@ -17,6 +15,10 @@ services:
       - HEMALL_LOG_LEVEL=INFO
       - HEMALL_PG_DSN=postgresql://hemall:${POSTGRES_PASSWORD:?set a strong postgres password}@postgres:5432/hemall
       - HEMALL_REDIS_URL=redis://redis:6379/0
+      # 限流真实客户端 IP (audit P1-5): nginx 以 $proxy_add_x_forwarded_for
+      # 透传, 链长 = 前置可信反代层数 = 1。不设 (默认 0) 时限流键退化成
+      # nginx 容器 IP, 全站共享一个桶。
+      - HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS=1
       - HEMALL_ELASTICSEARCH_URL=https://elasticsearch:9200
       - HEMALL_ELASTICSEARCH_USERNAME=elastic
       - HEMALL_ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:?set a strong Elasticsearch password}
@@ -76,7 +78,7 @@ services:
 
   # PostgreSQL 数据库
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:f7d23353e1b15400d22ebe31189f4d314b87a4c129cc400c8c2d8d4ca127bf81
     environment:
       - POSTGRES_DB=hemall
       - POSTGRES_USER=hemall
@@ -95,7 +97,7 @@ services:
 
   # Redis 缓存
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -110,7 +112,7 @@ services:
 
   # Elasticsearch 搜索引擎
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0@sha256:ec72548cf833e58578d8ff40df44346a49480b2c88a4e73a91e1b85ec7ef0d44
     environment:
       - discovery.type=single-node
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
@@ -128,14 +130,27 @@ services:
       retries: 5
 
   # Nginx 反向代理 (生产环境推荐)
+  #
+  # audit P1-7: 原来挂 ./ssl (仓库里不存在) + 写死的证书路径与占位 server_name，
+  # 容器起来即 `[emerg] cannot open certificate` 反复重启。现在:
+  #   - 证书/私钥/域名全部从必填环境变量注入，入口脚本先校验再 `nginx -t`；
+  #   - 证书目录以 :ro 挂载，容器改不了宿主证书。
   nginx:
-    image: nginx:alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # 入口域名：必须与证书 CN/SAN 一致。缺配置直接启动失败，不给占位入口。
+      - HEMALL_API_SERVER_NAME=${HEMALL_API_SERVER_NAME:?set the public API hostname matching the TLS cert}
+      - HEMALL_SSL_CERT_PATH=${HEMALL_SSL_CERT_PATH:?set the fullchain cert path inside the mounted ./ssl dir}
+      - HEMALL_SSL_KEY_PATH=${HEMALL_SSL_KEY_PATH:?set the privkey path inside the mounted ./ssl dir}
+      - HEMALL_SSL_SOURCE_DIR=/etc/nginx/ssl
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-      - ./ssl:/etc/nginx/ssl
+      - ./nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./nginx/nginx-entrypoint.sh:/usr/local/bin/nginx-entrypoint.sh:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/nginx-entrypoint.sh"]
     depends_on:
       - api
     restart: unless-stopped
@@ -144,15 +159,39 @@ services:
 
   # Prometheus 监控
   prometheus:
-    image: prom/prometheus:v2.48.0
+    image: prom/prometheus:v2.48.0@sha256:b440bc0e8aa5bab44a782952c09516b6a50f9d7b2325c1ffafac7bc833298e2e
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      # audit P1-6: rule_files 是 glob，文件缺失时 Prometheus 不报错也不加载
+      # → 0 条告警。必须挂载。
+      - ./prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml
       - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     restart: unless-stopped
     networks:
       - hemall-network
+
+  # ── Alertmanager (告警收件人, audit P1-6) ────────────────────────────
+  # 此前全仓库无收件人，prometheus.rules.yml 的生死告警只停在 UI 页面。
+  # 入口脚本渲染 ${...} 占位符；任一缺失即拒绝启动（fail-closed），
+  # 避免"跑着但没人收"的静默失联。
+  alertmanager:
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+    environment:
+      # 收件地址 (企业微信 / 钉钉 / Slack / 飞书 incoming webhook 任选)。
+      # 镜像内无 envsubst，渲染由 entrypoint.sh 用 sed 完成。
+      - HEMALL_ALERT_WEBHOOK_URL=${HEMALL_ALERT_WEBHOOK_URL:?set an alert receiver webhook URL}
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/entrypoint.sh:/alertmanager/entrypoint.sh:ro
+      - alertmanager_data:/alertmanager
+    entrypoint: ["/bin/sh", "/alertmanager/entrypoint.sh"]
+    ports:
+      - "127.0.0.1:9093:9093"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
 
   # Grafana 可视化
   grafana:
@@ -172,7 +211,7 @@ services:
 
   # Jaeger 分布式追踪
   jaeger:
-    image: jaegertracing/all-in-one:1.52
+    image: jaegertracing/all-in-one:1.52@sha256:7885400a153ac908d8bfbf72c27e3389dbab1942a35dd0ce3228611dc48cbf9f
     environment:
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
     ports:
@@ -183,6 +222,37 @@ services:
     networks:
       - hemall-network
 
+# ── PostgreSQL 自动备份 (audit P2-4) ───────────────────────────────────
+#   每天凌晨 3 点执行 pg_dump，保留 30 天，可选上传到 S3 兼容存储
+#   恢复: docker compose -f docker-compose.prod.yml exec backup /backup/restore.sh latest
+  backup:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: hemall
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong postgres password}
+      POSTGRES_DB: hemall
+      BACKUP_DIR: /backups
+      BACKUP_SCHEDULE: "0 3 * * *"
+      BACKUP_RETENTION_DAYS: "30"
+      # 可选: 异地备份到 S3 兼容存储 (需在 .env 配置)
+      # S3_ENDPOINT: https://s3.example.com
+      # S3_BUCKET: hemall-backups
+      # S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      # S3_SECRET_KEY: ${S3_SECRET_KEY}
+      # S3_REGION: us-east-1
+    volumes:
+      - backup_data:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - data-network
+
 volumes:
   postgres_data:
   redis_data:
@@ -190,6 +260,8 @@ volumes:
   elasticsearch_certs:
   prometheus_data:
   grafana_data:
+  alertmanager_data:
+  backup_data:
 
 networks:
   hemall-network:

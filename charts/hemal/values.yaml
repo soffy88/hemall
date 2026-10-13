@@ -19,13 +19,20 @@ api:
   healthCheck: /health/ready
   livenessCheck: /health/live
   livenessThreshold: 60
+  # 与 Dockerfile.prod 里写死的 hemall uid/gid 是同一个契约。
+  # 换基础镜像或改 Dockerfile 的 useradd 时必须同步改这里，否则 pod
+  # 会因为 gunicorn 的 setuid EPERM 而 CrashLoopBackOff（audit P1-1）。
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
   # 生产环境额外配置
   env:
-    LOG_LEVEL: INFO
-    DATABASE_POOL_SIZE: 20
-    REDIS_CONNECTION_POOL_SIZE: 20
-    GUNICORN_WORKERS: 4
-    GUNICORN_TIMEOUT: 30
+    HEMALL_LOG_LEVEL: INFO
+    HEMALL_PG_POOL_MAX: 20
+    HEMALL_PG_POOL_MIN: 5
+    HEMALL_GUNICORN_WORKERS: 4
+    HEMALL_GUNICORN_TIMEOUT: 30
 
 ingress:
   enabled: true
@@ -80,13 +87,28 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80
 
 # 监控配置
+#
+# enabled 是 serviceMonitor / prometheusRule 的总开关；三者同时打开时才会
+# 渲染出资源。修复前这三个键在 templates/ 里都没有对应文件（audit P2-6）。
 monitoring:
   enabled: true
+  # ServiceMonitor selector 固定为 app=hemall-api，与 deployment.yaml 的 pod
+  # labels 绑定（由 tests/test_helm_render_contract.py 断言）。
   serviceMonitor:
     enabled: true
     interval: 30s
+    scrapeTimeout: 10s
+    # 可选：给 ServiceMonitor 追加标签（Helm release 侧的选择器用）
+    labels: {}
+  # PrometheusRule：规则内容复用仓库根目录 prometheus.rules.yml
+  # （chart 内副本 charts/hemal/files/prometheus.rules.yml，两者由测试保持一致）。
+  # 下面两个 selector 要和集群里 Prometheus 的 ruleSelector/groupSelector
+  # 对得上，否则规则渲染出来也不会被加载。
   prometheusRule:
     enabled: true
+  additionalLabels: {}
+  ruleSelectorMatchLabels: {}
+  groupSelectorMatchLabels: {}
 
 # 生产凭据必须来自外部 Secret 管理（External Secrets / Sealed Secrets / Vault）。
 # Secret 至少应提供 HEMALL_PG_DSN、HEMALL_REDIS_URL、HEMALL_ENVIRONMENT=production、
@@ -100,5 +122,45 @@ secrets:
 security:
   networkPolicies:
     enabled: true
+    # ingress-nginx 所在的 namespace 标签。集群的标签体系各不相同，
+    # 写死在模板里意味着换个集群就静默丢流量 —— 放到 values 里改。
+    ingressNamespaceSelector:
+      name: ingress-nginx
+    dnsNamespaceSelector:
+      name: kube-system
+    # 出站目的地。NetworkPolicy 的 egress 默认拒绝全部未列项，漏一条的
+    # 表现是"安静地连不上"，不报错、不崩（audit P2-5）。
+    #
+    #   namespaceSelector : 目标 namespace 的标签
+    #   sameNamespace     : true 则放行本 release 所在 ns 内的 pod
+    #   ports             : 端口列表
+    #   protocols         : {端口: 协议}，默认 TCP
+    egress:
+      postgresql:
+        namespaceSelector:
+          name: database
+        ports: [5432]
+      redis:
+        namespaceSelector:
+          name: cache
+        ports: [6379]
+      elasticsearch:
+        namespaceSelector:
+          name: logging
+        ports: [9200]
+      # Jaeger / OTLP collector。app/observability/tracing.py 默认连
+      # http://localhost:4317，缺这条规则时 tracing 只会打一行
+      # "tracing setup failed (non-fatal)" warning —— 监控静默缺失。
+      otlp:
+        namespaceSelector:
+          name: observability
+        ports: [4317, 4318]
+      # 同 ns 的服务（OTel collector sidecar、内部依赖、Prometheus 抓取端）
+      otlp-same-namespace:
+        sameNamespace: true
+        ports: [4317, 4318]
+      # 外部 HTTPS：支付网关 / AI provider / ES over TLS
+      https-egress:
+        ports: [443]
   podSecurityStandards:
     enabled: true

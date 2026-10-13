@@ -22,11 +22,21 @@ spec:
         version: {{ .Chart.AppVersion }}
     spec:
       # 安全上下文
+      #
+      # runAsUser/runAsGroup/fsGroup 必须等于镜像里 hemall 的 uid/gid。
+      # 该数字在 Dockerfile.prod 里用 `useradd -u 10001` / `groupadd -g 10001`
+      # 写死（不写死的话 `useradd -r` 会挑空闲系统号，基础镜像一变就漂移）。
+      # 两边对不上的后果不是"权限不足"而是直接崩：gunicorn master 读
+      # gunicorn.conf.py 的 user="hemall" 后对 worker 调 setgid/setuid，
+      # 非 root 下抛 EPERM → master 退出 → CrashLoopBackOff。
+      #
+      # 这里不覆盖容器 ENTRYPOINT：entrypoint.sh 会先按实际 uid 决定要不要
+      # 修数据卷属主（compose 以 root 跑时需要，K8s 非 root 跑时跳过）。
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 3000
-        fsGroup: 2000
+        runAsUser: {{ .Values.api.securityContext.runAsUser | default 10001 }}
+        runAsGroup: {{ .Values.api.securityContext.runAsGroup | default 10001 }}
+        fsGroup: {{ .Values.api.securityContext.fsGroup | default 10001 }}
       containers:
       - name: api
         image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
@@ -45,16 +55,30 @@ spec:
             memory: {{ .Values.api.resources.limits.memory }}
         # 环境变量配置
         env:
-        - name: LOG_LEVEL
-          value: {{ .Values.api.env.LOG_LEVEL | default "INFO" | quote }}
-        - name: DATABASE_POOL_SIZE
-          value: {{ .Values.api.env.DATABASE_POOL_SIZE | default "20" | quote }}
-        - name: REDIS_CONNECTION_POOL_SIZE
-          value: {{ .Values.api.env.REDIS_CONNECTION_POOL_SIZE | default "20" | quote }}
-        - name: GUNICORN_WORKERS
-          value: {{ .Values.api.env.GUNICORN_WORKERS | default "4" | quote }}
-        - name: GUNICORN_TIMEOUT
-          value: {{ .Values.api.env.GUNICORN_TIMEOUT | default "30" | quote }}
+        #
+        # 全部使用 HEMALL_ 前缀且必须是 app/config.py 里**真实存在**的
+        # Settings 字段。Settings 是 env_prefix="HEMALL_" + extra="ignore"：
+        # 无前缀、或字段名对不上的键会被静默丢弃，不报错也不告警 ——
+        # 运维在 values.yaml 里改半天，容器里根本没生效（audit P2-6）。
+        # （原来的 LOG_LEVEL / DATABASE_POOL_SIZE / REDIS_CONNECTION_POOL_SIZE
+        #   无一命中；REDIS_* 在 Settings 里压根没有对应字段，已随
+        #   无处落地的配置一并移除，而不是换个名字继续骗人。）
+        - name: HEMALL_LOG_LEVEL
+          value: {{ .Values.api.env.HEMALL_LOG_LEVEL | default "INFO" | quote }}
+        - name: HEMALL_PG_POOL_MAX
+          value: {{ .Values.api.env.HEMALL_PG_POOL_MAX | default "10" | quote }}
+        - name: HEMALL_PG_POOL_MIN
+          value: {{ .Values.api.env.HEMALL_PG_POOL_MIN | default "2" | quote }}
+        # 以下两个由 gunicorn.conf.py 自己读取，不经过 Settings
+        - name: HEMALL_GUNICORN_WORKERS
+          value: {{ .Values.api.env.HEMALL_GUNICORN_WORKERS | default "4" | quote }}
+        - name: HEMALL_GUNICORN_TIMEOUT
+          value: {{ .Values.api.env.HEMALL_GUNICORN_TIMEOUT | default "30" | quote }}
+        # 限流真实客户端 IP (audit P1-5)。Settings 只读 HEMALL_* 前缀, 且缺省为 0
+        # (=只认 ASGI 对端)。Ingress 是唯一入口且已在最后一跳写入单值
+        # X-Forwarded-For/X-Real-IP, 故可信跳数=1; 不设则全网共享一个限流桶。
+        - name: HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS
+          value: {{ .Values.api.env.HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS | default "1" | quote }}
         # 从 Secret 注入敏感配置
         envFrom:
         - secretRef:
@@ -83,11 +107,9 @@ spec:
           capabilities:
             drop:
             - ALL
-        # 启动命令
-        command: ["gunicorn"]
-        args: 
-        - "-c"
-        - "gunicorn.conf.py"
-        - "app.main:app"
+        # 不设 command：镜像 ENTRYPOINT (entrypoint.sh) 负责修数据卷属主后
+        # exec CMD。历史上这里写死 command: ["gunicorn"] + args，把
+        # ENTRYPOINT 整个覆盖掉了 —— compose 路径的属主修复在 K8s 上被跳过。
+        # 需要调参时只改 args（ENTRYPOINT 会被保留）。
       # 优雅终止
       terminationGracePeriodSeconds: 30

@@ -1,13 +1,16 @@
 # 生产环境 Dockerfile
 # 多阶段构建，非 root 运行
 #
-# 注意：3O 平台包 (obase/oprim/oskill/omodul/oservi) 位于构建上下文之外，
-# 通过 BuildKit additional build context "platform3o" 引入：
-#   docker build --build-context platform3o=../platform/3O -f Dockerfile.prod .
-# docker compose 中通过 build.additional_contexts 配置。
+# 注意：3O 平台包 (obase/oprim/oskill/omodul/oservi) **不需要** sibling 目录。
+# pyproject.toml [tool.uv.sources] 已把它们全部钉成固定 git rev，
+# `uv sync --frozen` 直接从 git 拉取并安装到 venv。
+# 历史上这里有 `--build-context platform3o=../platform/3O` + 10 行
+# `COPY --from=platform3o /<pkg> /platform/3O/<pkg>`，属于死拷贝
+# （相对路径 sources 早已不存在），却让"runner 上必须存在 ../platform/3O"
+# 成为构建硬依赖，CI 与新机器必断。审计 P2-1 已移除。
 
 # ── 构建阶段 ────────────────────────────────────────────────────────────
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 
 WORKDIR /build
 
@@ -18,6 +21,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
     apt-get update -o Acquire::ForceIPv4=true && \
     apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true \
     gcc \
+    git \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,13 +29,8 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
 # 注：ghcr.io/astral-sh/uv 在此服务器不可用，使用构建上下文中预置的 uv 二进制
 COPY deploy-tools/uv /bin/uv
 
-# 复制 3O 平台包 (来自 additional build context)
-# 目标位置 /platform/3O/<pkg> 使 pyproject.toml 中相对路径 sources 生效
-COPY --from=platform3o /obase /platform/3O/obase
-COPY --from=platform3o /oprim /platform/3O/oprim
-COPY --from=platform3o /oskill /platform/3O/oskill
-COPY --from=platform3o /omodul /platform/3O/omodul
-COPY --from=platform3o /oservi /platform/3O/oservi
+# 3O 平台包由 uv sync --frozen 依据 pyproject.toml [tool.uv.sources] 的
+# 固定 git rev 安装到 /opt/venv，无需本地拷贝（审计 P2-1）。
 
 # 复制项目元数据和锁文件，确保生产依赖与 CI 使用同一解析结果。
 COPY pyproject.toml uv.lock README.md ./
@@ -44,10 +43,21 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv sync --frozen --no-dev --extra observability --extra phase2
 
 # ── 生产阶段 ────────────────────────────────────────────────────────────
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 # 创建非 root 用户
-RUN groupadd -r hemall && useradd -r -g hemall hemall
+#
+# uid/gid 必须**写死**。`useradd -r` 不带 -u 时会挑一个空闲的系统号
+# (Debian: 100..999)，具体取到几号取决于基础镜像里已存在的用户 ——
+# 换个 python:3.12-slim 的 digest 就可能变。Helm 侧的
+# securityContext.runAsUser/runAsGroup 是硬编码数字，两边一旦漂移：
+#   pod 以 uid 1000 启动 → gunicorn master 读 conf 里 user="hemall"
+#   → 对 worker 调 setgid/setuid → 非 root 下抛 EPERM → CrashLoopBackOff。
+# 固定为 10001（远高于 Debian 系统用户区间 100..999，不会和包管理器分配冲突）。
+# 刻意不用 ARG 覆盖：charts/hemal 的 securityContext 是硬编码数字，两边
+# 一旦漂移就是 CrashLoopBackOff（audit P1-1）。改这里必须同时改那里。
+RUN groupadd -g 10001 hemall && \
+    useradd -u 10001 -g 10001 -m -d /home/hemall -s /usr/sbin/nologin hemall
 
 # 安装运行时依赖
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
@@ -57,15 +67,8 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 从构建阶段复制虚拟环境
+# 从构建阶段复制虚拟环境 (3O 平台包已在 venv 内，源码来自 git rev)
 COPY --from=builder /opt/venv /opt/venv
-
-# 复制 3O 平台包（venv 中以 editable 模式安装，运行时指向此路径）
-COPY --from=platform3o /obase /platform/3O/obase
-COPY --from=platform3o /oprim /platform/3O/oprim
-COPY --from=platform3o /oskill /platform/3O/oskill
-COPY --from=platform3o /omodul /platform/3O/omodul
-COPY --from=platform3o /oservi /platform/3O/oservi
 
 # 设置环境变量
 ENV PATH="/opt/venv/bin:$PATH"

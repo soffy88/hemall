@@ -9,8 +9,16 @@ global:
 rule_files:
   - /etc/prometheus/prometheus.rules.yml
 
+# audit P1-6: 把告警交给 Alertmanager。此前全仓库没有收件人，告警只停在
+# Prometheus UI，等于没有告警。收件地址见 alertmanager/alertmanager.yml。
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+      timeout: 10s
+
 scrape_configs:
-  # Hemall 应用指标
+  # Hemall 应用指标 (compose 中服务名为 api)
   - job_name: 'hemall-backend'
     static_configs:
       - targets: ['api:8000']
