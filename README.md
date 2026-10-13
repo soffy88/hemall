@@ -68,7 +68,7 @@ docker compose -f docker-compose.prod.yml up -d
   (单层 Caddy/nginx = `1`)，否则键会退化成反代容器 IP 而全站共享一个桶。
 - **收款网关预留**: `ManualPaymentGateway` 已实装统一下单 (Prepay) 与退款
   (Refund) 的入参/出参契约，接入真实微信支付/Stripe 密钥时替换 provider 实现即可
-  (环境变量约定 `HEMALL_WECHAT_MCH_ID` / `HEMALL_WECHAT_API_V3_KEY` /
+  (环境变量约定 `HEMALL_WECHAT_PAY_MCHID` / `HEMALL_WECHAT_PAY_API_V3_KEY` /
   `HEMALL_STRIPE_SECRET_KEY`)。
 
 ## 🔧 环境配置

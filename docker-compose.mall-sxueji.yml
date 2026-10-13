@@ -62,7 +62,7 @@ services:
       # Observability
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       OTEL_TRACES_EXPORTER: otlp
-      LOG_LEVEL: INFO
+      HEMALL_LOG_LEVEL: INFO
     volumes:
       - hemall_output:/app/var/omodul_output
       - hemall_logs:/app/logs
@@ -272,8 +272,6 @@ volumes:
 # ── 网络 ────────────────────────────────────────────────────────────
 networks:
   hemall-backend:
-    driver: bridge
-  hemall-frontend:
     driver: bridge
   helios-net:
     external: true  # 共享网络：aegis-cloudflared 所在网络

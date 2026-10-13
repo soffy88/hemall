@@ -106,18 +106,21 @@ prepare_directories() {
 deploy() {
     log_info "开始部署 Hemall to mall.sxueji.com..."
     
+    # 镜像 tag 与 compose 文件保持一致 (audit P3-4)
+    local IMAGE_TAG="0.3.0"
+    
     # Check for image configuration
     if docker build -f Dockerfile.prod --help &> /dev/null; then
-        log_info "构建 Docker 镜像..."
+        log_info "构建 Docker 镜像 (tag: ${IMAGE_TAG})..."
         
         read -p "是否本地构建镜像？(y/n, 默认: n): " BUILD_LOCAL
         BUILD_LOCAL=${BUILD_LOCAL:-n}
         
         if [[ "$BUILD_LOCAL" =~ ^[Yy]$ ]]; then
-            docker build -f Dockerfile.prod -t registry.sxueji.com/hemall/backend:latest .
+            docker build -f Dockerfile.prod -t registry.sxueji.com/hemall/backend:${IMAGE_TAG} .
             log "✓ 镜像构建完成"
         else
-            log_info "跳过本地构建，请确保镜像已推送到 registry.sxueji.com/hemall/backend:latest"
+            log_info "跳过本地构建，请确保镜像已推送到 registry.sxueji.com/hemall/backend:${IMAGE_TAG}"
         fi
     fi
     
@@ -158,8 +161,8 @@ deploy() {
     log ""
     log_info "访问地址:"
     log "  🌐 API: https://mall.sxueji.com"
-    log "  📊 Grafana: http://localhost:3000 (如需外部访问)"
-    log "  🔍 Jaeger: http://localhost:16686 (如需外部访问)"
+    log "  📊 Grafana: 仅 Docker 网络内访问 (需 SSH 隧道: ssh -L 3000:grafana:3000 <host>)"
+    log "  🔍 Jaeger: 仅 Docker 网络内访问 (需 SSH 隧道: ssh -L 16686:jaeger:16686 <host>)"
     log ""
     log_info "查看日志:"
     log "  docker compose --env-file .env.mall-sxueji -f docker-compose.mall-sxueji.yml logs -f api"
