@@ -18,20 +18,17 @@ function SuppliersTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallSuppliers>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallSuppliers());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallSuppliers()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -118,7 +115,7 @@ export default function SupplyChainPage() {
             { key: 'supplier_id', label: 'supplier_id (可选, 供应商治理)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallCreateInventoryBatch(v as any)}
+          onSubmit={(v) => api.hemallCreateInventoryBatch(v as Parameters<typeof api.hemallCreateInventoryBatch>[0])}
           onResult={(r) => merge({ batch_id: r.batch_id, variant_id: r.variant_id })}
         />
         <ActionCard
@@ -131,7 +128,7 @@ export default function SupplyChainPage() {
             { key: 'prepaid_amount', label: 'prepaid_amount (分)', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallCreateCrowdIntent(v as any)}
+          onSubmit={(v) => api.hemallCreateCrowdIntent(v as Parameters<typeof api.hemallCreateCrowdIntent>[0])}
         />
         <ActionCard
           title="过期销毁 mark_batch_for_disposal"
@@ -142,7 +139,7 @@ export default function SupplyChainPage() {
             { key: 'reason', label: 'reason (默认 expired)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallMarkBatchForDisposal(v as any)}
+          onSubmit={(v) => api.hemallMarkBatchForDisposal(v as Parameters<typeof api.hemallMarkBatchForDisposal>[0])}
         />
         <ActionCard
           title="供应商结款 batch_settlement"
@@ -153,7 +150,7 @@ export default function SupplyChainPage() {
             { key: 'supplier_account', label: 'supplier_account' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallBatchSettlement(v as any)}
+          onSubmit={(v) => api.hemallBatchSettlement(v as Parameters<typeof api.hemallBatchSettlement>[0])}
         />
         <ActionCard
           title="顶棚 CV 自动入库 execute_ambient_intake_workflow"
@@ -166,7 +163,7 @@ export default function SupplyChainPage() {
             },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallExecuteAmbientIntake(v as any)}
+          onSubmit={(v) => api.hemallExecuteAmbientIntake(v as Parameters<typeof api.hemallExecuteAmbientIntake>[0])}
         />
       </OpsSection>
 
@@ -196,9 +193,9 @@ export default function SupplyChainPage() {
             },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallClaimOrigin(v as any)}
+          onSubmit={(v) => api.hemallClaimOrigin(v as Parameters<typeof api.hemallClaimOrigin>[0])}
           onResult={(r) => {
-            merge({ supplier_id: (r as any).supplier_id });
+            merge({ supplier_id: r.supplier_id });
             setListRefreshKey((k) => k + 1);
           }}
         />
@@ -214,7 +211,7 @@ export default function SupplyChainPage() {
             { key: 'reason', label: 'reason' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallExecuteSlashing(v as any)}
+          onSubmit={(v) => api.hemallExecuteSlashing(v as Parameters<typeof api.hemallExecuteSlashing>[0])}
           onResult={() => setListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -227,7 +224,7 @@ export default function SupplyChainPage() {
             { key: 'batch_cost_price', label: 'batch_cost_price (实际写回的整批成本，分)', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallSubmitSupplierReverseAuction(v as any)}
+          onSubmit={(v) => api.hemallSubmitSupplierReverseAuction(v as Parameters<typeof api.hemallSubmitSupplierReverseAuction>[0])}
         />
       </OpsSection>
     </div>

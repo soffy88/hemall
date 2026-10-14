@@ -2,8 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api-client';
-import { setAuth } from '@/lib/auth-store';
+import { login } from '@/lib/auth-store';
+import { errMessage } from '@/lib/errors';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,11 +17,10 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      const res = await api.login(email, password);
-      setAuth(res.access_token, { id: res.user_id, email: res.email });
+      await login(email, password);
       router.push('/admin');
-    } catch (err: any) {
-      setError(err.message || '登录失败');
+    } catch (err) {
+      setError(errMessage(err) || '登录失败');
     } finally {
       setLoading(false);
     }

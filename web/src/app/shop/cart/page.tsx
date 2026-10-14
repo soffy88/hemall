@@ -8,6 +8,7 @@ import { formatMoney } from '@/lib/format';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { Cart } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 const SHIPPING_METHODS = [
   { name: '标准配送', price_cents: 0 },
@@ -26,20 +27,20 @@ export default function CartPage() {
   const [giftCardCode, setGiftCardCode] = useState('');
   const [applying, setApplying] = useState(false);
 
-  async function loadCart() {
+  function loadCart() {
     const cartId = sessionStorage.getItem('hemall_cart_id');
-    if (!cartId) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const data = await api.getCart(cartId);
-      setCart(data);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+    const pending: Promise<void> = cartId
+      ? api.getCart(cartId).then((data) => {
+          setCart(data);
+        })
+      : Promise.resolve();
+    pending
+      .catch((e) => {
+        setError(errMessage(e));
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   useEffect(() => { loadCart(); }, []);
@@ -53,8 +54,8 @@ export default function CartPage() {
         await api.updateLineItem(cart.id, lineItemId, newQty);
       }
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -63,8 +64,8 @@ export default function CartPage() {
     try {
       await api.deleteLineItem(cart.id, lineItemId);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -76,8 +77,8 @@ export default function CartPage() {
       await api.storeApplyDiscount(cart.id, discountCode.trim());
       setDiscountCode('');
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     } finally {
       setApplying(false);
     }
@@ -88,8 +89,8 @@ export default function CartPage() {
     try {
       await api.storeRemoveDiscount(cart.id, discountId);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -101,8 +102,8 @@ export default function CartPage() {
       await api.storeApplyGiftCard(cart.id, giftCardCode.trim());
       setGiftCardCode('');
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     } finally {
       setApplying(false);
     }
@@ -113,8 +114,8 @@ export default function CartPage() {
     try {
       await api.storeRemoveGiftCard(cart.id, giftCardId);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -123,8 +124,8 @@ export default function CartPage() {
     try {
       await api.storeAddShippingMethod(cart.id, methodName, priceCents);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 

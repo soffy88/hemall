@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { Order } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 export default function LookupPage() {
   const [token, setToken] = useState('');
@@ -20,8 +21,8 @@ export default function LookupPage() {
     try {
       const data = await api.lookupOrder(token.trim());
       setOrder(data);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }

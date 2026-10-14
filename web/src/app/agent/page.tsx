@@ -8,46 +8,34 @@
  *   - 🎥 视频传货: 手机实拍视频/图片上传 → 自动建商品+库存 (真实文件即商品图)
  *   - 🧰 工具面板: 全部 omodul 工具清单 (Hermes/Cindy 接管的同款协议)
  *
- * 鉴权: 需要管理员 JWT (hemall_auth), 未登录跳转 /login。
+ * 鉴权: 需要管理员会话 (HttpOnly cookie)，未登录跳转 /login。
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth } from '@/lib/auth-store';
+import { initAuth, isAuthenticated } from '@/lib/auth-store';
 import { api } from '@/lib/api-client';
-
-interface ToolInfo {
-  tool: string;
-  domain: string;
-  name: string;
-  path: string;
-  require_auth: boolean;
-  parameters: Record<string, any>;
-}
-
-interface ExecResult {
-  status?: string;
-  tool?: string;
-  args?: Record<string, any>;
-  matched_keyword?: string;
-  result?: any;
-  hint?: string;
-  error?: string;
-  input?: string;
-}
+import { errMessage } from '@/lib/errors';
+import type { AgentCommandResult, AgentTool } from '@/types/api';
 
 export default function AgentConsolePage() {
   const router = useRouter();
-  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [tools, setTools] = useState<AgentTool[]>([]);
   const [cmd, setCmd] = useState('');
   const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<ExecResult[]>([]);
+  const [log, setLog] = useState<AgentCommandResult[]>([]);
   const [uploading, setUploading] = useState(false);
   const [mediaUrl, setMediaUrl] = useState('');
 
-  // 鉴权守卫
+  // 鉴权守卫：cookie 会话下客户端读不到 token，等 initAuth 拉完 /auth/me 再判断。
   useEffect(() => {
-    if (!getAuth()?.token) router.replace('/login');
+    let alive = true;
+    void initAuth().then(() => {
+      if (alive && !isAuthenticated()) router.replace('/login');
+    });
+    return () => {
+      alive = false;
+    };
   }, [router]);
 
   // 拉取工具清单
@@ -56,14 +44,14 @@ export default function AgentConsolePage() {
       try {
         const res = await api.agentListTools();
         setTools(res.tools ?? []);
-      } catch (e: any) {
-        setLog((l) => [...l, { error: `工具清单加载失败: ${e.message}` }]);
+      } catch (e) {
+        setLog((l) => [...l, { error: `工具清单加载失败: ${errMessage(e)}` }]);
       }
     })();
   }, []);
 
   const toolGroups = useMemo(() => {
-    const map = new Map<string, ToolInfo[]>();
+    const map = new Map<string, AgentTool[]>();
     for (const t of tools) {
       if (!map.has(t.domain)) map.set(t.domain, []);
       map.get(t.domain)!.push(t);
@@ -78,8 +66,8 @@ export default function AgentConsolePage() {
     try {
       const res = await api.agentCommand(text);
       setLog((l) => [{ ...res, input: text }, ...l]);
-    } catch (e: any) {
-      setLog((l) => [{ input: text, error: e.message }, ...l]);
+    } catch (e) {
+      setLog((l) => [{ input: text, error: errMessage(e) }, ...l]);
     } finally {
       setBusy(false);
       setCmd('');
@@ -94,8 +82,8 @@ export default function AgentConsolePage() {
       const res = await api.agentIngest(file);
       setLog((l) => [{ ...res, input: `📹 传货: ${file.name}` }, ...l]);
       if (res.media_url) setMediaUrl(res.media_url);
-    } catch (err: any) {
-      setLog((l) => [{ input: `📹 传货: ${file.name}`, error: err.message }, ...l]);
+    } catch (err) {
+      setLog((l) => [{ input: `📹 传货: ${file.name}`, error: errMessage(err) }, ...l]);
     } finally {
       setUploading(false);
       e.target.value = '';

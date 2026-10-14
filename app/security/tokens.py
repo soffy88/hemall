@@ -47,6 +47,12 @@ DERIVED_KEY_TOKEN_TYPES: frozenset[str] = frozenset(
 #: 允许出现在 /ws 实时推送通道上的主体类型。
 WS_TOKEN_TYPES: frozenset[str] = frozenset({TOKEN_TYPE_STAFF, TOKEN_TYPE_CUSTOMER})
 
+#: 会话 Cookie 名 (F-01/F-03)。access/refresh token 以 HttpOnly Cookie 承载，
+#: CSRF token 为非 HttpOnly 的双重提交 cookie (前端读后放 X-CSRF-Token 头)。
+ACCESS_TOKEN_COOKIE = "hemall_access_token"
+REFRESH_TOKEN_COOKIE = "hemall_refresh_token"
+CSRF_TOKEN_COOKIE = "hemall_csrf_token"
+
 _HKDF_SALT = b"hemall/jwt/v1/salt"
 _HKDF_INFO_PREFIX = b"hemall/jwt/v1/purpose/"
 

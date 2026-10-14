@@ -14,20 +14,17 @@ function AffiliateContractsTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallAffiliateContracts>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallAffiliateContracts());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallAffiliateContracts()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -78,20 +75,17 @@ function ConversionLogsTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallConversionLogs>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallConversionLogs());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallConversionLogs()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -181,8 +175,8 @@ export default function GrowthPage() {
             { key: 'lon', label: 'lon', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallProcessCloudFranchiseClaim(v as any)}
-          onResult={(r) => merge(r as any)}
+          onSubmit={(v) => api.hemallProcessCloudFranchiseClaim(v as Parameters<typeof api.hemallProcessCloudFranchiseClaim>[0])}
+          onResult={(r) => merge(r)}
         />
         <ActionCard
           title="领主册封 bind_digital_lord_contract_workflow"
@@ -193,7 +187,7 @@ export default function GrowthPage() {
             { key: 'location_id', label: 'location_id' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallBindDigitalLordContract(v as any)}
+          onSubmit={(v) => api.hemallBindDigitalLordContract(v as Parameters<typeof api.hemallBindDigitalLordContract>[0])}
           onResult={() => setListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -205,7 +199,7 @@ export default function GrowthPage() {
             { key: 'douyin_uid', label: 'douyin_uid (可选，抖音引荐人)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallRecordDouyinConversion(v as any)}
+          onSubmit={(v) => api.hemallRecordDouyinConversion(v as Parameters<typeof api.hemallRecordDouyinConversion>[0])}
           onResult={() => setListRefreshKey((k) => k + 1)}
         />
       </OpsSection>

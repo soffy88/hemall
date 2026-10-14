@@ -16,6 +16,7 @@ import { api } from '@/lib/api-client';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { GroceryCategory, StorefrontProduct } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 // 分类图标映射 (后端只存 name/slug，图标前端映射)
 const CATEGORY_ICONS: Record<string, string> = {
@@ -30,16 +31,17 @@ export default function ShopPage() {
   const [activeCat, setActiveCat] = useState<string>('all');
   const [search, setSearch] = useState('');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.storeProducts({ limit: 200 });
-      setProducts(data);
-    } catch (e: any) {
-      showToast(e.message || '加载失败');
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.storeProducts({ limit: 200 })
+      .then((data) => {
+        setProducts(data);
+      })
+      .catch((e) => {
+        showToast(errMessage(e) || '加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   useEffect(() => { load(); }, []);

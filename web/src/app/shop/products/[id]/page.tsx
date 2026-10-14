@@ -6,10 +6,11 @@ import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { getSelectedRegion } from '@/lib/region-store';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { StorefrontProduct, ProductVariant, InventoryBatch } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 export default function ProductDetailPage() {
   const params = useParams();
@@ -40,7 +41,10 @@ export default function ProductDetailPage() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
 
-    setSimilar([]);
+    // 切换商品时先清空旧的相似推荐（微任务延后，effect 内不允许同步 setState）
+    Promise.resolve().then(() => {
+      setSimilar([]);
+    });
     api.storeRecommendSimilar(productId, 6)
       .then(async (res) => {
         const items = await Promise.all(
@@ -78,6 +82,7 @@ export default function ProductDetailPage() {
         cartId = cart.cart_id;
         sessionStorage.setItem('hemall_cart_id', cartId);
 
+        await initCustomerAuth();
         const customerAuth = getCustomerAuth();
         if (customerAuth) {
           await api.setCartCustomer(cartId, customerAuth.customerId).catch(() => {});
@@ -85,8 +90,8 @@ export default function ProductDetailPage() {
       }
       await api.addLineItem(cartId, selectedBatch.id, quantity);
       router.push('/shop/cart');
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     } finally {
       setAdding(false);
     }

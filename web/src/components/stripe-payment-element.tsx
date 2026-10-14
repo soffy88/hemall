@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { errMessage } from '@/lib/errors';
 
 type StripePaymentElement = {
   mount: (element: HTMLElement) => void;
@@ -71,10 +72,15 @@ export function StripePaymentElement({ clientSecret, onConfirmed }: StripePaymen
   useEffect(() => {
     let cancelled = false;
     let paymentElement: StripePaymentElement | undefined;
-    setLoading(true);
-    setError('');
-    setElements(null);
-    setStripe(null);
+    // 重置四件套放微任务：effect 内不允许同步 setState；已排进队的
+    // loadStripe 回调都在其后运行，顺序与原同步写法一致
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setLoading(true);
+      setError('');
+      setElements(null);
+      setStripe(null);
+    });
 
     loadStripe()
       .then((client) => {
@@ -114,8 +120,8 @@ export function StripePaymentElement({ clientSecret, onConfirmed }: StripePaymen
       const result = await stripe.confirmPayment({ elements, redirect: 'if_required' });
       if (result.error) throw new Error(result.error.message || 'Stripe 支付未完成');
       await onConfirmed();
-    } catch (reason: any) {
-      setError(reason?.message || 'Stripe 支付未完成');
+    } catch (reason) {
+      setError(errMessage(reason) || 'Stripe 支付未完成');
     } finally {
       setBusy(false);
     }

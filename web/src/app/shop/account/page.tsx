@@ -4,9 +4,10 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
-import { getCustomerAuth, clearCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth, customerLogout } from '@/lib/customer-auth-store';
 import { useToast } from '@/components/Toast';
 import type { Customer, CustomerAddress, Order, RmaClaim, SubmitClaimResult } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function claimDecisionCopy(decision: RmaClaim['decision']): { label: string; className: string; detail: string } {
   if (decision === 'instant_refund') {
@@ -50,6 +51,8 @@ export default function AccountPage() {
   const [addrPostal, setAddrPostal] = useState('');
 
   async function load() {
+    // cookie 会话下没有可读 token：先向后端拉一次会话，未登录再跳转。
+    await initCustomerAuth();
     if (!getCustomerAuth()) {
       router.push('/shop/login');
       return;
@@ -68,8 +71,8 @@ export default function AccountPage() {
       setAddresses(a);
       setOrders(o);
       setClaims(c);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -77,8 +80,8 @@ export default function AccountPage() {
 
   useEffect(() => { load(); }, []);
 
-  function handleLogout() {
-    clearCustomerAuth();
+  async function handleLogout() {
+    await customerLogout();
     router.push('/shop');
   }
 
@@ -88,8 +91,8 @@ export default function AccountPage() {
       await api.customerUpdateMe({ name, phone });
       setEditingProfile(false);
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -107,8 +110,8 @@ export default function AccountPage() {
       setAddrRecipient(''); setAddrPhone(''); setAddrLine1(''); setAddrCity(''); setAddrRegion(''); setAddrPostal('');
       setShowAddrForm(false);
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -116,8 +119,8 @@ export default function AccountPage() {
     try {
       await api.customerUpdateAddress(addressId, { is_default: true });
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -126,8 +129,8 @@ export default function AccountPage() {
     try {
       await api.customerDeleteAddress(addressId);
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -149,8 +152,8 @@ export default function AccountPage() {
       setClaimingLineItemId(null);
       const c = await api.customerMyClaims();
       setClaims(c);
-    } catch (e: any) {
-      setClaimResults((prev) => ({ ...prev, [lineItemId]: { error: e.message } }));
+    } catch (e) {
+      setClaimResults((prev) => ({ ...prev, [lineItemId]: { error: errMessage(e) } }));
     } finally {
       setSubmittingClaim(false);
     }

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { Cart, Customer, Product, Region, Address } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 const emptyAddress: Address = {
   recipient_name: '',
@@ -58,8 +59,8 @@ export default function ManualOrderPage() {
     try {
       const data = await api.getCart(id);
       setCart(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -68,8 +69,8 @@ export default function ManualOrderPage() {
     try {
       const res = await api.createCart(regionCode, currency);
       await refreshCart(res.cart_id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -81,8 +82,8 @@ export default function ManualOrderPage() {
     try {
       await api.setCartCustomer(cart.id, customerId);
       await refreshCart(cart.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -94,8 +95,8 @@ export default function ManualOrderPage() {
     try {
       await api.addLineItem(cart.id, batchId, qty);
       await refreshCart(cart.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -108,8 +109,8 @@ export default function ManualOrderPage() {
       await api.setCartShippingAddress(cart.id, shipping);
       await api.setCartBillingAddress(cart.id, sameAddress ? shipping : billing);
       await refreshCart(cart.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -120,11 +121,11 @@ export default function ManualOrderPage() {
     setBusy(true);
     try {
       const res = await api.applyDiscountToCart({ cart_id: cart.id, code: discountCode.trim() });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '应用失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '应用失败');
       setDiscountCode('');
       await refreshCart(cart.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -135,11 +136,11 @@ export default function ManualOrderPage() {
     setBusy(true);
     try {
       const res = await api.applyGiftCardToCart({ cart_id: cart.id, code: giftCardCode.trim() });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '应用失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '应用失败');
       setGiftCardCode('');
       await refreshCart(cart.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -154,10 +155,10 @@ export default function ManualOrderPage() {
         method_name: shippingMethod,
         price_cents: shippingPrice,
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '设置失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '设置失败');
       await refreshCart(cart.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }
@@ -168,24 +169,24 @@ export default function ManualOrderPage() {
     setBusy(true);
     try {
       const sessions = await api.createPaymentSessions({ cart_id: cart.id, provider_names: ['manual'] });
-      if (sessions.status === 'failed') throw new Error((sessions.error as any)?.message || '建支付会话失败');
+      if (sessions.status === 'failed') throw new Error(sessions.error?.message || '建支付会话失败');
 
       const selected = await api.setPaymentSession({ cart_id: cart.id, provider_name: 'manual' });
-      if (selected.status === 'failed') throw new Error((selected.error as any)?.message || '选定支付会话失败');
+      if (selected.status === 'failed') throw new Error(selected.error?.message || '选定支付会话失败');
 
       const authorized = await api.authorizePaymentForCart({ cart_id: cart.id });
-      if (authorized.status === 'failed') throw new Error((authorized.error as any)?.message || '授权支付失败');
+      if (authorized.status === 'failed') throw new Error(authorized.error?.message || '授权支付失败');
 
       const completed = await api.completeCheckoutRaw({ cart_id: cart.id });
-      if (completed.status === 'failed') throw new Error((completed.error as any)?.message || '完成结账失败');
+      if (completed.status === 'failed') throw new Error(completed.error?.message || '完成结账失败');
 
       setOrderResult({
         order_id: String(completed.order_id),
         grand_total_cents: Number(completed.grand_total_cents),
         currency: cart.currency,
       });
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setBusy(false);
     }

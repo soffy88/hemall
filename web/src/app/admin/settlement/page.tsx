@@ -31,7 +31,7 @@ export default function SettlementPage() {
             { key: 'payout_account', label: 'payout_account' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallDispatchLaborPayment(v as any)}
+          onSubmit={(v) => api.hemallDispatchLaborPayment(v as Parameters<typeof api.hemallDispatchLaborPayment>[0])}
         />
         <ActionCard
           title="宿主分润 dispatch_host_dividend"
@@ -44,7 +44,7 @@ export default function SettlementPage() {
             { key: 'tote_count', label: 'tote_count', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallDispatchHostDividend(v as any)}
+          onSubmit={(v) => api.hemallDispatchHostDividend(v as Parameters<typeof api.hemallDispatchHostDividend>[0])}
         />
       </OpsSection>
     </div>
