@@ -12,7 +12,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { useOptimisticCart, formatCountdown, haptic } from '@/lib/cart-store';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import type { FeedItem, NearbyFeedResponse } from '@/types/api';
 import MarketMakerHeroCard from './MarketMakerHeroCard';
 import StandardGridItem from './StandardGridItem';
@@ -44,6 +44,7 @@ export default function FeedView() {
           /* 定位被拒 → 默认坐标 */
         }
       }
+      await initCustomerAuth();
       const cust = getCustomerAuth();
       const data = await api.getNearbyFeed(lat, lon, { limit: 40, customerId: cust?.customerId });
       setFeed(data);

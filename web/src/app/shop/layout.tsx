@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { getSelectedRegion, setSelectedRegion } from '@/lib/region-store';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth, subscribeCustomerAuth } from '@/lib/customer-auth-store';
 import { ToastProvider, useToast } from '@/components/Toast';
 import type { Region } from '@/types/api';
 
@@ -17,7 +17,17 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
   const [customerEmail, setCustomerEmail] = useState<string | null>(null);
 
   useEffect(() => {
-    setCustomerEmail(getCustomerAuth()?.email || null);
+    let alive = true;
+    const sync = () => {
+      if (alive) setCustomerEmail(getCustomerAuth()?.email || null);
+    };
+    // cookie 会话：等会话拉取完成再读，避免首帧把已登录用户当成未登录；之后订阅变更。
+    void initCustomerAuth().then(sync);
+    const unsubscribe = subscribeCustomerAuth(sync);
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
   }, [pathname]);
 
   useEffect(() => {

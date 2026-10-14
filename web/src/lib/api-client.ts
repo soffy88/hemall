@@ -43,33 +43,34 @@ import type {
 } from '@/types/api';
 
 /**
- * 后端地址解析：NEXT_PUBLIC_API_URL 有值就用它（生产/固定域名场景）；否则在浏览器里
- * 用"当前访问前端用的 host + 8030 端口"推导——同一台机器可能同时挂在局域网 IP 和
- * Tailscale IP 下，写死单个 IP 只对那一种访问路径有效，动态推导才能两边都通。
+ * 同源 BFF 反代前缀（F-01/F-03/F-05）：浏览器只调 /api/* 同源路径，由 Next 路由
+ * 处理器透明转发到后端（cookie 自动附带、CSRF 头透传）。不再使用
+ * NEXT_PUBLIC_API_URL / window.location 推导直连地址——生产构建缺
+ * NEXT_PUBLIC_API_URL 时 next.config.ts 直接构建失败，杜绝"静默指向错误后端"。
+ *
+ * 会话令牌只存 HttpOnly cookie，客户端 JS 不可读；这里也不接触任何 token。
  */
-function resolveApiBase(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== 'undefined') {
-    return `${window.location.protocol}//${window.location.hostname}:8030`;
-  }
-  return 'http://localhost:8030';
+const BASE = '/api';
+
+/** CSRF 双重提交 token 的 cookie 名（后端 /auth/login、/auth/refresh 签发，非 HttpOnly）。 */
+const CSRF_COOKIE_NAME = 'hemall_csrf_token';
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
+
+function csrfTokenFromCookie(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${CSRF_COOKIE_NAME}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
-const BASE = resolveApiBase();
-
-function token(): string | null {
-  if (typeof window === 'undefined') return null;
+/** 状态改变请求前确保拿到 CSRF token（缺失时先取 /api/auth/csrf-token）。 */
+async function ensureCsrfToken(): Promise<string | null> {
+  const existing = csrfTokenFromCookie();
+  if (existing) return existing;
   try {
-    return JSON.parse(localStorage.getItem('hemall_auth') || 'null')?.token;
-  } catch {
-    return null;
-  }
-}
-
-function customerToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return JSON.parse(localStorage.getItem('hemall_customer_auth') || 'null')?.token;
+    const res = await fetch(`${BASE}/auth/csrf-token`, { credentials: 'include' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.csrf_token ?? null;
   } catch {
     return null;
   }
@@ -85,6 +86,56 @@ function errorMessage(body: any, status: number): string {
   return `HTTP ${status}`;
 }
 
+/** 业务失败识别（F-04）：HTTP 200 但响应体是 OmodulResult 失败态时必须抛错。 */
+function assertNotBusinessFailure(data: any): void {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+  if (data.ok === false) {
+    throw new Error(data.error?.message || data.error?.type || '业务处理失败');
+  }
+  if (data.status === 'failed' || data.status === 'cancelled') {
+    throw new Error(data.error?.message || data.error?.type || `业务处理${data.status === 'failed' ? '失败' : '已取消'}`);
+  }
+  if (data.error && typeof data.error === 'object' && data.error.message) {
+    throw new Error(data.error.message);
+  }
+}
+
+/** 401 自动刷新一次；刷新失败/再 401 → 抛错并广播未登录事件（store 层跳登录页）。 */
+async function fetchWithSession(
+  path: string,
+  opts: RequestInit,
+  auth: boolean | 'customer',
+): Promise<Response> {
+  const res = await fetch(`${BASE}${path}`, opts);
+  if (res.status !== 401 || auth === false) return res;
+
+  let refreshed = false;
+  try {
+    const refreshRes = await fetch(`${BASE}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    refreshed = refreshRes.ok;
+  } catch {
+    refreshed = false;
+  }
+
+  if (!refreshed) {
+    window.dispatchEvent(
+      new CustomEvent('hemall:unauthorized', { detail: { kind: auth === 'customer' ? 'customer' : 'staff' } }),
+    );
+    throw new Error('登录已过期，请重新登录');
+  }
+
+  const retry = await fetch(`${BASE}${path}`, opts);
+  if (retry.status === 401) {
+    window.dispatchEvent(
+      new CustomEvent('hemall:unauthorized', { detail: { kind: auth === 'customer' ? 'customer' : 'staff' } }),
+    );
+  }
+  return retry;
+}
+
 async function request<T>(
   path: string,
   opts: RequestInit = {},
@@ -94,19 +145,23 @@ async function request<T>(
     'Content-Type': 'application/json',
     ...(opts.headers as Record<string, string> || {}),
   };
-  if (auth === 'customer') {
-    const t = customerToken();
-    if (t) headers['Authorization'] = `Bearer ${t}`;
-  } else if (auth) {
-    const t = token();
-    if (t) headers['Authorization'] = `Bearer ${t}`;
+  // F-03: 状态改变请求带双重提交 CSRF 头（同源 cookie 自动附带）
+  if (opts.method && !['GET', 'HEAD', 'OPTIONS'].includes(opts.method.toUpperCase())) {
+    const csrf = await ensureCsrfToken();
+    if (csrf) headers[CSRF_HEADER_NAME] = csrf;
   }
-  const res = await fetch(`${BASE}${path}`, { ...opts, headers });
+  const res = await fetchWithSession(
+    path,
+    { ...opts, headers, credentials: 'include' },
+    auth,
+  );
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(errorMessage(body, res.status));
   }
-  return res.json();
+  const data = await res.json();
+  assertNotBusinessFailure(data);
+  return data;
 }
 
 // ── Phase 7 Task 3: 设备指纹 (空间-行为矩阵的数据源标识) ──────────────
@@ -959,12 +1014,12 @@ export const api = {
     if (opts?.retailPriceCents) form.append('retail_price_cents', String(opts.retailPriceCents));
     if (opts?.stockQty) form.append('stock_qty', String(opts.stockQty));
     if (opts?.categorySlug) form.append('category_slug', opts.categorySlug);
-    const t = token();
-    const res = await fetch(`${BASE}/agent/ingest`, {
+    // 走 BFF 反代：cookie 自动附带，不能设 Content-Type（boundary 由浏览器生成）。
+    const res = await fetchWithSession('/agent/ingest', {
       method: 'POST',
       body: form,
-      headers: t ? { Authorization: `Bearer ${t}` } : {},
-    });
+      credentials: 'include',
+    }, true);
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(errorMessage(body, res.status));

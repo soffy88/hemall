@@ -6,7 +6,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { getSelectedRegion } from '@/lib/region-store';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { StorefrontProduct, ProductVariant, InventoryBatch } from '@/types/api';
@@ -78,6 +78,7 @@ export default function ProductDetailPage() {
         cartId = cart.cart_id;
         sessionStorage.setItem('hemall_cart_id', cartId);
 
+        await initCustomerAuth();
         const customerAuth = getCustomerAuth();
         if (customerAuth) {
           await api.setCartCustomer(cartId, customerAuth.customerId).catch(() => {});

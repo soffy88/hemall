@@ -19,11 +19,40 @@ let customerAuthState: CustomerAuthState = {
 
 const listeners: Set<() => void> = new Set();
 
+/** initCustomerAuth 的在途/已成功 promise（并发去重）；失败时清掉以便重试。 */
+let initPromise: Promise<void> | null = null;
+
 function notify() {
   listeners.forEach((fn) => fn());
 }
 
-async function fetchCustomerMe(): Promise<{ customerId: string; email: string } | null> {
+const CSRF_COOKIE_NAME = 'hemall_csrf_token';
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
+
+function csrfCookie(): string | null {
+  const m = document.cookie.match(new RegExp(`(?:^|;\\s*)${CSRF_COOKIE_NAME}=([^;]+)`));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+/** 生产环境后端要求 CSRF 双重提交，而 /auth/customer/* 不在豁免路径里：
+ *  先取（或换发）非 HttpOnly 的 csrf cookie，再把同值塞进请求头。 */
+async function csrfHeaders(): Promise<Record<string, string>> {
+  let token = csrfCookie();
+  if (!token) {
+    try {
+      const res = await fetch('/api/auth/csrf-token', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        token = data?.csrf_token ?? csrfCookie();
+      }
+    } catch {
+      token = null;
+    }
+  }
+  return token ? { [CSRF_HEADER_NAME]: token } : {};
+}
+
+async function fetchCustomerMe(): Promise<{ customer_id: string; email: string } | null> {
   try {
     const res = await fetch('/api/auth/customer/me', {
       credentials: 'include',
@@ -36,13 +65,24 @@ async function fetchCustomerMe(): Promise<{ customerId: string; email: string } 
 }
 
 export async function initCustomerAuth(): Promise<void> {
-  const data = await fetchCustomerMe();
-  customerAuthState = {
-    customerId: data?.customerId ?? null,
-    email: data?.email ?? null,
-    isLoading: false,
-  };
-  notify();
+  // 并发去重：多个页面/组件同时挂载时只发一次 /auth/customer/me；
+  // 成功后缓存结果，失败/未登录则清掉，下次挂载重试。
+  if (!initPromise) {
+    initPromise = (async () => {
+      const data = await fetchCustomerMe();
+      customerAuthState = {
+        // 后端 CustomerMeResponse 是 snake_case
+        customerId: data?.customer_id ?? null,
+        email: data?.email ?? null,
+        isLoading: false,
+      };
+      if (!data) initPromise = null;
+      notify();
+    })();
+  }
+  // 先取本地引用：失败分支会把 initPromise 置 null，届时 await 模块变量会立刻返回。
+  const pending = initPromise;
+  await pending;
 }
 
 export function getCustomerAuth(): { customerId: string; email: string } | null {
@@ -66,7 +106,7 @@ export function subscribeCustomerAuth(fn: () => void): () => void {
 export async function customerLogin(email: string, password: string): Promise<{ customerId: string; email: string }> {
   const res = await fetch('/api/auth/customer/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
     body: JSON.stringify({ email, password }),
   });
@@ -83,7 +123,7 @@ export async function customerLogin(email: string, password: string): Promise<{ 
 export async function customerRegister(data: { email: string; password: string; phone?: string; name?: string }): Promise<{ customerId: string; email: string }> {
   const res = await fetch('/api/auth/customer/register', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
     body: JSON.stringify(data),
   });
@@ -100,6 +140,7 @@ export async function customerRegister(data: { email: string; password: string; 
 export async function customerLogout(): Promise<void> {
   await fetch('/api/auth/customer/logout', {
     method: 'POST',
+    headers: await csrfHeaders(),
     credentials: 'include',
   });
   customerAuthState = { customerId: null, email: null, isLoading: false };

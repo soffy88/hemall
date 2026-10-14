@@ -16,7 +16,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { useOptimisticCart, haptic } from '@/lib/cart-store';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { StripePaymentElement } from '@/components/stripe-payment-element';
 import type { PaymentIntentResponse, PickupTicket } from '@/types/api';
 
@@ -100,6 +100,7 @@ export default function ExpressCheckoutPage() {
     setError('');
     haptic('tap');
     try {
+      await initCustomerAuth();
       const cust = getCustomerAuth();
       if (!cust) throw new Error('请先登录顾客账号后再支付');
 

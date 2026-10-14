@@ -8,12 +8,12 @@
  *   - 🎥 视频传货: 手机实拍视频/图片上传 → 自动建商品+库存 (真实文件即商品图)
  *   - 🧰 工具面板: 全部 omodul 工具清单 (Hermes/Cindy 接管的同款协议)
  *
- * 鉴权: 需要管理员 JWT (hemall_auth), 未登录跳转 /login。
+ * 鉴权: 需要管理员会话 (HttpOnly cookie)，未登录跳转 /login。
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth } from '@/lib/auth-store';
+import { initAuth, isAuthenticated } from '@/lib/auth-store';
 import { api } from '@/lib/api-client';
 
 interface ToolInfo {
@@ -45,9 +45,15 @@ export default function AgentConsolePage() {
   const [uploading, setUploading] = useState(false);
   const [mediaUrl, setMediaUrl] = useState('');
 
-  // 鉴权守卫
+  // 鉴权守卫：cookie 会话下客户端读不到 token，等 initAuth 拉完 /auth/me 再判断。
   useEffect(() => {
-    if (!getAuth()?.token) router.replace('/login');
+    let alive = true;
+    void initAuth().then(() => {
+      if (alive && !isAuthenticated()) router.replace('/login');
+    });
+    return () => {
+      alive = false;
+    };
   }, [router]);
 
   // 拉取工具清单

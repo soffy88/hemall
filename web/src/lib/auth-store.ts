@@ -20,6 +20,9 @@ let authState: AuthState = {
 
 const listeners: Set<() => void> = new Set();
 
+/** initAuth 的在途/已成功 promise（并发去重）；失败时清掉以便重试。 */
+let initPromise: Promise<void> | null = null;
+
 function notify() {
   listeners.forEach((fn) => fn());
 }
@@ -38,9 +41,18 @@ async function fetchMe(): Promise<AuthUser | null> {
 }
 
 export async function initAuth(): Promise<void> {
-  const user = await fetchMe();
-  authState = { user, isLoading: false };
-  notify();
+  // 并发去重：多处守卫同时挂载只发一次 /auth/me；未登录则清缓存以便重试。
+  if (!initPromise) {
+    initPromise = (async () => {
+      const user = await fetchMe();
+      authState = { user, isLoading: false };
+      if (!user) initPromise = null;
+      notify();
+    })();
+  }
+  // 先取本地引用：失败分支会把 initPromise 置 null，届时 await 模块变量会立刻返回。
+  const pending = initPromise;
+  await pending;
 }
 
 export function getAuth(): AuthUser | null {

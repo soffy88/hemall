@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { OAppShell, OSideBar } from '@helios/oui';
 import type { SideBarNavItem } from '@helios/oui';
-import { clearAuth } from '@/lib/auth-store';
+import { logout } from '@/lib/auth-store';
 
 const navItems: SideBarNavItem[] = [
   { id: 'dashboard', label: '仪表盘', href: '/admin' },
@@ -39,8 +39,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     if (item.href) router.push(item.href);
   }
 
-  function handleLogout() {
-    clearAuth();
+  async function handleLogout() {
+    // 通知后端清 HttpOnly cookie，再清本地状态（clearAuth 无法删 cookie）。
+    await logout();
     router.push('/login');
   }
 

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
-import { getCustomerAuth, clearCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth, customerLogout } from '@/lib/customer-auth-store';
 import { useToast } from '@/components/Toast';
 import type { Customer, CustomerAddress, Order, RmaClaim, SubmitClaimResult } from '@/types/api';
 
@@ -50,6 +50,8 @@ export default function AccountPage() {
   const [addrPostal, setAddrPostal] = useState('');
 
   async function load() {
+    // cookie 会话下没有可读 token：先向后端拉一次会话，未登录再跳转。
+    await initCustomerAuth();
     if (!getCustomerAuth()) {
       router.push('/shop/login');
       return;
@@ -77,8 +79,8 @@ export default function AccountPage() {
 
   useEffect(() => { load(); }, []);
 
-  function handleLogout() {
-    clearCustomerAuth();
+  async function handleLogout() {
+    await customerLogout();
     router.push('/shop');
   }
 
