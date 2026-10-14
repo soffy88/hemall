@@ -85,7 +85,9 @@ export default function ExpressCheckoutPage() {
         payload: ticketRes,
       });
     }
-    localStorage.setItem(
+    // 取票结果含提货凭证，只能进 sessionStorage（同标签页会话），
+    // 不能落 localStorage（长期可被同源脚本读取）。离线兜底同样读 sessionStorage。
+    sessionStorage.setItem(
       'hemall_pickup_ticket',
       JSON.stringify({ ...ticketRes, issued_at: new Date().toISOString() }),
     );

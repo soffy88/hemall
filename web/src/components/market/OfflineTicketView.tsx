@@ -29,8 +29,8 @@ export default function OfflineTicketView() {
             return;
           }
         }
-        // 2. 兜底 localStorage
-        const raw = localStorage.getItem('hemall_pickup_ticket');
+        // 2. 兜底 sessionStorage（与 express-checkout 的写入端一致，不落 localStorage）
+        const raw = sessionStorage.getItem('hemall_pickup_ticket');
         if (raw) {
           setTicket(JSON.parse(raw) as PickupTicket);
         }
