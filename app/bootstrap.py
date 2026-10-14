@@ -169,6 +169,13 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
 
             await _ensure_order_lifecycle_schema(pool, ORDER_LIFECYCLE_DDL)
 
+            # 售后/退款表结构
+            from .payments.refund_models import REFUND_REQUEST_DDL
+
+            async with pool.acquire() as conn:
+                await conn.execute(REFUND_REQUEST_DDL)
+            logger.info("refund schema ensured (refund_request, refund_audit_log)")
+
             # P0: payment authority/outbox, exact inventory reservations and
             # versioned order transitions.  Keep this project-local rather than
             # modifying the shared 3O schema used by other services.
