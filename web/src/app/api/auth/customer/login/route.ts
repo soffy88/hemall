@@ -1,53 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { proxyToBackend } from '@/lib/proxy';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8030';
-
+/** 顾客登录：透传到后端 POST /auth/customer/login（typ=customer 会话 cookie）。
+ *  access_token 只留给直连后端的 API 客户端；经 BFF 时剥离，只回 customer_id/email。 */
 export async function POST(request: NextRequest) {
+  let body: unknown;
   try {
-    const body = await request.json();
-    const { email, password } = body;
-
-    if (!email || !password) {
-      return NextResponse.json(
-        { detail: 'email and password are required' },
-        { status: 400 }
-      );
-    }
-
-    const response = await fetch(`${BACKEND_URL}/store/customers/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return NextResponse.json(
-        { detail: data.detail || 'Login failed' },
-        { status: response.status }
-      );
-    }
-
-    const res = NextResponse.json({
-      customer_id: data.customer_id,
-      email: data.email,
-    });
-
-    res.cookies.set('customer_session', data.access_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 30, // 30 days
-    });
-
-    return res;
-  } catch (error) {
-    console.error('Customer login error:', error);
-    return NextResponse.json(
-      { detail: 'Internal server error' },
-      { status: 500 }
-    );
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ detail: 'invalid JSON body' }, { status: 400 });
   }
+
+  const proxied = await proxyToBackend(request, '/auth/customer/login', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+  if (proxied.status !== 200) {
+    return proxied;
+  }
+
+  const data = await proxied.json();
+  const res = NextResponse.json({
+    customer_id: data.customer_id,
+    email: data.email,
+  });
+  for (const setCookie of proxied.headers.getSetCookie()) {
+    res.headers.append('set-cookie', setCookie);
+  }
+  return res;
 }

@@ -1,13 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { proxyToBackend } from '@/lib/proxy';
 
-export async function POST() {
-  const res = NextResponse.json({ ok: true });
-  res.cookies.set('customer_session', '', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 0,
-  });
-  return res;
+/** 顾客登出：透传到后端 POST /auth/customer/logout，清会话 Set-Cookie 原样回传。 */
+export async function POST(request: NextRequest) {
+  return proxyToBackend(request, '/auth/customer/logout');
 }
