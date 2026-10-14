@@ -93,7 +93,9 @@ function assertNotBusinessFailure(data: any): void {
     throw new Error(data.error?.message || data.error?.type || '业务处理失败');
   }
   if (data.status === 'failed' || data.status === 'cancelled') {
-    throw new Error(data.error?.message || data.error?.type || `业务处理${data.status === 'failed' ? '失败' : '已取消'}`);
+    throw new Error(
+      data.error?.message || data.error?.type || `业务处理${data.status === 'failed' ? '失败' : '已取消'}（${data.status}）`,
+    );
   }
   if (data.error && typeof data.error === 'object' && data.error.message) {
     throw new Error(data.error.message);
@@ -1024,6 +1026,8 @@ export const api = {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(errorMessage(body, res.status));
     }
-    return res.json();
+    const data = await res.json();
+    assertNotBusinessFailure(data);
+    return data;
   },
 };
