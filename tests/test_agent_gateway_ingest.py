@@ -20,8 +20,6 @@ from fastapi.testclient import TestClient
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
-
 
 @pytest.fixture
 async def cn_pool():
@@ -68,6 +66,7 @@ def out_root(tmp_path: Path) -> Path:
     return tmp_path / "output"
 
 
+@pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 class TestIngestMedia:
     """ingest_media 核心逻辑测试。"""
 
@@ -102,7 +101,8 @@ class TestIngestMedia:
         )
 
         assert result["status"] == "created"
-        assert result["title"] == "丹东草莓"
+        # 文件名 "丹东草莓实拍.mp4" 清洗后标题为 "丹东草莓实拍"
+        assert result["title"] == "丹东草莓实拍"
         assert result["retail_price_cents"] == 1999
         assert result["stock_qty"] == 50
         assert "product_id" in result
@@ -133,14 +133,14 @@ class TestIngestMedia:
                 ),
             )
         assert product is not None
-        assert product["title"] == "丹东草莓"
+        assert product["title"] == "丹东草莓实拍"
         assert product["status"] == "published"
         assert variant is not None
-        assert variant["product_id"] == result["product_id"]
+        assert str(variant["product_id"]) == result["product_id"]
         assert variant["status"] == "active"
         assert batch is not None
-        assert batch["variant_id"] == result["variant_id"]
-        assert batch["location_id"] == location_id
+        assert str(batch["variant_id"]) == result["variant_id"]
+        assert str(batch["location_id"]) == location_id
         assert batch["stock_qty"] == 50
         assert batch["status"] == "active"
 
@@ -153,8 +153,11 @@ class TestIngestMedia:
 
         from app.ext.agent_gateway import ingest_media
 
-        # 传空 location_id，且数据库里没有任何 active stock_location
+        # 先清理所有相关表，确保没有 active stock_location
         async with cn_pool.acquire() as conn:
+            await conn.execute('DELETE FROM "inventory_batch"')
+            await conn.execute('DELETE FROM "product_variant"')
+            await conn.execute('DELETE FROM "product"')
             await conn.execute('DELETE FROM "stock_location" WHERE status = $1', "active")
 
         with pytest.raises(HTTPException) as exc_info:
@@ -171,7 +174,7 @@ class TestIngestMedia:
         # 验证没有产生孤儿 product/variant
         async with cn_pool.acquire() as conn:
             product_count = await conn.fetchval(
-                'SELECT COUNT(*) FROM "product" WHERE title = $1', "丹东草莓"
+                'SELECT COUNT(*) FROM "product" WHERE title = $1', "丹东草莓实拍"
             )
             variant_count = await conn.fetchval(
                 'SELECT COUNT(*) FROM "product_variant" WHERE sku_code LIKE $1', "AGT-%"
@@ -204,6 +207,12 @@ class TestIngestMedia:
             )
         location_id = str(loc_id)
 
+        # 清理可能存在的测试数据
+        async with cn_pool.acquire() as conn:
+            await conn.execute('DELETE FROM "inventory_batch"')
+            await conn.execute('DELETE FROM "product_variant"')
+            await conn.execute('DELETE FROM "product"')
+
         # 第一次上传
         result1 = await ingest_media(
             mock_upload_file,
@@ -233,7 +242,7 @@ class TestIngestMedia:
         # 验证两个 product 的 slug 都不重复
         async with cn_pool.acquire() as conn:
             slugs = await conn.fetch(
-                'SELECT slug FROM "product" WHERE title = $1 ORDER BY created_at', "丹东草莓"
+                'SELECT slug FROM "product" WHERE title = $1 ORDER BY created_at', "丹东草莓实拍"
             )
         assert len(slugs) == 2
         assert slugs[0]["slug"] != slugs[1]["slug"]
@@ -245,11 +254,12 @@ class TestCSRFWithBFF:
     模拟 Next.js BFF 转发请求到后端的场景：
     - 合法同源请求：BFF 转发 Origin、Sec-Fetch-Site、X-Forwarded-Host → 后端校验通过
     - 跨站请求：Origin 为恶意域名 → 后端返回 403
+    - development 环境下无 Origin 头的请求被允许 (方便本地开发测试)
     """
 
     @pytest.fixture
     def app_with_csrf(self):
-        """创建带 CSRF 中间件的测试应用。"""
+        """创建带 CSRF 中间件的测试应用 (development 环境)。"""
         from fastapi import FastAPI
 
         from app.config import Settings
@@ -261,6 +271,28 @@ class TestCSRFWithBFF:
         settings = Settings(
             environment="development",
             cors_origins=["https://mall.example.com", "https://admin.example.com"],
+        )
+        app.add_middleware(CSRFMiddleware, settings=settings)
+
+        @app.post("/api/agent/ingest")
+        async def ingest_endpoint():
+            return {"status": "ok"}
+
+        return app
+
+    @pytest.fixture
+    def app_staging_csrf(self):
+        """创建带 CSRF 中间件的测试应用 (staging 环境，强制 CSRF)。"""
+        from fastapi import FastAPI
+
+        from app.config import Settings
+        from app.security.csrf import CSRFMiddleware
+
+        app = FastAPI()
+
+        settings = Settings(
+            environment="staging",
+            cors_origins=["https://staging.mall.example.com"],
         )
         app.add_middleware(CSRFMiddleware, settings=settings)
 
@@ -297,9 +329,15 @@ class TestCSRFWithBFF:
         assert response.status_code == 403
         assert "CSRF" in response.json().get("detail", "")
 
-    def test_bff_missing_origin_blocked(self, app_with_csrf):
-        """无 Origin 头的状态改变请求 → 403。"""
+    def test_bff_missing_origin_allowed_in_development(self, app_with_csrf):
+        """development 环境下无 Origin 头的请求被允许 (方便本地开发测试)。"""
         client = TestClient(app_with_csrf)
+        response = client.post("/api/agent/ingest", headers={})
+        assert response.status_code == 200, response.json()
+
+    def test_bff_missing_origin_blocked_in_staging(self, app_staging_csrf):
+        """staging 环境下无 Origin 头的请求被拦截 → 403。"""
+        client = TestClient(app_staging_csrf)
         response = client.post("/api/agent/ingest", headers={})
         assert response.status_code == 403
         assert "CSRF" in response.json().get("detail", "")
