@@ -16,6 +16,9 @@ _INSECURE_DEFAULTS: dict[str, str] = {
     "hardware_secret": "dev-hardware-secret-change-me",
 }
 
+#: Settings.pg_dsn 的开发默认值 (validate_production_security 只拦这个原值)。
+_DEV_DEFAULT_PG_DSN = "postgresql://postgres:test@localhost:5432/hemall"
+
 #: 支持 *_FILE 后缀读取密钥文件的字段映射 (env 名 -> settings 字段名)
 _SECRET_FILE_MAP: dict[str, str] = {
     "HEMALL_JWT_SECRET_FILE": "jwt_secret",
@@ -326,8 +329,10 @@ class Settings(BaseSettings):
                 problems.append(
                     f"HEMALL_{field.upper()} 必须至少 32 字节，避免弱 HMAC 密钥"
                 )
-        if "test@" in self.pg_dsn or self.pg_dsn.startswith(
-            "postgresql://postgres:test@"
+        # 只拦"开发默认 DSN"本身 (Settings.pg_dsn 默认值)。早先的 `"test@" in dsn`
+        # 会把任何含 test@ 的凭据误杀 (密码 latest@ 也含 test@), 已收紧。
+        if self.pg_dsn == _DEV_DEFAULT_PG_DSN or self.pg_dsn.startswith(
+            f"{_DEV_DEFAULT_PG_DSN}?"
         ):
             problems.append("HEMALL_PG_DSN 仍是开发默认凭据 (postgres:test)")
 

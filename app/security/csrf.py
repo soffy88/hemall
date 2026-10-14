@@ -96,6 +96,11 @@ class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # 仅对状态改变方法且非豁免路径进行 CSRF 校验
         if self._is_state_changing(request.method) and not self._is_exempt(request.url.path):
+            # Bearer 令牌认证的请求没有 CSRF 面: 浏览器跨站表单/简单请求无法设置
+            # Authorization 头 (设置即触发 CORS 预检), 令牌不会被自动附带。
+            # TOTP 绑定/登录第二步 (scope 令牌) 正走这条路, 不能要求双重提交。
+            if request.headers.get("Authorization"):
+                return await call_next(request)
             # 开发环境可选择性放行 (配合环境变量)
             if self.settings.environment.lower() != "production":
                 # 开发环境仍做 Origin 校验，但不强制 CSRF token
