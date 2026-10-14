@@ -68,10 +68,17 @@ function bodyText(body: BodyInit | null | undefined): string | undefined {
   return String(body);
 }
 
-function req(path: string, init?: RequestInit): NextRequest {
+interface ReqInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: BodyInit;
+}
+
+function req(path: string, init: ReqInit = {}): NextRequest {
   return new NextRequest(new URL(`https://shop.hemall.test${path}`), {
-    method: 'GET',
-    ...init,
+    method: init.method ?? 'GET',
+    headers: init.headers,
+    body: init.body,
   });
 }
 
