@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api-client';
-import { setCustomerAuth } from '@/lib/customer-auth-store';
+import { customerLogin } from '@/lib/customer-auth-store';
+import { errMessage } from '@/lib/errors';
 
 export default function CustomerLoginPage() {
   const router = useRouter();
@@ -18,11 +18,10 @@ export default function CustomerLoginPage() {
     setError('');
     setLoading(true);
     try {
-      const res = await api.customerLogin(email, password);
-      setCustomerAuth(res.access_token, res.customer_id, res.email);
+      await customerLogin(email, password);
       router.push('/shop/account');
-    } catch (err: any) {
-      setError(err.message || '登录失败');
+    } catch (err) {
+      setError(errMessage(err) || '登录失败');
     } finally {
       setLoading(false);
     }

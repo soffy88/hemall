@@ -17,7 +17,7 @@
  *   - 倒计时归零 → 强制 expired，清空购物车
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api-client';
 import type { FeedItem, OptimisticCartItem } from '@/types/api';
 
@@ -31,7 +31,8 @@ export function haptic(kind: 'tap' | 'fail' = 'tap') {
   }
 }
 
-function loadPersisted(): Record<string, OptimisticCartItem> {
+/** 导出供单测覆盖的纯函数：从 localStorage 恢复乐观购物车（剔除已失效的锁）。 */
+export function loadPersisted(): Record<string, OptimisticCartItem> {
   if (typeof window === 'undefined') return {};
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -52,8 +53,6 @@ function loadPersisted(): Record<string, OptimisticCartItem> {
 export function useOptimisticCart() {
   const [items, setItems] = useState<Record<string, OptimisticCartItem>>(loadPersisted);
   const [now, setNow] = useState(() => Date.now());
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
 
   // 持久化
   useEffect(() => {
@@ -64,32 +63,32 @@ export function useOptimisticCart() {
     }
   }, [items]);
 
-  // 倒计时心跳 (1s tick)
+  // 倒计时心跳 (1s tick)，同时把过期项拨转为 expired 并剔除
+  // （sweep 放进 interval 回调: effect 内不允许同步 setState）
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    const timer = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      setItems((prev) => {
+        let changed = false;
+        const next: Record<string, OptimisticCartItem> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (v.locked_until > t) {
+            next[k] = v;
+          } else if (v.status === 'locked') {
+            next[k] = { ...v, status: 'expired' };
+            changed = true;
+          }
+        }
+        if (changed) {
+          // 全部过期 → 清空 (SPEC: 提示"库存锁已释放给网络")
+          return next;
+        }
+        return prev;
+      });
+    }, TICK_MS);
     return () => clearInterval(timer);
   }, []);
-
-  // tick 时把过期项拨转为 expired 并剔除
-  useEffect(() => {
-    setItems((prev) => {
-      let changed = false;
-      const next: Record<string, OptimisticCartItem> = {};
-      for (const [k, v] of Object.entries(prev)) {
-        if (v.locked_until > now) {
-          next[k] = v;
-        } else if (v.status === 'locked') {
-          next[k] = { ...v, status: 'expired' };
-          changed = true;
-        }
-      }
-      if (changed) {
-        // 全部过期 → 清空 (SPEC: 提示"库存锁已释放给网络")
-        return next;
-      }
-      return prev;
-    });
-  }, [now]);
 
   const lockItem = useCallback(async (item: FeedItem) => {
     haptic('tap');
@@ -138,7 +137,7 @@ export function useOptimisticCart() {
             : '物理冲突！该商品库存不足',
         );
       }
-    } catch (e: any) {
+    } catch (e) {
       // 网络失败: 保留乐观锁但标记 failed? SPEC 规定失败即剔除。
       haptic('fail');
       setItems((prev) => {

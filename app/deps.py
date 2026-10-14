@@ -12,13 +12,19 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from obase.crypto.util import CryptoUtil
 from obase.persistence.pool import PgPool
 
 from .config import Settings
+from .security.tokens import (
+    ACCESS_TOKEN_COOKIE,
+    TOKEN_TYPE_CUSTOMER,
+    TOKEN_TYPE_STAFF,
+    decode_token,
+)
 
 # Phase 0: 导入 Redis 指标辅助函数
 from app.middleware.metrics import update_redis_connected
@@ -89,23 +95,41 @@ def anon_ref(identity: str, settings: Settings) -> str:
     ]
 
 
+def _token_from_request(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None,
+) -> str | None:
+    """取会话 token：Authorization Bearer 优先，否则回退 HttpOnly 会话 cookie。
+
+    F-01/F-03: 浏览器经同源 BFF 反代访问时只带 cookie（前端 JS 接触不到 token）；
+    API 客户端继续用 Bearer 头。两条路径最终都在这里按 typ 白名单解码。
+    """
+    if creds is not None:
+        return creds.credentials
+    return request.cookies.get(ACCESS_TOKEN_COOKIE)
+
+
 def get_current_user(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """从 Bearer JWT 解析主体; 缺失/无效 → 401。"""
-    if creds is None:
+    """从 Bearer JWT 或会话 cookie 解析员工主体; 缺失/无效/类型不符 → 401。
+
+    类型白名单只认 ``typ=staff``——顾客/能力令牌即使从 cookie 进来也一律 401。
+    """
+    token = _token_from_request(request, creds)
+    if token is None:
         raise HTTPException(status_code=401, detail="not authenticated")
     try:
-        payload = CryptoUtil.jwt_decode(
-            token=creds.credentials,
+        payload = decode_token(
+            token=token,
+            typ=TOKEN_TYPE_STAFF,
             secret=settings.jwt_secret,
             algorithm=settings.jwt_algorithm,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - 翻译为 HTTP 语义
         raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
-    if payload.get("typ") != "staff":
-        raise HTTPException(status_code=401, detail="staff token required")
     if not isinstance(payload.get("sub"), str) or not payload["sub"].strip():
         raise HTTPException(status_code=401, detail="staff token missing subject")
     return {
@@ -147,26 +171,27 @@ def require_staff_role(*allowed_roles: str):
 
 
 def get_current_customer(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """从 Bearer JWT 解析顾客主体 (typ=customer); 缺失/无效/类型不符 → 401。
+    """从 Bearer JWT 或会话 cookie 解析顾客主体 (typ=customer); 缺失/无效/类型不符 → 401。
 
     员工 token 必须精确匹配 typ=staff，顾客 token 必须精确匹配 typ=customer；
     两类 token 均要求有对应主体标识，避免跨用途复用。
     """
-    if creds is None:
+    token = _token_from_request(request, creds)
+    if token is None:
         raise HTTPException(status_code=401, detail="not authenticated")
     try:
-        payload = CryptoUtil.jwt_decode(
-            token=creds.credentials,
+        payload = decode_token(
+            token=token,
+            typ=TOKEN_TYPE_CUSTOMER,
             secret=settings.jwt_secret,
             algorithm=settings.jwt_algorithm,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - 翻译为 HTTP 语义
         raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
-    if payload.get("typ") != "customer":
-        raise HTTPException(status_code=401, detail="not a customer token")
     customer_id = payload.get("customer_id")
     if not isinstance(customer_id, str) or not customer_id.strip():
         raise HTTPException(status_code=401, detail="customer token missing subject")

@@ -16,9 +16,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { useOptimisticCart, haptic } from '@/lib/cart-store';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { StripePaymentElement } from '@/components/stripe-payment-element';
 import type { PaymentIntentResponse, PickupTicket } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 interface CheckoutContext {
   nodeName: string;
@@ -38,7 +39,7 @@ function loadContext(): CheckoutContext {
 export default function ExpressCheckoutPage() {
   const router = useRouter();
   const cart = useOptimisticCart();
-  const ctx = useMemo(loadContext, []);
+  const ctx = useMemo(() => loadContext(), []);
   const [paying, setPaying] = useState(false);
   const [ticket, setTicket] = useState<PickupTicket | null>(null);
   const [orderId, setOrderId] = useState('');
@@ -85,7 +86,9 @@ export default function ExpressCheckoutPage() {
         payload: ticketRes,
       });
     }
-    localStorage.setItem(
+    // 取票结果含提货凭证，只能进 sessionStorage（同标签页会话），
+    // 不能落 localStorage（长期可被同源脚本读取）。离线兜底同样读 sessionStorage。
+    sessionStorage.setItem(
       'hemall_pickup_ticket',
       JSON.stringify({ ...ticketRes, issued_at: new Date().toISOString() }),
     );
@@ -100,6 +103,7 @@ export default function ExpressCheckoutPage() {
     setError('');
     haptic('tap');
     try {
+      await initCustomerAuth();
       const cust = getCustomerAuth();
       if (!cust) throw new Error('请先登录顾客账号后再支付');
 
@@ -128,9 +132,9 @@ export default function ExpressCheckoutPage() {
         return;
       }
       await finishPaidPayment(currentOrderId, currentPayment);
-    } catch (e: any) {
+    } catch (e) {
       haptic('fail');
-      setError(e.message || '支付失败，请重试');
+      setError(errMessage(e) || '支付失败，请重试');
     } finally {
       setPaying(false);
     }
@@ -142,9 +146,9 @@ export default function ExpressCheckoutPage() {
     setError('');
     try {
       await finishPaidPayment(orderId, payment);
-    } catch (e: any) {
+    } catch (e) {
       haptic('fail');
-      setError(e.message || '支付失败，请重试');
+      setError(errMessage(e) || '支付失败，请重试');
     } finally {
       setPaying(false);
     }

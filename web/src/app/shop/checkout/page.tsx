@@ -4,8 +4,9 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import type { Cart, Address } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 const emptyAddress: Address = {
   recipient_name: '',
@@ -36,6 +37,8 @@ export default function CheckoutPage() {
     }
 
     async function init() {
+      // cookie 会话：先拉一次会话再读，避免刷新页面时误判未登录。
+      await initCustomerAuth();
       const customerAuth = getCustomerAuth();
       if (customerAuth) {
         // 购物车可能是登录之前创建的，这里补绑一次；同时拉默认地址预填表单。
@@ -65,8 +68,8 @@ export default function CheckoutPage() {
           return;
         }
         setCart(data);
-      } catch (e: any) {
-        setError(e.message);
+      } catch (e) {
+        setError(errMessage(e));
       } finally {
         setLoading(false);
       }
@@ -81,6 +84,7 @@ export default function CheckoutPage() {
     setError('');
     setSubmitting(true);
     try {
+      await initCustomerAuth();
       const customerAuth = getCustomerAuth();
       if (!customerAuth) throw new Error('请先登录顾客账号后再支付');
       const result = await api.checkout({
@@ -96,8 +100,8 @@ export default function CheckoutPage() {
       sessionStorage.setItem('hemall_payment', JSON.stringify(result.payment));
       sessionStorage.removeItem('hemall_cart_id');
       router.push('/shop/success');
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setSubmitting(false);
     }

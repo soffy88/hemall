@@ -77,6 +77,9 @@ from .security.webhook import WebhookSignatureMiddleware
 # 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (IP + Device_ID)
 from .middleware.ratelimit import TokenBucketRateLimitMiddleware
 
+# F-03: CSRF 保护中间件 (双重提交 token + Origin/Sec-Fetch-Site)
+from .security import CSRFMiddleware
+
 # Phase 0 Week 2: 限流
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -492,16 +495,18 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。JWT 走 Authorization
-    # 头而非 cookie, 故 allow_credentials=False (与具体 origin 列表兼容)。
+    # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。Cookie 认证需 allow_credentials=True。
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # F-03: CSRF 保护中间件 (双重提交 token + Origin/Sec-Fetch-Site 校验)
+    app.add_middleware(CSRFMiddleware, settings=settings)
 
     # Phase 0: 添加可观测性中间件 (顺序很重要：Metrics 在外层，Logging 在内层)
     app.add_middleware(MetricsMiddleware)

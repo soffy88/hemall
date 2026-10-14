@@ -6,21 +6,29 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
-    "next": "^16.0.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
     "@helios/blocks": "file:./vendor/helios-blocks-4.11.0.tgz",
-    "@helios/oui": "file:./vendor/helios-oui-2.3.0.tgz"
+    "@helios/oui": "file:./vendor/helios-oui-2.3.0.tgz",
+    "next": "^16.3.8",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "typescript": "^5",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.2.12",
+    "jsdom": "^30.1.2",
     "tailwindcss": "^4",
-    "@tailwindcss/postcss": "^4"
+    "typescript": "^5",
+    "vitest": "^4.1.11"
   }
 }
