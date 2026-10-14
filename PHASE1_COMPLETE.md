@@ -151,16 +151,11 @@ from app.realtime.hub import publish_to_user, broadcast
 
 # 向单个用户推送 (如订单状态变更)
 await publish_to_user(
-    user_id='user123',
-    event='order.shipped',
-    data={'order_id': 'o1', 'tracking_number': 'SF123'}
+    user_id="user123", event="order.shipped", data={"order_id": "o1", "tracking_number": "SF123"}
 )
 
 # 全局广播 (如库存告警)
-await broadcast(
-    event='inventory.low_stock',
-    data={'product_id': 'p1', 'warehouse_code': 'WH-SH'}
-)
+await broadcast(event="inventory.low_stock", data={"product_id": "p1", "warehouse_code": "WH-SH"})
 ```
 
 **客户端连接**:

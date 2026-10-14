@@ -57,9 +57,9 @@ uvicorn.run(
     host="0.0.0.0",
     port=8000,
     workers=4,
-    loop="uvloop",      # 更快的事件循环
-    http="httptools",   # 更快的 HTTP 解析
-    reload=False,       # 生产环境禁用自动重载
+    loop="uvloop",  # 更快的事件循环
+    http="httptools",  # 更快的 HTTP 解析
+    reload=False,  # 生产环境禁用自动重载
 )
 ```
 
@@ -132,11 +132,12 @@ tcp-backlog 511
 ```python
 # 分级 TTL 策略
 CACHE_TTL_MAP = {
-    "hot_data": 300,      # 热点数据 5 分钟
-    "warm_data": 1800,    # 温数据 30 分钟  
-    "cold_data": 7200,    # 冷数据 2 小时
-    "static_data": 86400, # 静态数据 24 小时
+    "hot_data": 300,  # 热点数据 5 分钟
+    "warm_data": 1800,  # 温数据 30 分钟
+    "cold_data": 7200,  # 冷数据 2 小时
+    "static_data": 86400,  # 静态数据 24 小时
 }
+
 
 # 缓存预热策略
 async def warmup_cache():
@@ -145,7 +146,7 @@ async def warmup_cache():
     hot_products = await get_hot_products(limit=100)
     for product in hot_products:
         await cache.set(f"product:{product.id}", product, ttl=300)
-    
+
     # 预加载分类树
     category_tree = await get_category_tree()
     await cache.set("category_tree", category_tree, ttl=7200)
@@ -295,10 +296,10 @@ groups:
 ### 2. 自定义业务指标
 ```python
 # 业务指标监控
-REQUEST_COUNT = Counter('hemall_requests_total', 'Total requests', ['method', 'endpoint'])
-REQUEST_DURATION = Histogram('hemall_request_duration_seconds', 'Request duration')
-ORDER_PROCESSING_TIME = Histogram('hemall_order_processing_seconds', 'Order processing time')
-PAYMENT_SUCCESS_RATE = Gauge('hemall_payment_success_rate', 'Payment success rate')
+REQUEST_COUNT = Counter("hemall_requests_total", "Total requests", ["method", "endpoint"])
+REQUEST_DURATION = Histogram("hemall_request_duration_seconds", "Request duration")
+ORDER_PROCESSING_TIME = Histogram("hemall_order_processing_seconds", "Order processing time")
+PAYMENT_SUCCESS_RATE = Gauge("hemall_payment_success_rate", "Payment success rate")
 ```
 
 ## 🚀 部署流程
@@ -386,12 +387,13 @@ import httpx
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+
 async def benchmark_endpoint(client, url, concurrency=100, duration=60):
     """压力测试单个端点"""
     start_time = time.time()
     request_count = 0
     error_count = 0
-    
+
     async def make_request():
         nonlocal request_count, error_count
         try:
@@ -401,7 +403,7 @@ async def benchmark_endpoint(client, url, concurrency=100, duration=60):
                 error_count += 1
         except Exception:
             error_count += 1
-    
+
     # 并发执行
     tasks = []
     while time.time() - start_time < duration:
@@ -412,34 +414,36 @@ async def benchmark_endpoint(client, url, concurrency=100, duration=60):
             # 等待部分任务完成
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             tasks = list(pending)
-    
+
     # 等待剩余任务完成
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     elapsed = time.time() - start_time
     rps = request_count / elapsed
-    
+
     print(f"URL: {url}")
     print(f"Duration: {elapsed:.2f}s")
     print(f"Requests: {request_count}")
     print(f"Errors: {error_count}")
     print(f"RPS: {rps:.2f}")
-    print(f"Success Rate: {(request_count-error_count)/request_count*100:.2f}%")
+    print(f"Success Rate: {(request_count - error_count) / request_count * 100:.2f}%")
+
 
 # 测试关键端点
 async def run_benchmarks():
     async with httpx.AsyncClient() as client:
         endpoints = [
             "/health/live",
-            "/health/ready", 
+            "/health/ready",
             "/products/123",
             "/search/products?q=phone",
-            "/recommend/home?user_id=test123"
+            "/recommend/home?user_id=test123",
         ]
-        
+
         for endpoint in endpoints:
             await benchmark_endpoint(client, f"http://localhost:8000{endpoint}")
+
 
 if __name__ == "__main__":
     asyncio.run(run_benchmarks())

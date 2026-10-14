@@ -179,10 +179,10 @@ app/eventsourcing/
 
 **事件类型枚举**:
 ```python
-EventType.ORDER_CREATED        # 订单创建
-EventType.ORDER_CONFIRMED      # 订单确认
-EventType.STOCK_RESERVED       # 库存预留
-EventType.PAYMENT_SUCCESS      # 支付成功
+EventType.ORDER_CREATED  # 订单创建
+EventType.ORDER_CONFIRMED  # 订单确认
+EventType.STOCK_RESERVED  # 库存预留
+EventType.PAYMENT_SUCCESS  # 支付成功
 EventType.INVENTORY_LOW_ALERT  # 低库存告警
 ```
 

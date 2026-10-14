@@ -154,7 +154,7 @@ appendonly: yes            # AOF 持久化
 
 **Gunicorn:**
 ```python
-workers = 4                # CPU核心数 × 2 + 1
+workers = 4  # CPU核心数 × 2 + 1
 timeout = 30
 worker_connections = 1000
 ```

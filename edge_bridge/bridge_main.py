@@ -26,7 +26,6 @@ from typing import Any
 
 import httpx
 import paho.mqtt.client as mqtt
-
 from handlers import (
     build_gate_payload,
     build_gate_reply,
@@ -57,9 +56,7 @@ if not MQTT_USERNAME or not MQTT_PASSWORD:
     )
 # 订阅两个信号：重力货架 pick + 闸口称重 req。
 MQTT_SUB_TOPICS = os.getenv("MQTT_SUB_TOPICS", "cn/v1/+/s/+/pick,cn/v1/+/g/+/req")
-HEMALL_API_URL = os.getenv(
-    "HEMALL_API_URL", "http://hemall-api:8000/ext/hardware/webhook"
-)
+HEMALL_API_URL = os.getenv("HEMALL_API_URL", "http://hemall-api:8000/ext/hardware/webhook")
 HARDWARE_SECRET = os.getenv("HARDWARE_SECRET", "super-secret-key")
 DLQ_PATH = os.getenv("DLQ_PATH", "/data/dlq.sqlite")
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "3.0"))
@@ -96,8 +93,7 @@ class DeadLetterQueue:
 
     def push(self, api_path: str, payload: dict[str, Any]) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO dlq (id, api_path, payload, created_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO dlq (id, api_path, payload, created_at) VALUES (?, ?, ?, ?)",
             (str(uuid.uuid4()), api_path, json.dumps(payload), time.time()),
         )
         self._conn.commit()
@@ -140,9 +136,7 @@ class CircuitBreaker:
         self._consecutive_failures += 1
         if self._consecutive_failures >= self._max:
             self._opened_at = time.time()
-            logger.warning(
-                "circuit breaker OPEN after %d consecutive failures", self._max
-            )
+            logger.warning("circuit breaker OPEN after %d consecutive failures", self._max)
 
 
 class Bridge:
@@ -176,9 +170,7 @@ class Bridge:
         except (json.JSONDecodeError, UnicodeDecodeError):
             logger.warning("dropping non-JSON payload on %s", msg.topic)
             return
-        asyncio.run_coroutine_threadsafe(
-            self._dispatch(payload, msg.topic, client), self._loop
-        )
+        asyncio.run_coroutine_threadsafe(self._dispatch(payload, msg.topic, client), self._loop)
 
     async def _dispatch(self, payload: dict, topic: str, client: mqtt.Client) -> None:
         """按信号类型路由：pick → 单向转发；gate → 对账并下发回执。"""
@@ -213,7 +205,9 @@ class Bridge:
             decision = await self._forward_gate(api_payload)
         reply_topic, reply_payload = build_gate_reply(ctx, decision, payload)
         client.publish(reply_topic, json.dumps(reply_payload), qos=1)
-        logger.info("gate %s -> %s on %s", api_payload["gate_id"], reply_payload["act"], reply_topic)
+        logger.info(
+            "gate %s -> %s on %s", api_payload["gate_id"], reply_payload["act"], reply_topic
+        )
 
     # ── HTTP 侧 (防腐层) ───────────────────────────────────────────────
 
@@ -233,9 +227,7 @@ class Bridge:
     async def _forward_gate(self, api_payload: dict) -> dict[str, Any]:
         """闸口对账：期望 {'action'|'act', 'led'}；主干宕机时硬件降级兜底。"""
         try:
-            resp = await self._http.post(
-                f"{HEMALL_API_URL}/gate-reconcile", json=api_payload
-            )
+            resp = await self._http.post(f"{HEMALL_API_URL}/gate-reconcile", json=api_payload)
             resp.raise_for_status()
             self._breaker.record_success()
             return resp.json()
@@ -254,9 +246,7 @@ class Bridge:
                 continue
             for dlq_id, api_path, payload in self._dlq.pop_all():
                 try:
-                    resp = await self._http.post(
-                        f"{HEMALL_API_URL}/{api_path}", json=payload
-                    )
+                    resp = await self._http.post(f"{HEMALL_API_URL}/{api_path}", json=payload)
                     resp.raise_for_status()
                     self._dlq.drop(dlq_id)
                     self._breaker.record_success()
@@ -282,7 +272,11 @@ class Bridge:
         dlq_task = asyncio.create_task(self._dlq_worker())
         logger.info(
             "clearnode-iot-bridge up: broker=%s:%d mqtt_user=%s hemall=%s topics=%s",
-            MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, HEMALL_API_URL, MQTT_SUB_TOPICS,
+            MQTT_BROKER,
+            MQTT_PORT,
+            MQTT_USERNAME,
+            HEMALL_API_URL,
+            MQTT_SUB_TOPICS,
         )
         try:
             await asyncio.Event().wait()  # 常驻

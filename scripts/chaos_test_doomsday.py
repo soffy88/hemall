@@ -35,7 +35,6 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -54,6 +53,7 @@ CONCURRENCY = 50  # 总并发度
 @dataclass
 class TestResult:
     """测试结果收集器。"""
+
     purchases_attempted: int = 0
     purchases_success: int = 0
     purchases_failed_oversold: int = 0
@@ -90,7 +90,7 @@ class TestResult:
             f"  处理成功:         {self.refunds_processed}",
             "",
             "--- Webhook 安全 ---",
-            f"  假回调拦截:       {self.fake_callbacks_rejected}/{REFAKE_CALLBACKS if 'REFAKE_CALLBACKS' in dir() else FAKE_CALLBACKS}",
+            f"  假回调拦截:       {self.fake_callbacks_rejected}/{FAKE_CALLBACKS}",
             f"  假回调泄漏:       {self.fake_callbacks_leaked}",
             "",
             "--- 系统健康 ---",
@@ -114,9 +114,7 @@ class TestResult:
 
         if self.fake_callbacks_leaked > 0:
             passed = False
-            reasons.append(
-                f"🚨 严重: {self.fake_callbacks_leaked} 个假回调通过了验签!"
-            )
+            reasons.append(f"🚨 严重: {self.fake_callbacks_leaked} 个假回调通过了验签!")
         else:
             lines.append("✅ 通过: 所有假回调均被 HMAC 验签拦截")
 
@@ -152,9 +150,7 @@ class TestResult:
 
 def compute_webhook_signature(payload: str, secret: str) -> str:
     """计算 webhook HMAC-SHA256 签名 (对齐 WebhookSignatureMiddleware 契约)。"""
-    return hmac.new(
-        secret.encode(), payload.encode(), hashlib.sha256
-    ).hexdigest()
+    return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
 # ── 初始化: 创建测试用批次和购物车 ─────────────────────────────────────────────
@@ -231,9 +227,7 @@ async def init_test_environment(client: httpx.AsyncClient) -> dict[str, Any]:
     batch_id = batch["batch_id"]
 
     # 验证初始库存
-    batch_verify = await client.get(
-        f"/ext/inventory-batches/{batch_id}"
-    )
+    batch_verify = await client.get(f"/ext/inventory-batches/{batch_id}")
     assert batch_verify.status_code == 200
     batch_data = batch_verify.json()
     initial_stock = batch_data.get("stock_qty", batch_data.get("available_qty", BATCH_STOCK_QTY))
@@ -283,7 +277,9 @@ async def single_buyer(
             headers=headers,
         )
         if add_item_resp.status_code not in (200, 201):
-            result.errors.append(f"Buyer {buyer_idx}: add_to_cart failed ({add_item_resp.status_code})")
+            result.errors.append(
+                f"Buyer {buyer_idx}: add_to_cart failed ({add_item_resp.status_code})"
+            )
             return False
 
         # Step 2: checkout (核心环节——硬锁库存)
@@ -311,7 +307,10 @@ async def single_buyer(
             # Step 3: 模拟支付确认 (将订单从 pending 转为 confirmed)
             pay_resp = await client.put(
                 f"/store/orders/{order_id}/confirm",
-                json={"payment_provider": "manual", "payment_intent_id": f"pay-{secrets.token_hex(8)}"},
+                json={
+                    "payment_provider": "manual",
+                    "payment_intent_id": f"pay-{secrets.token_hex(8)}",
+                },
             )
 
             if pay_resp.status_code == 200:
@@ -324,11 +323,18 @@ async def single_buyer(
         else:
             # checkout 失败可能因为库存不足/价格变化等
             body_text = checkout_resp.text.lower()
-            if "insufficient" in body_text or "over" in body_text or "reserved" in body_text or "not enough" in body_text:
+            error_keywords = (
+                "insufficient",
+                "over",
+                "reserved",
+                "not enough",
+            )
+            if any(kw in body_text for kw in error_keywords):
                 result.purchases_failed_oversold += 1
             else:
                 result.errors.append(
-                    f"Buyer {buyer_idx}: checkout failed ({checkout_resp.status_code}): {body_text[:200]}"
+                    f"Buyer {buyer_idx}: checkout failed "
+                    f"({checkout_resp.status_code}): {body_text[:200]}"
                 )
             return False
 
@@ -344,11 +350,13 @@ async def send_valid_refund_callback(
     client: httpx.AsyncClient, order_id: str, result: TestResult
 ) -> bool:
     """发送合法的退款回调 (HMAC 验签通过)。"""
-    payload = json.dumps({
-        "order_id": order_id,
-        "refund_amount_cents": 1000,
-        "reason": "chaos_test_refund",
-    })
+    payload = json.dumps(
+        {
+            "order_id": order_id,
+            "refund_amount_cents": 1000,
+            "reason": "chaos_test_refund",
+        }
+    )
     signature = compute_webhook_signature(payload, WEBHOOK_SECRET)
 
     resp = await client.post(
@@ -379,11 +387,13 @@ async def send_fake_callback_with_bad_signature(
     client: httpx.AsyncClient, result: TestResult
 ) -> bool:
     """发送签名错误的假回调 (应该被 403 拒绝)。"""
-    payload = json.dumps({
-        "order_id": str(uuid.uuid4()),
-        "refund_amount_cents": 999999,
-        "reason": "attack_simulation",
-    })
+    payload = json.dumps(
+        {
+            "order_id": str(uuid.uuid4()),
+            "refund_amount_cents": 999999,
+            "reason": "attack_simulation",
+        }
+    )
     # 故意使用错误的签名
     bad_signature = compute_webhook_signature(payload, "WRONG_SECRET_KEY_123")
 
@@ -407,9 +417,7 @@ async def send_fake_callback_with_bad_signature(
         return False
     else:
         # 其他状态码——记录但不致命
-        result.errors.append(
-            f"Fake callback got unexpected status {resp.status_code}"
-        )
+        result.errors.append(f"Fake callback got unexpected status {resp.status_code}")
         return False
 
 
@@ -434,9 +442,7 @@ async def run_chaos_test() -> TestResult:
         print(f"      Target: {BATCH_STOCK_QTY} items (no overselling allowed!)")
 
         tasks = [
-            asyncio.create_task(
-                single_buyer(client, i, batch_info, result)
-            )
+            asyncio.create_task(single_buyer(client, i, batch_info, result))
             for i in range(NUM_CONCURRENT_BUYERS)
         ]
 
@@ -457,26 +463,27 @@ async def run_chaos_test() -> TestResult:
             # 在第 20 个任务完成后注入退款回调
             if done_count >= 20 and not refund_injected:
                 refund_injected = True
-                print(f"      ⚡ Injecting {REFUND_CALLBACKS} valid refund callbacks at tick {done_count}...")
+                print(
+                    f"      ⚡ Injecting {REFUND_CALLBACKS} valid refund callbacks "
+                    f"at tick {done_count}..."
+                )
 
                 # 先拿一下已下订单列表
                 orders_resp = await client.get("/admin/orders?status=confirmed&limit=20")
                 if orders_resp.status_code == 200:
                     orders = orders_resp.json()
-                    target_orders = orders[:min(REFUND_CALLBACKS, len(orders))]
+                    target_orders = orders[: min(REFUND_CALLBACKS, len(orders))]
                 else:
                     target_orders = []
 
                 refund_tasks = []
-                for idx, order in enumerate(target_orders[:REFUND_CALLBACKS]):
+                for _idx, order in enumerate(target_orders[:REFUND_CALLBACKS]):
                     order_id = order.get("id", str(uuid.uuid4()))
                     if order_id not in successful_orders:
                         successful_orders.append(order_id)
 
                     refund_tasks.append(
-                        asyncio.create_task(
-                            send_valid_refund_callback(client, order_id, result)
-                        )
+                        asyncio.create_task(send_valid_refund_callback(client, order_id, result))
                     )
                 await asyncio.gather(*refund_tasks, return_exceptions=True)
                 result.refunds_submitted += len(refund_tasks)
@@ -487,9 +494,7 @@ async def run_chaos_test() -> TestResult:
                 print(f"      💣 Injecting {FAKE_CALLBACKS} fake webhooks at tick {done_count}...")
 
                 fake_tasks = [
-                    asyncio.create_task(
-                        send_fake_callback_with_bad_signature(client, result)
-                    )
+                    asyncio.create_task(send_fake_callback_with_bad_signature(client, result))
                     for _ in range(FAKE_CALLBACKS)
                 ]
                 await asyncio.gather(*fake_tasks, return_exceptions=True)
@@ -499,9 +504,7 @@ async def run_chaos_test() -> TestResult:
         # ── Phase D: 最终库存检查 ─────────────────────────────────────
         print("[4/5] 🔍 Verifying final stock consistency...")
 
-        batch_check = await client.get(
-            f"/ext/inventory-batches/{batch_info['batch_id']}"
-        )
+        batch_check = await client.get(f"/ext/inventory-batches/{batch_info['batch_id']}")
         if batch_check.status_code == 200:
             final_batch = batch_check.json()
             final_stock = final_batch.get("stock_qty", BATCH_STOCK_QTY)
@@ -543,18 +546,19 @@ async def run_chaos_test() -> TestResult:
 
 def main() -> int:
     """入口点。返回 0 表示通过，1 表示失败。"""
+    global BASE_URL
     import argparse
+
     parser = argparse.ArgumentParser(description="ClearNode Chaos Engineering Test")
     parser.add_argument("--base-url", default=BASE_URL, help=f"Base URL (default: {BASE_URL})")
     parser.add_argument("--quiet", action="store_true", help="Only show pass/fail")
     args = parser.parse_args()
 
-    global BASE_URL
     BASE_URL = args.base_url
 
     try:
         result = asyncio.run(run_chaos_test())
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print("🚨 CHAOS TEST TIMEOUT!")
         return 1
     except ConnectionRefusedError:
@@ -564,6 +568,7 @@ def main() -> int:
     except Exception as exc:
         print(f"🚨 Chaos test crashed: {exc}")
         import traceback
+
         traceback.print_exc()
         return 1
 
