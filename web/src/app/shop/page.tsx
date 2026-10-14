@@ -31,16 +31,17 @@ export default function ShopPage() {
   const [activeCat, setActiveCat] = useState<string>('all');
   const [search, setSearch] = useState('');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.storeProducts({ limit: 200 });
-      setProducts(data);
-    } catch (e) {
-      showToast(errMessage(e) || '加载失败');
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.storeProducts({ limit: 200 })
+      .then((data) => {
+        setProducts(data);
+      })
+      .catch((e) => {
+        showToast(errMessage(e) || '加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   useEffect(() => { load(); }, []);

@@ -22,16 +22,11 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [fulfillments, setFulfillments] = useState<Fulfillment[]>([]);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.adminListOrders({ status: statusFilter || undefined });
-      setOrders(data);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListOrders({ status: statusFilter || undefined })
+      .then(setOrders)
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -51,6 +46,7 @@ export default function OrdersPage() {
 
   async function refreshSelected() {
     if (selected) await loadDetail(selected.id);
+    setLoading(true);
     load();
   }
 

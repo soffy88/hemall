@@ -39,17 +39,14 @@ export default function CustomersPage() {
   const [addrRegion, setAddrRegion] = useState('');
   const [addrPostal, setAddrPostal] = useState('');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const [c, g] = await Promise.all([api.adminListCustomers(), api.adminListCustomerGroups()]);
-      setCustomers(c);
-      setGroups(g);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    Promise.all([api.adminListCustomers(), api.adminListCustomerGroups()])
+      .then(([c, g]) => {
+        setCustomers(c);
+        setGroups(g);
+      })
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -77,6 +74,7 @@ export default function CustomersPage() {
         if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       }
       setShowForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -90,6 +88,7 @@ export default function CustomersPage() {
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setGroupName('');
       setShowGroupForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -101,6 +100,7 @@ export default function CustomersPage() {
     try {
       const res = await api.assignCustomerToGroup({ customer_id: customerId, group_id: groupId });
       if (res.status === 'failed') throw new Error(res.error?.message || '分组失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));

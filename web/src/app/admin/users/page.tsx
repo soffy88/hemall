@@ -17,16 +17,11 @@ export default function UsersPage() {
   const [name, setName] = useState('');
   const [userStatus, setUserStatus] = useState('active');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.adminListUsers();
-      setUsers(data);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListUsers()
+      .then(setUsers)
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -60,6 +55,7 @@ export default function UsersPage() {
         if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       }
       setShowForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -82,6 +78,7 @@ export default function UsersPage() {
       const newStatus = u.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateUser({ user_id: u.id, status: newStatus });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));

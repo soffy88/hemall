@@ -13,16 +13,11 @@ export default function BatchJobsPage() {
   const [jobType, setJobType] = useState('');
   const [payloadText, setPayloadText] = useState('{}');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.adminListBatchJobs();
-      setJobs(data);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListBatchJobs()
+      .then(setJobs)
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -41,6 +36,7 @@ export default function BatchJobsPage() {
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setJobType(''); setPayloadText('{}');
       setShowForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -52,6 +48,7 @@ export default function BatchJobsPage() {
     try {
       const res = await api.cancelBatchJob({ batch_job_id: id });
       if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));

@@ -39,7 +39,7 @@ function loadContext(): CheckoutContext {
 export default function ExpressCheckoutPage() {
   const router = useRouter();
   const cart = useOptimisticCart();
-  const ctx = useMemo(loadContext, []);
+  const ctx = useMemo(() => loadContext(), []);
   const [paying, setPaying] = useState(false);
   const [ticket, setTicket] = useState<PickupTicket | null>(null);
   const [orderId, setOrderId] = useState('');

@@ -42,16 +42,19 @@ export function ActionCard({ title, badge, desc, fields, defaults, onSubmit, onR
   // "刚提交成功、结果面板还显示着"的卡片不会因为别的卡片改了 ctx 就被重置。
   useEffect(() => {
     if (!defaults) return;
-    setValues((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [k, v] of Object.entries(defaults)) {
-        if (!next[k]) {
-          next[k] = v;
-          changed = true;
+    // 补填放微任务：effect 内不允许同步 setState（React 19 编译规则）
+    Promise.resolve().then(() => {
+      setValues((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        for (const [k, v] of Object.entries(defaults)) {
+          if (!next[k]) {
+            next[k] = v;
+            changed = true;
+          }
         }
-      }
-      return changed ? next : prev;
+        return changed ? next : prev;
+      });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(defaults)]);

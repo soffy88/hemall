@@ -42,16 +42,11 @@ export default function DraftOrdersPage() {
   const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
   const [editAddress, setEditAddress] = useState<Address>({ ...emptyAddress });
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.adminListOrders({ status: 'draft', limit: 100 });
-      setOrders(data);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListOrders({ status: 'draft', limit: 100 })
+      .then(setOrders)
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -73,6 +68,7 @@ export default function DraftOrdersPage() {
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setCustomerId(''); setRegionCode(''); setLineItemsText(''); setAddress({ ...emptyAddress });
       setShowForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -94,6 +90,7 @@ export default function DraftOrdersPage() {
       });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新地址失败');
       setEditingAddressId(null);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -106,6 +103,7 @@ export default function DraftOrdersPage() {
     try {
       const res = await api.updateDraftOrder({ order_id: o.id, customer_id });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -117,6 +115,7 @@ export default function DraftOrdersPage() {
     try {
       const res = await api.markDraftOrderPaid({ order_id: o.id, payment_provider_name: provider });
       if (res.status === 'failed') throw new Error(res.error?.message || '标记失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -128,6 +127,7 @@ export default function DraftOrdersPage() {
     try {
       const res = await api.deleteDraftOrder({ order_id: id });
       if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));

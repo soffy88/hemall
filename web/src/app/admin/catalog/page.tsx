@@ -20,17 +20,14 @@ export default function CatalogPage() {
   const [colName, setColName] = useState('');
   const [colSlug, setColSlug] = useState('');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const [c, col] = await Promise.all([api.adminListCategories(), api.adminListCollections()]);
-      setCategories(c);
-      setCollections(col);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    Promise.all([api.adminListCategories(), api.adminListCollections()])
+      .then(([c, col]) => {
+        setCategories(c);
+        setCollections(col);
+      })
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -41,6 +38,7 @@ export default function CatalogPage() {
       const res = await api.createProductCategory({ name: catName, slug: catSlug, parent_id: catParent || null });
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setCatName(''); setCatSlug(''); setCatParent(''); setShowCatForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -53,6 +51,7 @@ export default function CatalogPage() {
     try {
       const res = await api.updateProductCategory({ category_id: c.id, name });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -64,6 +63,7 @@ export default function CatalogPage() {
       const newStatus = c.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateProductCategory({ category_id: c.id, status: newStatus });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -75,6 +75,7 @@ export default function CatalogPage() {
     try {
       const res = await api.deleteProductCategory({ category_id: id });
       if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -87,6 +88,7 @@ export default function CatalogPage() {
       const res = await api.createProductCollection({ name: colName, slug: colSlug });
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setColName(''); setColSlug(''); setShowColForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -98,6 +100,7 @@ export default function CatalogPage() {
       const newStatus = c.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateProductCollection({ collection_id: c.id, status: newStatus });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -109,6 +112,7 @@ export default function CatalogPage() {
     try {
       const res = await api.deleteProductCollection({ collection_id: id });
       if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));

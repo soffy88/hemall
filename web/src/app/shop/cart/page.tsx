@@ -27,20 +27,20 @@ export default function CartPage() {
   const [giftCardCode, setGiftCardCode] = useState('');
   const [applying, setApplying] = useState(false);
 
-  async function loadCart() {
+  function loadCart() {
     const cartId = sessionStorage.getItem('hemall_cart_id');
-    if (!cartId) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const data = await api.getCart(cartId);
-      setCart(data);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+    const pending: Promise<void> = cartId
+      ? api.getCart(cartId).then((data) => {
+          setCart(data);
+        })
+      : Promise.resolve();
+    pending
+      .catch((e) => {
+        setError(errMessage(e));
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   useEffect(() => { loadCart(); }, []);

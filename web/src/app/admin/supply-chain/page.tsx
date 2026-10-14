@@ -18,20 +18,17 @@ function SuppliersTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallSuppliers>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallSuppliers());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallSuppliers()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (

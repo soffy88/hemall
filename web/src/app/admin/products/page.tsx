@@ -40,16 +40,11 @@ export default function ProductsPage() {
   const [videoUrl, setVideoUrl] = useState('');
   const [showBatchForm, setShowBatchForm] = useState(false);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.adminListProducts({ search: search || undefined });
-      setProducts(data);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListProducts({ search: search || undefined })
+      .then(setProducts)
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -61,6 +56,7 @@ export default function ProductsPage() {
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setTitle(''); setSlug(''); setDescription(''); setStatus('draft');
       setShowForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -71,6 +67,7 @@ export default function ProductsPage() {
     if (!confirm('确认删除此商品？')) return;
     try {
       await api.deleteProduct({ product_id: id });
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -81,6 +78,7 @@ export default function ProductsPage() {
     try {
       const newStatus = product.status === 'published' ? 'draft' : 'published';
       await api.updateProduct({ product_id: product.id, status: newStatus });
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -94,6 +92,7 @@ export default function ProductsPage() {
       if (res.status === 'failed') throw new Error(res.error?.message || '创建变体失败');
       setSkuCode('');
       setShowVariantForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -105,6 +104,7 @@ export default function ProductsPage() {
       const newStatus = v.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateProductVariant({ variant_id: v.id, status: newStatus });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新变体失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -116,6 +116,7 @@ export default function ProductsPage() {
     try {
       const res = await api.deleteProductVariant({ variant_id: id });
       if (res.status === 'failed') throw new Error(res.error?.message || '删除变体失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -134,6 +135,7 @@ export default function ProductsPage() {
     try {
       const res = await api.adjustInventoryLevel({ batch_id: batchId, delta, reason });
       if (res.status === 'failed') throw new Error(res.error?.message || '调整库存失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -146,6 +148,7 @@ export default function ProductsPage() {
     try {
       const res = await api.createProductOption({ product_id: productId, name });
       if (res.status === 'failed') throw new Error(res.error?.message || '添加选项失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -158,6 +161,7 @@ export default function ProductsPage() {
     try {
       const res = await api.updateProductOption({ option_id: optionId, name });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新选项失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -169,6 +173,7 @@ export default function ProductsPage() {
     try {
       const res = await api.deleteProductOption({ option_id: optionId });
       if (res.status === 'failed') throw new Error(res.error?.message || '删除选项失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -190,6 +195,7 @@ export default function ProductsPage() {
       if (res.status === 'failed') throw new Error(res.error?.message || '创建批次失败');
       setBatchNo(''); setVideoUrl('');
       setShowBatchForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -220,10 +226,23 @@ export default function ProductsPage() {
           placeholder="搜索商品..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && load()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              setLoading(true);
+              load();
+            }
+          }}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-64"
         />
-        <button onClick={load} className="ml-2 px-3 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">搜索</button>
+        <button
+          onClick={() => {
+            setLoading(true);
+            load();
+          }}
+          className="ml-2 px-3 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200"
+        >
+          搜索
+        </button>
       </div>
 
       {/* Create Product Form */}

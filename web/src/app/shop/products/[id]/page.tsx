@@ -41,7 +41,10 @@ export default function ProductDetailPage() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
 
-    setSimilar([]);
+    // 切换商品时先清空旧的相似推荐（微任务延后，effect 内不允许同步 setState）
+    Promise.resolve().then(() => {
+      setSimilar([]);
+    });
     api.storeRecommendSimilar(productId, 6)
       .then(async (res) => {
         const items = await Promise.all(

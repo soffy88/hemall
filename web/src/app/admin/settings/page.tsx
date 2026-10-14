@@ -22,17 +22,14 @@ export default function SettingsPage() {
   const [taxName, setTaxName] = useState('');
   const [taxRate, setTaxRate] = useState(0);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const [r, t] = await Promise.all([api.adminListRegions(), api.adminListTaxRates()]);
-      setRegions(r);
-      setTaxRates(t);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    Promise.all([api.adminListRegions(), api.adminListTaxRates()])
+      .then(([r, t]) => {
+        setRegions(r);
+        setTaxRates(t);
+      })
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -48,6 +45,7 @@ export default function SettingsPage() {
       });
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setRegionCode(''); setRegionName(''); setShowRegionForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -59,6 +57,7 @@ export default function SettingsPage() {
       const newStatus = r.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateRegion({ code: r.code, status: newStatus });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -70,6 +69,7 @@ export default function SettingsPage() {
     try {
       const res = await api.deleteRegion({ code });
       if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -82,6 +82,7 @@ export default function SettingsPage() {
       const res = await api.createTaxRate({ region_code: taxRegion, name: taxName, rate_percent: taxRate });
       if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setTaxName(''); setTaxRate(0); setShowTaxForm(false);
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -93,6 +94,7 @@ export default function SettingsPage() {
       const newStatus = t.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateTaxRate({ tax_rate_id: t.id, status: newStatus });
       if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));
@@ -104,6 +106,7 @@ export default function SettingsPage() {
     try {
       const res = await api.deleteTaxRate({ tax_rate_id: id });
       if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
+      setLoading(true);
       load();
     } catch (e) {
       alert(errMessage(e));

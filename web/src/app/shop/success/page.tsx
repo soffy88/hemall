@@ -23,10 +23,18 @@ export default function SuccessPage() {
     const storedPayment = sessionStorage.getItem('hemall_payment');
     let stopped = false;
     if (storedPayment) {
-      try { setPayment(JSON.parse(storedPayment) as PaymentIntentResponse); } catch { /* ignore */ }
+      try {
+        const parsed = JSON.parse(storedPayment) as PaymentIntentResponse;
+        // sessionStorage 读取须留在 effect（SSR 安全），setState 微任务延后
+        Promise.resolve().then(() => {
+          setPayment(parsed);
+        });
+      } catch { /* ignore */ }
     }
     if (token) {
-      setReceiptToken(token);
+      Promise.resolve().then(() => {
+        setReceiptToken(token);
+      });
       api.lookupOrder(token)
         .then(setOrder)
         .catch((e) => setError(e.message));

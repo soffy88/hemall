@@ -72,10 +72,15 @@ export function StripePaymentElement({ clientSecret, onConfirmed }: StripePaymen
   useEffect(() => {
     let cancelled = false;
     let paymentElement: StripePaymentElement | undefined;
-    setLoading(true);
-    setError('');
-    setElements(null);
-    setStripe(null);
+    // 重置四件套放微任务：effect 内不允许同步 setState；已排进队的
+    // loadStripe 回调都在其后运行，顺序与原同步写法一致
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setLoading(true);
+      setError('');
+      setElements(null);
+      setStripe(null);
+    });
 
     loadStripe()
       .then((client) => {

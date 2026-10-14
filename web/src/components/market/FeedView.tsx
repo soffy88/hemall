@@ -27,33 +27,37 @@ export default function FeedView() {
 
   const cart = useOptimisticCart();
 
-  async function load() {
-    setLoading(true);
-    setError('');
-    try {
-      // 浏览器定位 → 失败回退北京
-      let lat = 39.9042;
-      let lon = 116.4074;
-      if (navigator.geolocation) {
-        try {
-          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 3000 });
-          });
-          lat = pos.coords.latitude;
-          lon = pos.coords.longitude;
-        } catch {
-          /* 定位被拒 → 默认坐标 */
-        }
-      }
-      await initCustomerAuth();
-      const cust = getCustomerAuth();
-      const data = await api.getNearbyFeed(lat, lon, { limit: 40, customerId: cust?.customerId });
-      setFeed(data);
-    } catch (e) {
-      setError(errMessage(e) || 'Feed 加载失败');
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    // 浏览器定位 → 失败回退北京
+    let lat = 39.9042;
+    let lon = 116.4074;
+    const locate: Promise<GeolocationPosition> = navigator.geolocation
+      ? new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 3000 });
+        })
+      : Promise.reject(new Error('定位不可用'));
+    locate
+      .then((pos) => {
+        lat = pos.coords.latitude;
+        lon = pos.coords.longitude;
+      })
+      .catch(() => {
+        /* 定位被拒 → 默认坐标 */
+      })
+      .then(() => initCustomerAuth())
+      .then(() => {
+        const cust = getCustomerAuth();
+        return api.getNearbyFeed(lat, lon, { limit: 40, customerId: cust?.customerId });
+      })
+      .then((data) => {
+        setFeed(data);
+      })
+      .catch((e) => {
+        setError(errMessage(e) || 'Feed 加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   useEffect(() => {
@@ -96,7 +100,11 @@ export default function FeedView() {
           <div className="mb-3 text-5xl">📡</div>
           <p className="mb-4 text-gray-600">{error}</p>
           <button
-            onClick={load}
+            onClick={() => {
+              setLoading(true);
+              setError('');
+              load();
+            }}
             className="rounded-xl bg-emerald-600 px-6 py-3 text-white font-semibold active:scale-95"
           >
             重试

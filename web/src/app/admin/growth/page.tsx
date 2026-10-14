@@ -14,20 +14,17 @@ function AffiliateContractsTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallAffiliateContracts>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallAffiliateContracts());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallAffiliateContracts()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -78,20 +75,17 @@ function ConversionLogsTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallConversionLogs>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallConversionLogs());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallConversionLogs()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
