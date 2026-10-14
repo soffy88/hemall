@@ -31,7 +31,8 @@ export function haptic(kind: 'tap' | 'fail' = 'tap') {
   }
 }
 
-function loadPersisted(): Record<string, OptimisticCartItem> {
+/** 导出供单测覆盖的纯函数：从 localStorage 恢复乐观购物车（剔除已失效的锁）。 */
+export function loadPersisted(): Record<string, OptimisticCartItem> {
   if (typeof window === 'undefined') return {};
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
