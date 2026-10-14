@@ -3,6 +3,9 @@
 import type {
   Address,
   AdminRegion,
+  AgentCommandResult,
+  AgentIngestResult,
+  AgentTool,
   AppUser,
   BatchJob,
   Cart,
@@ -42,6 +45,8 @@ import type {
   TokenResponse,
 } from '@/types/api';
 
+import { errMessage } from '@/lib/errors';
+
 /**
  * 同源 BFF 反代前缀（F-01/F-03/F-05）：浏览器只调 /api/* 同源路径，由 Next 路由
  * 处理器透明转发到后端（cookie 自动附带、CSRF 头透传）。不再使用
@@ -77,28 +82,45 @@ async function ensureCsrfToken(): Promise<string | null> {
 }
 
 /** FastAPI 422 校验错误的 detail 是对象数组（非字符串），需拍平成可读文本。 */
-function errorMessage(body: any, status: number): string {
-  if (typeof body?.detail === 'string') return body.detail;
-  if (Array.isArray(body?.detail)) {
-    return body.detail.map((d: any) => d?.msg || JSON.stringify(d)).join('; ');
+function errorMessage(body: unknown, status: number): string {
+  const b = (body && typeof body === 'object' ? body : {}) as {
+    detail?: unknown;
+    error?: { message?: unknown } | null;
+  };
+  if (typeof b.detail === 'string') return b.detail;
+  if (Array.isArray(b.detail)) {
+    return b.detail
+      .map((d: unknown) => {
+        const msg = (d as { msg?: unknown } | null)?.msg;
+        return typeof msg === 'string' && msg ? msg : JSON.stringify(d);
+      })
+      .join('; ');
   }
-  if (body?.error?.message) return body.error.message;
+  const msg = errMessage(b.error, '');
+  if (msg) return msg;
   return `HTTP ${status}`;
 }
 
 /** 业务失败识别（F-04）：HTTP 200 但响应体是 OmodulResult 失败态时必须抛错。 */
-function assertNotBusinessFailure(data: any): void {
+function assertNotBusinessFailure(data: unknown): void {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return;
-  if (data.ok === false) {
-    throw new Error(data.error?.message || data.error?.type || '业务处理失败');
+  const r = data as {
+    ok?: unknown;
+    status?: unknown;
+    error?: { message?: unknown; type?: unknown } | null;
+  };
+  const message = r.error && typeof r.error === 'object' ? errMessage(r.error, '') : '';
+  const fallback = r.error && typeof r.error === 'object' && typeof r.error.type === 'string' ? r.error.type : '';
+  if (r.ok === false) {
+    throw new Error(message || fallback || '业务处理失败');
   }
-  if (data.status === 'failed' || data.status === 'cancelled') {
+  if (r.status === 'failed' || r.status === 'cancelled') {
     throw new Error(
-      data.error?.message || data.error?.type || `业务处理${data.status === 'failed' ? '失败' : '已取消'}（${data.status}）`,
+      message || fallback || `业务处理${r.status === 'failed' ? '失败' : '已取消'}（${r.status}）`,
     );
   }
-  if (data.error && typeof data.error === 'object' && data.error.message) {
-    throw new Error(data.error.message);
+  if (message) {
+    throw new Error(message);
   }
 }
 
@@ -1001,13 +1023,13 @@ export const api = {
   // 手机指挥台 / Hermes/Cindy 等智能体接管系统的标准协议。
 
   agentListTools: () =>
-    request<{ count: number; tools: Array<{ tool: string; domain: string; name: string; path: string; require_auth: boolean; parameters: Record<string, any> }> }>('/agent/tools', {}, true),
+    request<{ count: number; tools: AgentTool[] }>('/agent/tools', {}, true),
 
   agentCommand: (text: string) =>
-    request<any>('/agent/command', { method: 'POST', body: JSON.stringify({ text }) }, true),
+    request<AgentCommandResult>('/agent/command', { method: 'POST', body: JSON.stringify({ text }) }, true),
 
-  agentExecute: (tool: string, args: Record<string, any>) =>
-    request<any>('/agent/execute', { method: 'POST', body: JSON.stringify({ tool, args }) }, true),
+  agentExecute: (tool: string, args: Record<string, unknown>) =>
+    request<AgentCommandResult>('/agent/execute', { method: 'POST', body: JSON.stringify({ tool, args }) }, true),
 
   // 视频/图片传货: multipart 上传, 自动上架
   agentIngest: async (file: File, opts?: { retailPriceCents?: number; stockQty?: number; categorySlug?: string }) => {
@@ -1026,7 +1048,7 @@ export const api = {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(errorMessage(body, res.status));
     }
-    const data = await res.json();
+    const data: AgentIngestResult = await res.json();
     assertNotBusinessFailure(data);
     return data;
   },

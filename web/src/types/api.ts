@@ -583,3 +583,47 @@ export interface BatchJob {
   created_at: string;
   updated_at: string | null;
 }
+
+// ── Agent gateway (Phase 9.5) ─────────────────────────────────────
+
+export interface AgentTool {
+  tool: string;
+  domain: string;
+  name: string;
+  path: string;
+  require_auth: boolean;
+  parameters: Record<string, unknown>;
+}
+
+/** /agent/command 响应（规则意图路由 + 执行结果）；input 为客户端附加的原始指令。 */
+export interface AgentCommandResult {
+  status?: string;
+  text?: string;
+  matched_keyword?: string | null;
+  kind?: string | null;
+  tool?: string;
+  result?: unknown;
+  hint?: string;
+  error?: string;
+  engine?: string;
+  input?: string;
+  [key: string]: unknown;
+}
+
+/** /agent/ingest 响应：手机实拍视频/图片 → 自动上架。 */
+export interface AgentIngestResult {
+  status?: string;
+  title?: string;
+  product_id?: string;
+  variant_id?: string;
+  location_id?: string;
+  retail_price_cents?: number;
+  cost_price_cents?: number;
+  stock_qty?: number;
+  media_url?: string;
+  media_type?: string;
+  saved_path?: string;
+  hint?: string;
+  input?: string;
+  [key: string]: unknown;
+}
