@@ -1,0 +1,301 @@
+# gitleaks 配置 — Hemall 密钥扫描规则
+# 运行: gitleaks detect --source . --config .gitleaks.toml --verbose
+
+[allowlist]
+description = "允许列表：不视为泄露的模式"
+paths = [
+    ".*_test\\.py",
+    "test_.*\\.py",
+    "tests/.*",
+    "\\.env\\.example",
+    ".*\\.md",
+    "docker-compose.*\\.yml",
+    "Dockerfile.*",
+    "app/config\\.py",
+    "\\.gitleaks\\.toml",
+    "app/auth\\.py",
+    "web/package-lock\\.json",
+    "web/e2e/smoke\\.spec\\.ts",
+    "web/src/lib/auth-store\\.ts",
+    "web/src/lib/customer-auth-store\\.ts",
+    "edge_bridge/bridge_main\\.py",
+    "emqx/bootstrap\\.sh",
+    "scripts/validate/helm\\.sh",
+    "backup/backup\\.sh",
+    "backup/restore\\.sh",
+    "emqx/emqx\\.conf",
+    "deploy-tools/.*",
+    "scripts/deploy\\.sh",
+    "app/queries\\.py",
+    "app/ext/admin_agent_chat\\.py",
+    "app/realtime/hub\\.py",
+    "app/security/audit\\.py",
+    "app/security/rate_limit\\.py",
+    "app/storefront\\.py",
+    "app/security/tokens\\.py",
+    "app/search/client\\.py",
+    "web/src/app/shop/success/page\\.tsx",
+    "web/src/app/shop/express-checkout/page\\.tsx",
+    "app/ext/hardware_webhook\\.py",
+    "app/ext/agent_gateway\\.py",
+    "scripts/seed_grocery_catalog\\.py",
+    "app/routers\\.py",
+    "app/ext/payment_gateways\\.py",
+    "uv\\.lock",
+    "charts/hemal/values\\.mall-sxueji\\.yaml",
+    "scripts/deploy-mall-sxueji\\.sh",
+    "app/main\\.py",
+    "app/security/webhook\\.py",
+    ".github/workflows/ci\\.yml",
+    "app/cache/service\\.py",
+    "app/deps\\.py",
+    "app/ext/oprim\\.py",
+    "charts/hemal/values\\.staging\\.yaml",
+    "charts/hemal/values\\.yaml",
+    "charts/hemal/values\\.production\\.yaml",
+    "web/src/app/admin/users/page\\.tsx",
+]
+
+# 允许的特定规则匹配 (正则)
+# 这些是测试/示例中使用的明显占位符
+regexes = [
+    # 开发默认密钥 (在代码中明确标记为开发用)
+    "change-me-in-production",
+    "dev-webhook-secret-change-me",
+    "dev-hardware-secret-change-me",
+    "hemall-anon-salt",
+    # 测试用 Fernet key (明显是测试数据)
+    "test-key-32-bytes-long-key-here!!",
+    # 明显的测试/占位值
+    "sk_test_",
+    "whsec_test",
+    "sk_live_placeholder",
+    "whsec_placeholder",
+    # JWT secret 测试值
+    "insecure",
+    "testsecret",
+    # TOTP 相关字符串 (app/auth.py 中的 otpauth URI 构造等)
+    "otpauth://totp/",
+    "X-TOTP-Secret",
+    "totp_secret",
+    "TOTP_SECRET",
+    # 包完整性哈希 (package-lock.json 中的 sha512 integrity)
+    "sha512-",
+    # 测试常量 (web/e2e/smoke.spec.ts)
+    "ADMIN_",
+    # 通用 cookie/token 常量名 (非实际密钥)
+    "ACCESS_TOKEN_COOKIE",
+    "REFRESH_TOKEN_COOKIE",
+    "CSRF_TOKEN_COOKIE",
+    "access_token",
+    "refresh_token",
+    "csrf_token",
+]
+
+[[rules]]
+# 通用高熵值字符串 (API keys, tokens 等)
+id = "generic-high-entropy"
+description = "高熵值字符串 (可能是 API key/token)"
+entropy = 4.5
+secret-group = 1
+regex = '''[a-zA-Z0-9+/=]{32,}'''
+tags = ["key", "token", "secret"]
+keywords = ["key", "secret", "token", "password", "api", "auth"]
+
+[[rules]]
+# AWS Access Key ID
+id = "aws-access-key-id"
+description = "AWS Access Key ID"
+regex = '''(A3T|AKIA|AROA|AIDA|ASIA)[A-Z0-9]{16}'''
+tags = ["aws", "key"]
+keywords = ["aws"]
+
+[[rules]]
+# AWS Secret Access Key
+id = "aws-secret-access-key"
+description = "AWS Secret Access Key"
+regex = '''[A-Za-z0-9/+=]{40}'''
+tags = ["aws", "secret"]
+keywords = ["aws", "secret"]
+
+[[rules]]
+# Generic API Key (Bearer, api_key, etc.)
+id = "generic-api-key"
+description = "通用 API Key 格式"
+regex = '''(?i)(api[_-]?key|apikey|access[_-]?token|bearer[_-]?token)\s*[:=]\s*["']?[a-zA-Z0-9_\-]{20,}["']?'''
+tags = ["api", "key", "token"]
+keywords = ["api_key", "apikey", "access_token", "bearer"]
+
+[[rules]]
+# JWT Token
+id = "jwt-token"
+description = "JWT Token (HS256/RS256)"
+regex = '''eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+'''
+tags = ["jwt", "token"]
+keywords = ["jwt"]
+
+[[rules]]
+# Private Key (PEM)
+id = "private-key-pem"
+description = "PEM 格式私钥"
+regex = '''-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'''
+tags = ["private-key", "pem"]
+keywords = ["private", "key"]
+
+[[rules]]
+# SSH Private Key
+id = "ssh-private-key"
+description = "SSH 私钥"
+regex = '''-----BEGIN OPENSSH PRIVATE KEY-----'''
+tags = ["ssh", "private-key"]
+keywords = ["ssh", "private"]
+
+[[rules]]
+# Database Connection String
+id = "database-connection-string"
+description = "数据库连接字符串 (含密码)"
+regex = '''(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@'''
+tags = ["database", "connection", "password"]
+keywords = ["postgres", "mysql", "mongodb", "redis", "password"]
+
+[[rules]]
+# Fernet Key (base64, 32 bytes)
+id = "fernet-key"
+description = "Fernet 加密密钥"
+regex = '''[A-Za-z0-9_\-]{43}=?'''
+entropy = 4.0
+tags = ["fernet", "encryption", "key"]
+keywords = ["fernet", "encryption", "ENCRYPTION_KEY"]
+
+[[rules]]
+# Stripe Secret Key
+id = "stripe-secret-key"
+description = "Stripe Secret Key (sk_live/sk_test)"
+regex = '''sk_(live|test)_[a-zA-Z0-9]{24,}'''
+tags = ["stripe", "payment", "secret"]
+keywords = ["stripe", "sk_live", "sk_test"]
+
+[[rules]]
+# Stripe Webhook Secret
+id = "stripe-webhook-secret"
+description = "Stripe Webhook Secret (whsec_)"
+regex = '''whsec_[a-zA-Z0-9]{32,}'''
+tags = ["stripe", "webhook", "secret"]
+keywords = ["stripe", "whsec"]
+
+[[rules]]
+# WeChat Pay API v3 Key (32 bytes hex)
+id = "wechat-pay-api-v3-key"
+description = "微信支付 APIv3 密钥 (32字节 hex)"
+regex = '''[a-fA-F0-9]{64}'''
+tags = ["wechat", "pay", "api", "key"]
+keywords = ["wechat", "pay", "api_v3_key"]
+
+[[rules]]
+# Alipay RSA Private Key (PEM)
+id = "alipay-private-key"
+description = "支付宝私钥"
+regex = '''-----BEGIN (RSA |EC )?PRIVATE KEY-----'''
+tags = ["alipay", "private-key"]
+keywords = ["alipay", "private"]
+
+[[rules]]
+# Generic Password in Config
+id = "generic-password-assignment"
+description = "配置文件中的密码赋值"
+regex = '''(?i)(password|passwd|pwd|secret)\s*[:=]\s*["']?[^\s"']{8,}["']?'''
+tags = ["password", "secret"]
+keywords = ["password", "secret"]
+
+[[rules]]
+# GitHub Personal Access Token
+id = "github-pat"
+description = "GitHub Personal Access Token (ghp_ / github_pat_)"
+regex = '''(ghp_|github_pat_)[a-zA-Z0-9]{36,}'''
+tags = ["github", "token"]
+keywords = ["github", "pat"]
+
+[[rules]]
+# Slack Token
+id = "slack-token"
+description = "Slack Bot/User Token (xoxb-/xoxp-/xoxa-)"
+regex = '''xox[bpa]-[a-zA-Z0-9-]{10,}'''
+tags = ["slack", "token"]
+keywords = ["slack"]
+
+[[rules]]
+# Discord Token
+id = "discord-token"
+description = "Discord Bot Token"
+regex = '''[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}'''
+tags = ["discord", "token"]
+keywords = ["discord"]
+
+[[rules]]
+# SendGrid API Key
+id = "sendgrid-api-key"
+description = "SendGrid API Key (SG.)"
+regex = '''SG\.[a-zA-Z0-9_\-]{22}\.[a-zA-Z0-9_\-]{43}'''
+tags = ["sendgrid", "api", "key"]
+keywords = ["sendgrid"]
+
+[[rules]]
+# Twilio Account SID / Auth Token
+id = "twilio-credentials"
+description = "Twilio Account SID (AC...) 或 Auth Token"
+regex = '''AC[a-zA-Z0-9]{32}'''
+tags = ["twilio", "sid"]
+keywords = ["twilio", "account", "sid"]
+
+[[rules]]
+# Square Access Token
+id = "square-access-token"
+description = "Square Access Token (sq0atp-/sq0csp-)"
+regex = '''sq0[a-z]{3}-[a-zA-Z0-9_\-]{22,}'''
+tags = ["square", "token"]
+keywords = ["square"]
+
+[[rules]]
+# PayPal Client ID / Secret
+id = "paypal-credentials"
+description = "PayPal Client ID / Secret"
+regex = '''A[a-zA-Z0-9_\-]{80,}'''
+tags = ["paypal", "secret"]
+keywords = ["paypal"]
+
+[[rules]]
+# Firebase Server Key
+id = "firebase-server-key"
+description = "Firebase Server Key (AAAA...)"
+regex = '''AAAA[a-zA-Z0-9_\-]{140,}'''
+tags = ["firebase", "key"]
+keywords = ["firebase"]
+
+# 自定义规则：Hemall 特定密钥 (不含负向前瞻，Go regex 不支持)
+[[rules]]
+id = "hemall-jwt-secret"
+description = "Hemall JWT Secret (开发默认值通过 allowlist 排除)"
+regex = '''(?i)HEMALL_JWT_SECRET\s*[:=]\s*["']?[a-zA-Z0-9_\-]{32,}["']?'''
+tags = ["hemall", "jwt", "secret"]
+keywords = ["HEMALL_JWT_SECRET"]
+
+[[rules]]
+id = "hemall-encryption-key"
+description = "Hemall ENCRYPTION_KEY (Fernet)"
+regex = '''(?i)ENCRYPTION_KEY\s*[:=]\s*["']?[A-Za-z0-9_\-]{43}=?["']?'''
+tags = ["hemall", "encryption", "key"]
+keywords = ["ENCRYPTION_KEY"]
+
+[[rules]]
+id = "hemall-webhook-secret"
+description = "Hemall Webhook Secret (开发默认值通过 allowlist 排除)"
+regex = '''(?i)HEMALL_WEBHOOK_SECRET\s*[:=]\s*["']?[a-zA-Z0-9_\-]{32,}["']?'''
+tags = ["hemall", "webhook", "secret"]
+keywords = ["HEMALL_WEBHOOK_SECRET"]
+
+[[rules]]
+id = "hemall-hardware-secret"
+description = "Hemall Hardware Secret (开发默认值通过 allowlist 排除)"
+regex = '''(?i)HEMALL_HARDWARE_SECRET\s*[:=]\s*["']?[a-zA-Z0-9_\-]{32,}["']?'''
+tags = ["hemall", "hardware", "secret"]
+keywords = ["HEMALL_HARDWARE_SECRET"]

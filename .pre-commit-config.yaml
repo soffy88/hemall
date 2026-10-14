@@ -1,0 +1,39 @@
+# Pre-commit hooks 配置
+# 安装: pre-commit install
+# 运行: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+        name: gitleaks secret scan
+        description: Scan for secrets with gitleaks
+        entry: gitleaks detect --source . --config .gitleaks.toml --verbose --redact
+        language: system
+        types: [text]
+        exclude: ^(\.gitleaks\.toml|\.env\.example|docker-compose.*\.yml|Dockerfile.*|tests/.*|.*_test\.py)$
+        args: ["--no-banner"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      - id: ruff
+        name: ruff lint
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+        name: ruff format
+        args: [--check]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: detect-aws-credentials
+        args: [--allow-missing-credentials]
