@@ -332,11 +332,11 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("raw_text", "TEXT"),
             ("raw_image_url", "VARCHAR(255)"),
             # VLM/LLM 提纯后的量化特征 (Quantified Features)
-            ("freshness_index", "DECIMAL(3,2)"),     # 新鲜度指数 (0.00 - 1.00)
+            ("freshness_index", "DECIMAL(3,2)"),  # 新鲜度指数 (0.00 - 1.00)
             ("sentiment_polarity", "DECIMAL(3,2)"),  # 情感极性 (-1.00 到 1.00)
-            ("keywords", "JSONB"),                   # 提取的关键标签 ["脆甜", "个头大"]
+            ("keywords", "JSONB"),  # 提取的关键标签 ["脆甜", "个头大"]
             # 引擎反馈
-            ("reward_granted", "INT DEFAULT 0"),     # 给予的算力金奖励 (分)
+            ("reward_granted", "INT DEFAULT 0"),  # 给予的算力金奖励 (分)
             ("status", "VARCHAR(20) DEFAULT 'published'"),
             ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
         ],

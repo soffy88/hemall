@@ -64,14 +64,8 @@ def test_webhook_nonce_replay_rejected():
     payload = b"payload"
     sig = _sign(payload, "s3cret")
     seen: set[str] = set()
-    assert (
-        verify_hmac_sha256(payload, sig, "s3cret", nonce="abc", _seen_nonces=seen)
-        is True
-    )
-    assert (
-        verify_hmac_sha256(payload, sig, "s3cret", nonce="abc", _seen_nonces=seen)
-        is False
-    )
+    assert verify_hmac_sha256(payload, sig, "s3cret", nonce="abc", _seen_nonces=seen) is True
+    assert verify_hmac_sha256(payload, sig, "s3cret", nonce="abc", _seen_nonces=seen) is False
 
 
 def test_webhook_garbage_timestamp_rejected():
@@ -171,22 +165,16 @@ def test_payment_gateway_rejects_negative_amounts():
     gateway = ManualPaymentGateway()
     with pytest.raises(ValueError):
         asyncio.run(
-            gateway.prepay(
-                out_trade_no="o", total_fee_cents=0, description="", notify_url=""
-            )
+            gateway.prepay(out_trade_no="o", total_fee_cents=0, description="", notify_url="")
         )
     with pytest.raises(ValueError):
-        asyncio.run(
-            gateway.refund(out_trade_no="o", out_refund_no="r", refund_fee_cents=-1)
-        )
+        asyncio.run(gateway.refund(out_trade_no="o", out_refund_no="r", refund_fee_cents=-1))
 
 
 def test_payment_gateway_stripe_prepay_shape():
     gateway = ManualPaymentGateway()
     result = asyncio.run(
-        gateway.stripe_prepay(
-            out_trade_no="order_s", total_fee_cents=990, description="草莓批次"
-        )
+        gateway.stripe_prepay(out_trade_no="order_s", total_fee_cents=990, description="草莓批次")
     )
     assert result["payment_intent_id"].startswith("pi_mock_")
     assert result["client_secret"]
@@ -215,19 +203,10 @@ def test_find_nearest_location_empty_raises():
 
 def test_shelf_life_safe():
     now = datetime.now(UTC)
-    assert (
-        is_shelf_life_safe(None, now=now, margin_hours=2.0) is True
-    )  # 无过期时间=长期品
-    assert (
-        is_shelf_life_safe(now + timedelta(hours=5), now=now, margin_hours=2.0) is True
-    )
-    assert (
-        is_shelf_life_safe(now + timedelta(hours=1), now=now, margin_hours=2.0) is False
-    )
-    assert (
-        is_shelf_life_safe(now - timedelta(minutes=1), now=now, margin_hours=2.0)
-        is False
-    )
+    assert is_shelf_life_safe(None, now=now, margin_hours=2.0) is True  # 无过期时间=长期品
+    assert is_shelf_life_safe(now + timedelta(hours=5), now=now, margin_hours=2.0) is True
+    assert is_shelf_life_safe(now + timedelta(hours=1), now=now, margin_hours=2.0) is False
+    assert is_shelf_life_safe(now - timedelta(minutes=1), now=now, margin_hours=2.0) is False
 
 
 # ── Task 2.2 / 3.1: 新 omodul 注册 (registry 接线) ──────────────────────

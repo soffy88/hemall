@@ -46,9 +46,8 @@ def _assert_less_tests() -> list[str]:
 
 def test_no_assert_less_tests_in_test_suite():
     offenders = _assert_less_tests()
-    assert offenders == [], (
-        "这些测试没有任何断言，把被测代码删掉它们也会绿:\n  - "
-        + "\n  - ".join(offenders)
+    assert offenders == [], "这些测试没有任何断言，把被测代码删掉它们也会绿:\n  - " + "\n  - ".join(
+        offenders
     )
 
 

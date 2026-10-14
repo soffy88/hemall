@@ -269,9 +269,7 @@ async def movement_history(
     svc: Any = Depends(get_inventory_service),
 ) -> list[dict[str, Any]]:
     """查询库存变动历史。"""
-    return await svc.get_movement_history(
-        product_id, location_id, variant_id, limit, offset
-    )
+    return await svc.get_movement_history(product_id, location_id, variant_id, limit, offset)
 
 
 @router.get("/alerts")

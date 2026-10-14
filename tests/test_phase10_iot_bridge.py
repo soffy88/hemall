@@ -26,9 +26,7 @@ from app.ext.oskill import (
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-DB_TESTS = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+DB_TESTS = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 # 让主干测试套件能 import 独立外挂域的纯翻译模块 (handlers.py 零第三方依赖)。
 EDGE_DIR = Path(__file__).resolve().parent.parent / "edge_bridge"
@@ -151,9 +149,7 @@ class TestBuildPickPayload:
 
     def test_wrong_signal_rejected(self):
         with pytest.raises(ValueError):
-            build_pick_payload(
-                {"m_id": "x", "dw": 1, "t_id": "t"}, "cn/v1/n/n1/g/g1/req"
-            )
+            build_pick_payload({"m_id": "x", "dw": 1, "t_id": "t"}, "cn/v1/n/n1/g/g1/req")
 
     def test_missing_field_rejected(self):
         with pytest.raises(ValueError):
@@ -181,9 +177,7 @@ class TestBuildGateReply:
 
     def test_falls_back_to_block_when_decision_absent(self):
         """主干宕机降级: 空决策 → block/red (网桥兜底语义)。"""
-        _, reply = build_gate_reply(
-            {"node_id": "n1", "entity_id": "g1"}, {}, {"m_id": "x"}
-        )
+        _, reply = build_gate_reply({"node_id": "n1", "entity_id": "g1"}, {}, {"m_id": "x"})
         assert reply == {"req_id": "x", "act": "block", "led": "red"}
 
     def test_accepts_bridge_side_key_act(self):
@@ -301,9 +295,7 @@ async def cn_pool():
 
     from app.ext.schema import ensure_ext_schema
 
-    pool = await PgPool.create(
-        name="hemall_phase10_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase10_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await cleanup_db_test_rows(pool)
     await ensure_ext_schema(pool)
     yield pool
@@ -417,9 +409,7 @@ class TestHardwarePickDb:
             hardware_secret = "dev-hardware-secret-change-me"
 
         class _FakeRequest:
-            app = type(
-                "A", (), {"state": type("S", (), {"pool": cn_pool, "config": _Cfg()})()}
-            )()
+            app = type("A", (), {"state": type("S", (), {"pool": cn_pool, "config": _Cfg()})()})()
 
         class _Pick(BaseModel):
             message_id: str
@@ -476,15 +466,11 @@ class TestGateReconcileDb:
         assert result["tare_adj"] == 0
 
         async with cn_pool.acquire() as conn:
-            gate = await conn.fetchrow(
-                "SELECT * FROM hardware_gate WHERE gate_id = $1", "g-iot-01"
-            )
+            gate = await conn.fetchrow("SELECT * FROM hardware_gate WHERE gate_id = $1", "g-iot-01")
             assert gate["status"] == "idle"
             assert gate["tare_weight_grams"] == 500
 
-    async def test_picks_accumulate_and_pass_with_tare_adjustment(
-        self, cn_pool, tmp_path
-    ):
+    async def test_picks_accumulate_and_pass_with_tare_adjustment(self, cn_pool, tmp_path):
         """tare 500 + 拣货 2×90g=180 → 期望 680；实测 685 (公差 20) → pass，皮重 +5。"""
         from pydantic import BaseModel
 
@@ -496,9 +482,7 @@ class TestGateReconcileDb:
             hardware_secret = "dev-hardware-secret-change-me"
 
         class _FakeRequest:
-            app = type(
-                "A", (), {"state": type("S", (), {"pool": cn_pool, "config": _Cfg()})()}
-            )()
+            app = type("A", (), {"state": type("S", (), {"pool": cn_pool, "config": _Cfg()})()})()
 
         class _Pick(BaseModel):
             message_id: str
@@ -543,9 +527,7 @@ class TestGateReconcileDb:
         assert result["tare_adj"] == 5
 
         async with cn_pool.acquire() as conn:
-            gate = await conn.fetchrow(
-                "SELECT * FROM hardware_gate WHERE gate_id = $1", "g-iot-02"
-            )
+            gate = await conn.fetchrow("SELECT * FROM hardware_gate WHERE gate_id = $1", "g-iot-02")
             assert gate["tare_weight_grams"] == 505  # 500 + 漂移补偿 5
             assert gate["expected_weight_grams"] == 505  # 放行后归位到新 tare
             assert gate["status"] == "idle"
@@ -579,9 +561,7 @@ class TestGateReconcileDb:
         assert result["led"] == "red"
 
         async with cn_pool.acquire() as conn:
-            gate = await conn.fetchrow(
-                "SELECT * FROM hardware_gate WHERE gate_id = $1", "g-iot-03"
-            )
+            gate = await conn.fetchrow("SELECT * FROM hardware_gate WHERE gate_id = $1", "g-iot-03")
             assert gate["status"] == "blocked"
 
 
@@ -604,9 +584,7 @@ def test_http_roundtrip_pick_and_gate():
 
         from app.ext.schema import ensure_ext_schema
 
-        pool = await PgPool.create(
-            name="hemall_phase10_http", dsn=TEST_DSN, min_size=1, max_size=2
-        )
+        pool = await PgPool.create(name="hemall_phase10_http", dsn=TEST_DSN, min_size=1, max_size=2)
         try:
             await cleanup_db_test_rows(pool)
             await ensure_ext_schema(pool)

@@ -20,9 +20,7 @@ from obase.persistence.pool import PgPool
 # ── 通用 CRUD (对齐 SPEC §2.1，委托 obase.persistence 既有实现) ──────────
 
 
-async def db_insert(
-    pool: PgPool, *, table: str, payload: dict[str, Any]
-) -> dict[str, Any]:
+async def db_insert(pool: PgPool, *, table: str, payload: dict[str, Any]) -> dict[str, Any]:
     """单行插入，返回插入后的完整行 (id + 原 payload)。"""
     row_id = await insert_one(pool, table=table, data=payload, returning="id")
     return {"id": row_id, **payload}
@@ -57,9 +55,7 @@ async def db_query_many(
 # ── 领域专属：批次库存硬锁 (新增，SPEC 未提供现成实现) ─────────────────────
 
 
-async def db_lock_batch_inventory(
-    pool: PgPool, *, batch_id: str, lock_qty: int
-) -> dict[str, Any]:
+async def db_lock_batch_inventory(pool: PgPool, *, batch_id: str, lock_qty: int) -> dict[str, Any]:
     """PostgreSQL 原生防超卖锁：单条原子 UPDATE ... RETURNING。
 
     不借助应用层事务包裹或 Redis 分布式锁——WHERE 子句里的库存充足性判断
@@ -145,9 +141,7 @@ async def db_unlock_batch_inventory(
     }
 
 
-async def db_confirm_batch_pick(
-    pool: PgPool, *, batch_id: str, qty: int
-) -> dict[str, Any]:
+async def db_confirm_batch_pick(pool: PgPool, *, batch_id: str, qty: int) -> dict[str, Any]:
     """把硬锁的预留转成永久出库：stock_qty 和 locked_qty 同时扣减 qty。
 
     db_lock_batch_inventory 只是"占住"库存 (下单时)；confirm_batch_pick 这个
@@ -176,8 +170,7 @@ async def db_confirm_batch_pick(
             "error": {
                 "type": "InvalidPickState",
                 "message": (
-                    f"batch {batch_id!r} not found or reserved_qty < qty={qty} "
-                    "(nothing to confirm)"
+                    f"batch {batch_id!r} not found or reserved_qty < qty={qty} (nothing to confirm)"
                 ),
             },
         }
@@ -205,9 +198,7 @@ async def db_confirm_batch_pick(
 # 不重复定义。
 
 
-async def ext_pay_transfer(
-    provider: str, *, account: str, amount: int
-) -> dict[str, Any]:
+async def ext_pay_transfer(provider: str, *, account: str, amount: int) -> dict[str, Any]:
     """调用打款 provider (微信企业付款/银行对公) 给供应商/工人/宿主账户转账。"""
     from obase.provider_registry import ProviderRegistry
 
@@ -215,9 +206,7 @@ async def ext_pay_transfer(
     return await p.transfer(account=account, amount=amount)
 
 
-async def ext_weather_forecast(
-    provider: str, *, lat: float, lon: float
-) -> dict[str, Any]:
+async def ext_weather_forecast(provider: str, *, lat: float, lon: float) -> dict[str, Any]:
     """拉取指定坐标点未来 2 小时的降水概率与灾害级别，供 weather_arbitrage_engine 用。"""
     from obase.provider_registry import ProviderRegistry
 
@@ -237,9 +226,7 @@ async def vlm_assess_damage(
     )
 
 
-async def cv_parse_intake_stream(
-    provider: str, *, video_stream: bytes
-) -> dict[str, Any]:
+async def cv_parse_intake_stream(provider: str, *, video_stream: bytes) -> dict[str, Any]:
     """接收微仓顶棚摄像头数据，执行 OCR 和物体追踪，定位批次货架位。"""
     from obase.provider_registry import ProviderRegistry
 
@@ -247,9 +234,7 @@ async def cv_parse_intake_stream(
     return await p.parse_intake_stream(video_stream=video_stream)
 
 
-async def cv_parse_retail_receipt(
-    provider: str, *, image_bytes: bytes
-) -> list[dict[str, Any]]:
+async def cv_parse_retail_receipt(provider: str, *, image_bytes: bytes) -> list[dict[str, Any]]:
     """OCR 解析竞争对手 (传统超市) 购物小票，用于比价狙击/众包价格基线核销
     (v5.0 SPEC 里的 cv_parse_competitor_receipt 就是这个函数，不重复定义)。
     """
@@ -266,9 +251,7 @@ async def spider_fetch_competitor_prices(
     from obase.provider_registry import ProviderRegistry
 
     p = ProviderRegistry.get().generic("spider", provider)
-    return await p.fetch_competitor_prices(
-        lat=lat, lon=lon, radius_km=radius_km, keywords=keywords
-    )
+    return await p.fetch_competitor_prices(lat=lat, lon=lon, radius_km=radius_km, keywords=keywords)
 
 
 async def ext_douyin_sync_inventory(
@@ -356,9 +339,7 @@ async def ext_payment_gateway_refund(
     )
 
 
-async def ext_llm_generate_text(
-    provider: str, *, system_prompt: str, user_prompt: str
-) -> str:
+async def ext_llm_generate_text(provider: str, *, system_prompt: str, user_prompt: str) -> str:
     """调用外部大模型 (如 GPT-4o/Claude) 生成纯文本 (v4.0 用于播报文案)。"""
     from obase.provider_registry import ProviderRegistry
 
@@ -507,11 +488,8 @@ async def ext_vlm_parse_battle_report(
     else:
         user_prompt += "\nImage: (无)"
 
-    raw = await p.generate_text(
-        system_prompt=_BATTLE_REPORT_SYSTEM_PROMPT, user_prompt=user_prompt
-    )
+    raw = await p.generate_text(system_prompt=_BATTLE_REPORT_SYSTEM_PROMPT, user_prompt=user_prompt)
     return _normalize_battle_report_json(raw, text=text or "")
-
 
 
 async def ext_wechat_channel_publish(
@@ -543,13 +521,9 @@ async def ext_notify_send(
 
     p = ProviderRegistry.get().generic("notification", provider)
     if channel == "sms":
-        result = await p.send_sms(
-            to=str(data.get("to", "")), message=f"[{template}] {data}"
-        )
+        result = await p.send_sms(to=str(data.get("to", "")), message=f"[{template}] {data}")
     else:
-        result = await p.send_email(
-            to=str(data.get("to", "")), subject=template, body=str(data)
-        )
+        result = await p.send_email(to=str(data.get("to", "")), subject=template, body=str(data))
     return result.get("status") == "sent"
 
 
@@ -574,9 +548,7 @@ def generate_id_v7(prefix: str) -> str:
     return f"{prefix}_{raw[:budget]}"
 
 
-def math_haversine_distance(
-    lat1: float, *, lon1: float, lat2: float, lon2: float
-) -> float:
+def math_haversine_distance(lat1: float, *, lon1: float, lat2: float, lon2: float) -> float:
     """球面距离极速计算 (haversine 公式)，单位公里。
 
     Args:
@@ -592,10 +564,7 @@ def math_haversine_distance(
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -623,9 +592,7 @@ def math_polygon_contains(polygon: dict[str, Any], point: tuple[float, float]) -
         raise ValueError("math_polygon_contains: polygon must be a GeoJSON Polygon")
     rings = polygon.get("coordinates") or []
     if not rings or len(rings[0]) < 3:
-        raise ValueError(
-            "math_polygon_contains: outer ring must have at least 3 points"
-        )
+        raise ValueError("math_polygon_contains: outer ring must have at least 3 points")
 
     lat, lon = point
     ring = rings[0]
@@ -636,9 +603,7 @@ def math_polygon_contains(polygon: dict[str, Any], point: tuple[float, float]) -
     for i in range(n):
         xi, yi = ring[i][0], ring[i][1]
         xj, yj = ring[j][0], ring[j][1]
-        intersects = ((yi > y) != (yj > y)) and (
-            x < (xj - xi) * (y - yi) / (yj - yi) + xi
-        )
+        intersects = ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi)
         if intersects:
             inside = not inside
         j = i

@@ -19,16 +19,16 @@ from pydantic import BaseModel
 class PushPlatform(Enum):
     """推送目标平台。"""
 
-    FCM = "fcm"              # Firebase Cloud Messaging (Android/iOS)
-    APNS = "apns"            # Apple Push Notification Service (iOS)
+    FCM = "fcm"  # Firebase Cloud Messaging (Android/iOS)
+    APNS = "apns"  # Apple Push Notification Service (iOS)
 
 
 class PushPriority(Enum):
     """推送优先级。"""
 
-    LOW = "low"              # 低优先级 (可能延迟送达)
-    NORMAL = "normal"        # 正常优先级
-    HIGH = "high"            # 高优先级 (立即推送)
+    LOW = "low"  # 低优先级 (可能延迟送达)
+    NORMAL = "normal"  # 正常优先级
+    HIGH = "high"  # 高优先级 (立即推送)
 
 
 @dataclass
@@ -106,6 +106,6 @@ class TemplateMessage(BaseModel):
 
     template_id: str  # 如: order.shipped, payment.success
     title_template: str  # 如: "订单 {order_id} 已发货"
-    body_template: str   # 如: "您的包裹正在路上，物流单号: {tracking_number}"
+    body_template: str  # 如: "您的包裹正在路上，物流单号: {tracking_number}"
     placeholders: list[str] = field(default_factory=list)  # 待替换变量列表
     default_data: dict[str, str] = field(default_factory=dict)

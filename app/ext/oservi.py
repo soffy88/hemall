@@ -202,9 +202,7 @@ def build_weather_arbitrage_engine(
 _MARKDOWN_WINDOW_HOURS = 48
 
 
-def build_inventory_reaper_engine(
-    pool: Any, *, settings: Settings
-) -> CronSchedulerEngine:
+def build_inventory_reaper_engine(pool: Any, *, settings: Settings) -> CronSchedulerEngine:
     """死神引擎 (on_cron，半夜 2:00)。
 
     扫描全仓 active 且有可用库存 (未被硬锁) 的批次：已过期的直接注入
@@ -255,9 +253,7 @@ def build_inventory_reaper_engine(
                 if hours_to_expiry > _MARKDOWN_WINDOW_HOURS:
                     continue
 
-                shelf_life_hours = (
-                    expiration_time - batch["intake_time"]
-                ).total_seconds() / 3600
+                shelf_life_hours = (expiration_time - batch["intake_time"]).total_seconds() / 3600
                 if shelf_life_hours <= 0:
                     continue  # 数据异常 (expiration<=intake)，跳过不崩整个 tick
 
@@ -305,9 +301,7 @@ def build_demand_aggregator_engine(
     oservi)，这根线必须由更外层的调用方接，不能塞进 create_crowd_intent 内部。
     """
 
-    async def notify_procurement_po(
-        *, event: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def notify_procurement_po(*, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         ok = await ext_notify_send(
             notification_provider,
             channel="email",
@@ -416,12 +410,8 @@ def build_node_host_settlement_engine(
             worker_id = row["worker_id"]
             result = await dispatch_labor_payment(
                 DispatchLaborPaymentConfig(payout_provider=payout_provider),
-                DispatchLaborPaymentInput(
-                    worker_id=worker_id, payout_account=worker_id
-                ),
-                _output_dir(
-                    settings, "node_host_settlement_engine", "dispatch_labor_payment"
-                ),
+                DispatchLaborPaymentInput(worker_id=worker_id, payout_account=worker_id),
+                _output_dir(settings, "node_host_settlement_engine", "dispatch_labor_payment"),
                 pool=pool,
             )
             if result["status"] == "completed":
@@ -516,9 +506,7 @@ def build_autonomous_triage_engine(
     evidence_image_url, user_trust_score, route_risk})``。
     """
 
-    async def handle_claim_submitted(
-        *, event: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def handle_claim_submitted(*, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         order_id = payload["order_id"]
         batch_id = payload["batch_id"]
         user_id = payload["user_id"]
@@ -778,9 +766,7 @@ def build_spatial_fomo_engine(
         破冰"。
     """
 
-    async def handle_fomo_signal(
-        *, event: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def handle_fomo_signal(*, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         if event == "spatial_fomo.threshold_reached":
             result = await commission_new_location(
                 CommissionNewLocationConfig(),
@@ -934,9 +920,7 @@ def build_social_broadcast_engine(
         published: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
 
-        async def _fire(
-            batch_row: dict[str, Any], broadcast_type: str, multiplier: int
-        ) -> None:
+        async def _fire(batch_row: dict[str, Any], broadcast_type: str, multiplier: int) -> None:
             result = await execute_channel_broadcast_workflow(
                 ExecuteChannelBroadcastWorkflowConfig(
                     llm_provider=llm_provider, wechat_provider=wechat_provider
@@ -1168,9 +1152,7 @@ def build_mercenary_routing_engine(
 
         pushed: list[dict[str, Any]] = []
         for b in danger_batches:
-            hours_to_expiry = (
-                b["expiration_time"] - datetime.now(UTC)
-            ).total_seconds() / 3600.0
+            hours_to_expiry = (b["expiration_time"] - datetime.now(UTC)).total_seconds() / 3600.0
             bounty_rate = compute_mercenary_bounty_rate(hours_to_expiry)
             if bounty_rate <= 0:
                 continue
@@ -1280,9 +1262,7 @@ def build_affiliate_settlement_engine(
     )
 
 
-def build_inventory_decay_engine(
-    pool: Any, *, settings: Settings
-) -> CronSchedulerEngine:
+def build_inventory_decay_engine(pool: Any, *, settings: Settings) -> CronSchedulerEngine:
     """Theta 衰减引信引擎 (on_interval，每 1 小时)。
 
     补天计划 Task 2.2：对过期时间强制轮询——一旦 NOW() > expiration_time，
@@ -1431,7 +1411,9 @@ def build_competitor_spider_engine(
                 except Exception as exc:  # noqa: BLE001 - 单次抓取失败不中断整批
                     logger.warning(
                         "spider fetch failed: variant=%s loc=%s: %s",
-                        variant["id"], loc["id"], exc,
+                        variant["id"],
+                        loc["id"],
+                        exc,
                     )
                     continue
 
@@ -1450,9 +1432,7 @@ def build_competitor_spider_engine(
                         title.strip().lower() == variant["title"].strip().lower()
                         or variant["title"].strip().lower() in title.strip().lower()
                     )
-                    normalized = normalize_sku_price(
-                        int(round(raw_price * 100)), raw_unit=raw_unit
-                    )
+                    normalized = normalize_sku_price(int(round(raw_price * 100)), raw_unit=raw_unit)
                     async with pool.acquire() as conn:
                         await conn.execute(
                             'INSERT INTO "price_benchmark" '
@@ -1542,8 +1522,7 @@ def build_sla_promise_engine(pool: Any, settings: Settings) -> CronSchedulerEngi
                     paid_at=row["created_at"] or now,
                 )
                 await conn.execute(
-                    'UPDATE "customer_order" SET promised_delivery_at = $1 '
-                    "WHERE id = $2",
+                    'UPDATE "customer_order" SET promised_delivery_at = $1 WHERE id = $2',
                     sla["promised_at"],
                     row["id"],
                 )
@@ -1580,7 +1559,7 @@ def build_sla_compensation_engine(pool: Any, settings: Settings) -> CronSchedule
         overdue = await db_query_many(
             pool,
             sql=(
-                'SELECT o.id AS order_id, o.customer_id AS customer_id '
+                "SELECT o.id AS order_id, o.customer_id AS customer_id "
                 'FROM "customer_order" o '
                 "WHERE o.promised_delivery_at IS NOT NULL "
                 "AND o.promised_delivery_at < NOW() "
@@ -1595,14 +1574,12 @@ def build_sla_compensation_engine(pool: Any, settings: Settings) -> CronSchedule
         async with pool.acquire() as conn:
             for row in overdue:
                 await conn.execute(
-                    'UPDATE "customer" SET system_balance = system_balance + $1 '
-                    "WHERE id = $2",
+                    'UPDATE "customer" SET system_balance = system_balance + $1 WHERE id = $2',
                     SLA_COMPENSATION_CENTS,
                     row["customer_id"],
                 )
                 await conn.execute(
-                    'UPDATE "customer_order" SET sla_compensated_at = NOW() '
-                    "WHERE id = $1",
+                    'UPDATE "customer_order" SET sla_compensated_at = NOW() WHERE id = $1',
                     row["order_id"],
                 )
                 compensated.append(str(row["order_id"]))
@@ -1677,8 +1654,7 @@ def build_wechat_cert_rotation_engine(pool: Any, settings: Settings) -> CronSche
         loaded = _load_gateway()
         if loaded is None:
             logger.info(
-                "wechat cert rotation skipped: gateway '%s' not wechat or "
-                "not configured",
+                "wechat cert rotation skipped: gateway '%s' not wechat or not configured",
                 settings.payment_gateway_provider,
             )
             return {

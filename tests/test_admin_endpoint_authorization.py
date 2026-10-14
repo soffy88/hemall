@@ -69,13 +69,9 @@ ADMIN_ENDPOINTS = [
     ("GET", "/admin/growth/conversion-logs"),
 ]
 
-PII_ENDPOINTS = [
-    ep for ep in ADMIN_ENDPOINTS
-    if admin_roles_for_path(ep[1]) == ADMIN_PII_ROLES
-]
+PII_ENDPOINTS = [ep for ep in ADMIN_ENDPOINTS if admin_roles_for_path(ep[1]) == ADMIN_PII_ROLES]
 STAFF_TIER_ENDPOINTS = [
-    ep for ep in ADMIN_ENDPOINTS
-    if admin_roles_for_path(ep[1]) == ADMIN_STAFF_ROLES
+    ep for ep in ADMIN_ENDPOINTS if admin_roles_for_path(ep[1]) == ADMIN_STAFF_ROLES
 ]
 
 
@@ -139,11 +135,14 @@ def test_plain_staff_is_denied_on_every_pii_endpoint():
 
 
 def test_pii_prefix_list_covers_the_documented_sensitive_reads():
-    for path in ("/admin/customers", "/admin/users", "/admin/gift-cards",
-                 "/admin/customers/c1/addresses"):
+    for path in (
+        "/admin/customers",
+        "/admin/users",
+        "/admin/gift-cards",
+        "/admin/customers/c1/addresses",
+    ):
         assert any(
-            path == prefix or path.startswith(prefix + "/")
-            for prefix in ADMIN_PII_PATH_PREFIXES
+            path == prefix or path.startswith(prefix + "/") for prefix in ADMIN_PII_PATH_PREFIXES
         ), path
 
 
@@ -228,12 +227,11 @@ def test_support_role_is_accepted_on_pii_endpoints(client, method, path):
 def test_support_role_is_issued_for_configured_support_ids():
     from app.auth import STAFF_ROLES, _staff_role_for_user
 
-    settings = Settings(
-        privileged_staff_ids="boss", support_staff_ids="helper1, helper2"
-    )
+    settings = Settings(privileged_staff_ids="boss", support_staff_ids="helper1, helper2")
     assert _staff_role_for_user("boss", settings) == "admin"
     assert _staff_role_for_user("helper1", settings) == "support"
     assert _staff_role_for_user("helper2", settings) == "support"
     assert _staff_role_for_user("nobody", settings) == "staff"
-    assert {_staff_role_for_user(u, settings) for u in
-            ("boss", "helper1", "helper2", "nobody")} <= STAFF_ROLES
+    assert {
+        _staff_role_for_user(u, settings) for u in ("boss", "helper1", "helper2", "nobody")
+    } <= STAFF_ROLES

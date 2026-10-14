@@ -103,7 +103,7 @@ def parse_suning_search(html: str) -> list[dict[str, Any]]:
                 if it["item"] == name_m.group(1):
                     it["prdid"] = prdid_m.group(1)
     # 解析失败但页面确实含关键词时留空 (不伪造)
-    return items[: _MAX_ITEMS_PER_KEYWORD]
+    return items[:_MAX_ITEMS_PER_KEYWORD]
 
 
 def parse_suning_price(jsonp_body: str) -> float | None:
@@ -140,7 +140,7 @@ def parse_jddj_search(html: str) -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
     items: list[dict[str, Any]] = []
     for card in soup.select(".item-card, .product-item, [class*='item-card']")[
-        : _MAX_ITEMS_PER_KEYWORD
+        :_MAX_ITEMS_PER_KEYWORD
     ]:
         title_el = card.select_one(".item-title, .product-name, .title")
         price_el = card.select_one(".price, .price-num, .sale-price")
@@ -222,9 +222,7 @@ class LayeredSpiderProvider:
             async with httpx.AsyncClient(
                 timeout=_HTTP_TIMEOUT, headers={"User-Agent": _USER_AGENT}, follow_redirects=True
             ) as client:
-                resp = await client.get(
-                    f"https://m.suning.com/search/{quote(keyword)}/"
-                )
+                resp = await client.get(f"https://m.suning.com/search/{quote(keyword)}/")
                 if resp.status_code >= 400:
                     logger.warning("suning search %s -> %d", keyword, resp.status_code)
                     return []
@@ -264,9 +262,7 @@ class LayeredSpiderProvider:
                 headers={"User-Agent": _USER_AGENT},
                 follow_redirects=True,
             ) as client:
-                resp = await client.get(
-                    f"https://www.jddj.com/search?keyword={quote(keyword)}"
-                )
+                resp = await client.get(f"https://www.jddj.com/search?keyword={quote(keyword)}")
             if resp.status_code >= 400:
                 return []
             return parse_jddj_search(resp.text)
@@ -315,7 +311,7 @@ class LayeredSpiderProvider:
                 self._fetch_openfoodfacts(keyword),
             ]
             try:
-                batches = await asyncio.gather(*fetchers[: _MAX_TARGETS_PER_KEYWORD])
+                batches = await asyncio.gather(*fetchers[:_MAX_TARGETS_PER_KEYWORD])
             except Exception as exc:  # noqa: BLE001 - 单关键词抓取失败不中断整体
                 logger.debug("spider targets failed %s: %s", keyword, exc)
                 continue
@@ -333,4 +329,4 @@ class LayeredSpiderProvider:
                         "unit": str(item.get("unit") or ""),
                         "store": str(item.get("store") or "web"),
                     }
-        return list(results.values())[: _MAX_ITEMS_PER_KEYWORD]
+        return list(results.values())[:_MAX_ITEMS_PER_KEYWORD]

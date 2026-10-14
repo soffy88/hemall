@@ -20,9 +20,7 @@ from fastapi.testclient import TestClient
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -80,6 +78,7 @@ class TestIngestMedia:
         from obase.uuid7 import uuid7
 
         from app.ext.agent_gateway import ingest_media
+
         async with cn_pool.acquire() as conn:
             loc_id = await conn.fetchval(
                 (
@@ -124,7 +123,8 @@ class TestIngestMedia:
                     'SELECT id, variant_id, location_id, stock_qty, status FROM "inventory_batch" '
                     "WHERE id = $1"
                 ),
-                result.get("batch_id") or await conn.fetchval(
+                result.get("batch_id")
+                or await conn.fetchval(
                     (
                         'SELECT id FROM "inventory_batch" WHERE variant_id = $1 '
                         "ORDER BY created_at DESC LIMIT 1"

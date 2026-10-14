@@ -134,9 +134,7 @@ async def hardware_pick(
             unit_weight = int(shelf["unit_weight_grams"]) if shelf else 0
 
             # 3. 重量增量 → 数量增量
-            qty_delta = (
-                compute_cart_delta(body.delta_weight, unit_weight) if unit_weight else 0
-            )
+            qty_delta = compute_cart_delta(body.delta_weight, unit_weight) if unit_weight else 0
             status = "processed" if batch_id is not None else "orphan"
 
             # 4. 落账
@@ -191,9 +189,7 @@ async def gate_reconcile(
     """
     pool = _pool(request)
     async with pool.acquire() as conn:
-        gate = await conn.fetchrow(
-            'SELECT * FROM "hardware_gate" WHERE gate_id = $1', body.gate_id
-        )
+        gate = await conn.fetchrow('SELECT * FROM "hardware_gate" WHERE gate_id = $1', body.gate_id)
 
         if gate is None:
             # 首见：以空筐实测为皮重基线，直接放行 (校准态)。

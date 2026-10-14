@@ -271,9 +271,7 @@ def test_caddyfile_preserves_real_client_ip():
 
     root = Path(__file__).resolve().parents[1]
     text = (root / "Caddyfile").read_text(encoding="utf-8")
-    body = "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
+    body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     assert "header_up X-Forwarded-For {remote_host}" not in body, (
         "Caddyfile 仍把 X-Forwarded-For 覆写为 {remote_host}，真实客户端 IP 丢失 (audit P1-5)"
     )
@@ -291,17 +289,13 @@ def test_caddyfile_declares_trusted_proxies():
     assert "trusted_proxies" in text, "Caddyfile 未声明 trusted_proxies，{client_ip} 会退化成下一跳"
 
 
-@pytest.mark.parametrize(
-    "conf", ["nginx.conf.template", "nginx.mall-sxueji.conf.template"]
-)
+@pytest.mark.parametrize("conf", ["nginx.conf.template", "nginx.mall-sxueji.conf.template"])
 def test_nginx_passes_client_ip_through(conf: str):
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     text = (root / conf).read_text(encoding="utf-8")
-    assert "proxy_set_header X-Real-IP $remote_addr;" in text, (
-        f"{conf} 未透传 X-Real-IP"
-    )
+    assert "proxy_set_header X-Real-IP $remote_addr;" in text, f"{conf} 未透传 X-Real-IP"
     assert "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;" in text, (
         f"{conf} 未按累加方式透传 X-Forwarded-For"
     )

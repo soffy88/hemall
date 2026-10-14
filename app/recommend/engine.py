@@ -48,9 +48,11 @@ class CollaborativeFilteringEngine:
         for b in behaviors:
             score = self._behavior_to_score(b.behavior_type)
             self._rating_matrix.add_rating(b.user_id, b.product_id, score)
-        logger.info("Rating matrix built: %d users, %d items",
-                     len(self._rating_matrix.get_all_users()),
-                     sum(len(ratings) for ratings in self._rating_matrix._matrix.values()))
+        logger.info(
+            "Rating matrix built: %d users, %d items",
+            len(self._rating_matrix.get_all_users()),
+            sum(len(ratings) for ratings in self._rating_matrix._matrix.values()),
+        )
 
     def _behavior_to_score(self, behavior_type: UserBehaviorType) -> float:
         """将用户行为类型映射为评分权重。
@@ -99,8 +101,8 @@ class CollaborativeFilteringEngine:
             diff_a = ratings_a[item] - mean_a
             diff_b = ratings_b[item] - mean_b
             numerator += diff_a * diff_b
-            denom_a += diff_a ** 2
-            denom_b += diff_b ** 2
+            denom_a += diff_a**2
+            denom_b += diff_b**2
 
         denominator = math.sqrt(denom_a * denom_b)
         if denominator == 0:
@@ -242,9 +244,7 @@ class ContentBasedEngine:
         vector[f"rating:{rating_bin}"] = 1
         return vector
 
-    def _cosine_similarity(
-        self, vec_a: dict[str, int], vec_b: dict[str, int]
-    ) -> float:
+    def _cosine_similarity(self, vec_a: dict[str, int], vec_b: dict[str, int]) -> float:
         """计算两个特征向量的 Cosine 相似度。
 
         Cosine 公式:
@@ -255,8 +255,8 @@ class ContentBasedEngine:
             return 0.0
 
         dot_product = sum(vec_a[k] * vec_b[k] for k in common_keys)
-        norm_a = math.sqrt(sum(v ** 2 for v in vec_a.values()))
-        norm_b = math.sqrt(sum(v ** 2 for v in vec_b.values()))
+        norm_a = math.sqrt(sum(v**2 for v in vec_a.values()))
+        norm_b = math.sqrt(sum(v**2 for v in vec_b.values()))
 
         if norm_a == 0 or norm_b == 0:
             return 0.0
@@ -408,9 +408,7 @@ class HybridRecommender:
         # 加权融合
         hybrid_scores: dict[str, float] = defaultdict(float)
         all_products = set(
-            list(collab_map.keys())
-            + list(content_map.keys())
-            + list(trending_map.keys())
+            list(collab_map.keys()) + list(content_map.keys()) + list(trending_map.keys())
         )
 
         for pid in all_products:

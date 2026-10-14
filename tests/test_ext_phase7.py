@@ -80,9 +80,7 @@ async def test_fetch_wechat_certificates_decrypts_and_parses():
     """GET /v3/certificates → AES-GCM 解密 → PEM 平台证书可加载。"""
     priv_pem, pub_pem = _make_keypair()
     api_v3_key = "0" * 32
-    cert_resp = _build_cert_response(
-        api_v3_key, pub_pem, "SERIAL_A", "2030-01-01T00:00:00+08:00"
-    )
+    cert_resp = _build_cert_response(api_v3_key, pub_pem, "SERIAL_A", "2030-01-01T00:00:00+08:00")
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v3/certificates"
@@ -280,8 +278,8 @@ def test_build_cooccurrence_matrix():
     matrix = build_cooccurrence_matrix(
         [
             ["beef", "tomato", "onion"],  # 牛肉+番茄+洋葱 一起买
-            ["beef", "tomato"],           # 牛肉+番茄 又一起买
-            ["milk", "bread"],            # 无关组合
+            ["beef", "tomato"],  # 牛肉+番茄 又一起买
+            ["milk", "bread"],  # 无关组合
         ]
     )
     assert matrix[("beef", "tomato")] == 2

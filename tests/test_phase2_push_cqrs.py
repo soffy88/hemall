@@ -132,6 +132,7 @@ class TestCQRSService:
 
         # 检查 eventsourcing 路由是否已注册
         from app.eventsourcing.router import router as es_router
+
         assert len(es_router.routes) > 0
 
     def test_eventsourcing_routes_exist(self):

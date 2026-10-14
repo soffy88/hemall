@@ -99,9 +99,7 @@ class RecommendationService:
         if self._behaviors:
             await self._hybrid.collaborative.init_from_behaviors(self._behaviors)
         else:
-            logger.info(
-                "No behavior data yet; skipping collaborative filtering training"
-            )
+            logger.info("No behavior data yet; skipping collaborative filtering training")
 
         # 2. 内容推荐模型训练
         features = list(self._product_features.values())
@@ -119,9 +117,7 @@ class RecommendationService:
 
     # ── 推荐生成 ────────────────────────────────────────────────
 
-    async def recommend_for_user(
-        self, user_id: str, top_k: int = 20
-    ) -> RecommendationResult:
+    async def recommend_for_user(self, user_id: str, top_k: int = 20) -> RecommendationResult:
         """为用户生成个性化推荐。
 
         Args:
@@ -164,9 +160,7 @@ class RecommendationService:
             refresh_time=datetime.now(UTC),
         )
 
-    async def find_similar_products(
-        self, product_id: str, top_k: int = 10
-    ) -> RecommendationResult:
+    async def find_similar_products(self, product_id: str, top_k: int = 10) -> RecommendationResult:
         """查找相似商品 (内容-based)。"""
         recs = await self._hybrid.find_similar_products(product_id, top_k)
         products = []

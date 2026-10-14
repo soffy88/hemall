@@ -24,9 +24,7 @@ from .service import SearchService
 
 # 后台搜索运维 API：重建索引 (sync)、删索引、看内部统计。顾客商城搜索走
 # /store/products，不经此处，故一律要求员工 JWT。
-router = APIRouter(
-    prefix="/search", tags=["search"], dependencies=[Depends(get_current_user)]
-)
+router = APIRouter(prefix="/search", tags=["search"], dependencies=[Depends(get_current_user)])
 logger = logging.getLogger("hemall.search.router")
 
 
@@ -42,9 +40,7 @@ def get_search_service(
         raise HTTPException(status_code=503, detail="Elasticsearch not initialized")
 
     if not hasattr(app_state, "search_service") or app_state.search_service is None:
-        app_state.search_service = SearchService.create(
-            app_state.search_client, settings
-        )
+        app_state.search_service = SearchService.create(app_state.search_client, settings)
 
     return app_state.search_service
 
@@ -61,9 +57,7 @@ async def search_products(
     price_max: int | None = Query(None, ge=0, description="最高价格 (分)"),
     min_rating: float | None = Query(None, ge=0, le=5, description="最低评分"),
     in_stock_only: bool = Query(False, description="仅显示有货"),
-    sort_by: str = Query(
-        "relevance", pattern="^(relevance|price_newest|sold_desc|rating)$"
-    ),
+    sort_by: str = Query("relevance", pattern="^(relevance|price_newest|sold_desc|rating)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, description="每页条数"),

@@ -17,9 +17,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -40,9 +38,7 @@ async def cn_pool():
     spider = LayeredSpiderProvider()
     reg.register_generic("spider", "layered", spider, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_phase7_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase7_test", dsn=TEST_DSN, min_size=1, max_size=5)
     from db_test_utils import cleanup_db_test_rows
 
     await cleanup_db_test_rows(pool)
@@ -186,8 +182,7 @@ async def test_affinity_feed_boosts_related_product(cn_pool):
     # 复刻 nearby-feed 的三段: 用户历史 → 共现 → 得分 → 插队
     async with pool.acquire() as conn:
         user_products = await conn.fetch(
-            "SELECT DISTINCT product_id FROM device_purchase_log "
-            "WHERE device_id = $1",
+            "SELECT DISTINCT product_id FROM device_purchase_log WHERE device_id = $1",
             "dev-phase7-test",
         )
         cooccurrence_rows = await conn.fetch(
@@ -205,9 +200,7 @@ async def test_affinity_feed_boosts_related_product(cn_pool):
             "AND a.product_id < b.product_id "
             "GROUP BY 1, 2 ORDER BY n DESC",
         )
-    cooccurrence = {
-        (str(r["left_id"]), str(r["right_id"])): r["n"] for r in cooccurrence_rows
-    }
+    cooccurrence = {(str(r["left_id"]), str(r["right_id"])): r["n"] for r in cooccurrence_rows}
     user_ids = [str(r["product_id"]) for r in user_products]
     candidates = [tomato_prod, onion_prod, milk_prod]
     scores = compute_batch_affinity_scores(user_ids, candidates, cooccurrence)
@@ -223,9 +216,7 @@ async def test_affinity_feed_boosts_related_product(cn_pool):
     reranked = rerank_feed_by_affinity(feed, scores)
     assert [b["title"] for b in reranked][:2] == ["本地番茄", "紫皮洋葱"]
     assert reranked[0]["boosted"] is True
-    assert reranked[0]["affinity"] == pytest.approx(
-        scores[tomato_prod], abs=1e-4
-    )
+    assert reranked[0]["affinity"] == pytest.approx(scores[tomato_prod], abs=1e-4)
 
 
 async def _spider_scan_budget(pool) -> int:

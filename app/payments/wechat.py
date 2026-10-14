@@ -143,13 +143,10 @@ class WeChatPayProvider:
 
         if self._sandbox:
             logger.warning(
-                "WeChatPayProvider running in SANDBOX mode "
-                "(set WECHAT_PAY_MCH_ID for production)"
+                "WeChatPayProvider running in SANDBOX mode (set WECHAT_PAY_MCH_ID for production)"
             )
 
-    async def create_order(
-        self, request: WeChatPayOrderRequest
-    ) -> WeChatPayOrderResponse:
+    async def create_order(self, request: WeChatPayOrderRequest) -> WeChatPayOrderResponse:
         """创建微信支付订单。"""
         if self._sandbox:
             return self._sandbox_create_order(request)
@@ -157,13 +154,10 @@ class WeChatPayProvider:
         # TODO: 生产实现 — 调用微信 V3 API
         # POST https://api.mch.weixin.qq.com/v3/pay/transactions/native
         raise NotImplementedError(
-            "production WeChat Pay not yet implemented; "
-            "set WECHAT_PAY_MCH_ID='' for sandbox mode"
+            "production WeChat Pay not yet implemented; set WECHAT_PAY_MCH_ID='' for sandbox mode"
         )
 
-    async def handle_notify(
-        self, headers: dict[str, str], body: bytes
-    ) -> WeChatPayNotify | None:
+    async def handle_notify(self, headers: dict[str, str], body: bytes) -> WeChatPayNotify | None:
         """处理微信支付回调通知。"""
         if self._sandbox:
             return self._sandbox_handle_notify(headers, body)
@@ -205,9 +199,7 @@ class WeChatPayProvider:
 
     # ── 沙箱实现 ──────────────────────────────────────────────────
 
-    def _sandbox_create_order(
-        self, request: WeChatPayOrderRequest
-    ) -> WeChatPayOrderResponse:
+    def _sandbox_create_order(self, request: WeChatPayOrderRequest) -> WeChatPayOrderResponse:
         prepay_id = f"prepay_{uuid.uuid4().hex[:16]}"
         self._orders[request.out_trade_no] = {
             "out_trade_no": request.out_trade_no,
@@ -250,9 +242,7 @@ class WeChatPayProvider:
         return message
 
     @staticmethod
-    def _verify_notify_signature(
-        headers: dict[str, str], body: bytes, platform_cert: str
-    ) -> bool:
+    def _verify_notify_signature(headers: dict[str, str], body: bytes, platform_cert: str) -> bool:
         """验证回调通知签名 (生产环境实现)。
 
         fail-closed 存根：真实验签走 app.ext.payment_gateways

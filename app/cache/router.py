@@ -21,9 +21,7 @@ from ..deps import get_current_user, get_settings
 from .service import CacheManager
 
 # 后台缓存运维 API：清前缀、预热 (可被滥用清空缓存打穿 DB) 一律要求员工 JWT。
-router = APIRouter(
-    prefix="/cache", tags=["cache"], dependencies=[Depends(get_current_user)]
-)
+router = APIRouter(prefix="/cache", tags=["cache"], dependencies=[Depends(get_current_user)])
 logger = logging.getLogger("hemall.cache.router")
 
 
@@ -65,9 +63,7 @@ async def trigger_warmup(
 ) -> dict[str, Any]:
     """触发缓存预热任务。"""
     if warmup_type == "inventory":
-        result = await mgr.warmup_inventory_stock(
-            [("WH-SH", "PROD-001"), ("WH-BJ", "PROD-002")]
-        )
+        result = await mgr.warmup_inventory_stock([("WH-SH", "PROD-001"), ("WH-BJ", "PROD-002")])
     elif warmup_type == "categories":
         mock_categories = [
             {
@@ -85,9 +81,7 @@ async def trigger_warmup(
             else {"warmed": 0, "failed": 1}
         )
     else:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown warmup type: {warmup_type}"
-        )
+        raise HTTPException(status_code=400, detail=f"Unknown warmup type: {warmup_type}")
     return result
 
 

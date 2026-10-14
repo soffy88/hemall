@@ -46,14 +46,14 @@ class CacheConfig:
 
 
 CACHE_TTL_MAP: dict[CacheRegion, int] = {
-    CacheRegion.PRODUCT_DETAIL: 300,     # 商品详情 5 min
-    CacheRegion.PRODUCT_LISTING: 60,      # 列表缓存 1 min
-    CacheRegion.INVENTORY_STOCK: 30,      # 库存余量 30s (高频变动)
-    CacheRegion.USER_PROFILE: 3600,       # 用户信息 1 h
-    CacheRegion.CART_DATA: 900,           # 购物车数据 15 min
-    CacheRegion.CATEGORY_TREE: 7200,      # 分类树 2 h
-    CacheRegion.BRAND_INFO: 3600,         # 品牌信息 1 h
-    CacheRegion.ORDER_HISTORY: 86400,     # 订单历史 24 h
+    CacheRegion.PRODUCT_DETAIL: 300,  # 商品详情 5 min
+    CacheRegion.PRODUCT_LISTING: 60,  # 列表缓存 1 min
+    CacheRegion.INVENTORY_STOCK: 30,  # 库存余量 30s (高频变动)
+    CacheRegion.USER_PROFILE: 3600,  # 用户信息 1 h
+    CacheRegion.CART_DATA: 900,  # 购物车数据 15 min
+    CacheRegion.CATEGORY_TREE: 7200,  # 分类树 2 h
+    CacheRegion.BRAND_INFO: 3600,  # 品牌信息 1 h
+    CacheRegion.ORDER_HISTORY: 86400,  # 订单历史 24 h
 }
 
 # ── Key 模板 ────────────────────────────────────────────────────

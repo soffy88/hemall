@@ -31,9 +31,7 @@ class ManualCVProvider:
             "snapshot_url": snapshot_url,
         }
 
-    def set_receipt_result(
-        self, *, image_bytes: bytes, items: list[dict[str, Any]]
-    ) -> None:
+    def set_receipt_result(self, *, image_bytes: bytes, items: list[dict[str, Any]]) -> None:
         """覆写指定小票图片的 OCR 解析结果 (测试/演练用)。"""
         self._receipt_overrides[image_bytes] = items
 

@@ -67,6 +67,7 @@ class TestCacheRegionTTL:
 
     def test_ttl_map_contains_regions(self):
         from app.cache.models import CACHE_TTL_MAP
+
         assert CacheRegion.PRODUCT_DETAIL in CACHE_TTL_MAP
         assert CACHE_TTL_MAP[CacheRegion.PRODUCT_DETAIL] > 0
 
@@ -89,6 +90,7 @@ class TestCacheRouterIntegration:
 
         # 检查 search 路由是否已注册到 router 列表中
         from app.search.router import router as search_router
+
         assert len(search_router.routes) > 0
 
 

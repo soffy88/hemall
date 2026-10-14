@@ -75,9 +75,7 @@ async def confirm_batch_pick(
 
     try:
         if pool is None:
-            raise ValueError(
-                "pool is required — confirm_batch_pick always touches persisted stock"
-            )
+            raise ValueError("pool is required — confirm_batch_pick always touches persisted stock")
 
         async with pool.acquire() as conn:
             oli = await conn.fetchrow(
@@ -85,9 +83,7 @@ async def confirm_batch_pick(
                 input_data.order_line_item_id,
             )
             if oli is None:
-                raise ValueError(
-                    f"order_line_item {input_data.order_line_item_id!r} not found"
-                )
+                raise ValueError(f"order_line_item {input_data.order_line_item_id!r} not found")
 
             # labor_ledger.order_line_item_id 物理列还是旧的 VARCHAR(32)，
             # order_line_item.id 现在是 UUID——str() 转一下再比较/存，否则
@@ -105,9 +101,7 @@ async def confirm_batch_pick(
         )
         trail.record(event="queue_depth_measured", queue_depth=queue_depth)
 
-        per_unit_wage = calculate_piece_rate_wage(
-            queue_depth, base_wage=_BASE_WAGE_PER_UNIT_CENTS
-        )
+        per_unit_wage = calculate_piece_rate_wage(queue_depth, base_wage=_BASE_WAGE_PER_UNIT_CENTS)
         wage_amount = per_unit_wage * oli["quantity"]
         ledger_id = generate_id_v7("labor")
         async with pool.acquire() as conn:

@@ -241,9 +241,7 @@ def test_llm_error_text_is_not_echoed_to_the_caller():
 
     from app.ai_assistant.llm_provider import LLMMessage
 
-    out = asyncio.run(
-        provider.chat_with_tools([LLMMessage(role="user", content="hi")], tools=[])
-    )
+    out = asyncio.run(provider.chat_with_tools([LLMMessage(role="user", content="hi")], tools=[]))
     assert "sk-live-do-not-leak" not in out.content, "API key 泄漏到响应体"
     assert "https://api.example.com" not in out.content, "上游 URL 泄漏到响应体"
     assert out.finish_reason == "error"

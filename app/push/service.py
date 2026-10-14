@@ -66,9 +66,11 @@ class PushManager:
         self._apns_client = APNSClient(self._settings)
         await self._apns_client.initialize()
         self._register_templates()
-        logger.info("PushManager initialized (FCM=%s, APNs=%s)",
-                     "ready" if self._fcm_client else "disabled",
-                     "ready" if self._apns_client else "disabled")
+        logger.info(
+            "PushManager initialized (FCM=%s, APNs=%s)",
+            "ready" if self._fcm_client else "disabled",
+            "ready" if self._apns_client else "disabled",
+        )
 
     # ── 模板注册 ────────────────────────────────────────────────
 
@@ -97,9 +99,7 @@ class PushManager:
             },
         }
 
-    def register_template(
-        self, template_id: str, title_template: str, body_template: str
-    ) -> None:
+    def register_template(self, template_id: str, title_template: str, body_template: str) -> None:
         """动态注册自定义模板。"""
         self._templates[template_id] = {
             "title_template": title_template,
@@ -140,8 +140,7 @@ class PushManager:
             d
             for d in self._device_tokens[user_id]
             if not (
-                d.platform == device_token.platform
-                and d.device_token == device_token.device_token
+                d.platform == device_token.platform and d.device_token == device_token.device_token
             )
         ]
         self._device_tokens[user_id].append(device_token)
@@ -151,15 +150,12 @@ class PushManager:
         """注销指定平台的设备。"""
         if user_id in self._device_tokens:
             self._device_tokens[user_id] = [
-                d for d in self._device_tokens[user_id]
-                if d.platform != platform
+                d for d in self._device_tokens[user_id] if d.platform != platform
             ]
             return True
         return False
 
-    def get_user_tokens(
-        self, user_id: str, platform: PushPlatform | None = None
-    ) -> list[str]:
+    def get_user_tokens(self, user_id: str, platform: PushPlatform | None = None) -> list[str]:
         """获取用户的所有有效设备 token。"""
         tokens = self._device_tokens.get(user_id, [])
         if platform:
@@ -262,9 +258,7 @@ class PushManager:
             logger.warning("No provider available for platform %s", platform)
             return PushResult(
                 device_token=(
-                    notification.target_device_ids[0]
-                    if notification.target_device_ids
-                    else ""
+                    notification.target_device_ids[0] if notification.target_device_ids else ""
                 ),
                 success=False,
                 error_code=503,

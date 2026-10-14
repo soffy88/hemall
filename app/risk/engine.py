@@ -29,18 +29,18 @@ logger = logging.getLogger("hemall.risk")
 
 
 class RiskLevel(Enum):
-    SAFE = "safe"           # 0-20 分，正常放行
+    SAFE = "safe"  # 0-20 分，正常放行
     SUSPICIOUS = "suspicious"  # 21-50 分，标记观察
-    REVIEW = "review"       # 51-80 分，人工审核
-    BLOCKED = "blocked"     # 81-100 分，自动拦截
+    REVIEW = "review"  # 51-80 分，人工审核
+    BLOCKED = "blocked"  # 81-100 分，自动拦截
 
 
 class RiskRuleCategory(Enum):
-    LOGIN = "login"         # 登录安全
-    PAYMENT = "payment"     # 支付安全
-    ORDER = "order"         # 订单异常
-    REGISTER = "register"   # 注册风控
-    REVIEW = "review"       # 评价风控
+    LOGIN = "login"  # 登录安全
+    PAYMENT = "payment"  # 支付安全
+    ORDER = "order"  # 订单异常
+    REGISTER = "register"  # 注册风控
+    REVIEW = "review"  # 评价风控
 
 
 # ── 规则定义 ──────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ class RiskRule:
     rule_id: str
     name: str
     category: RiskRuleCategory
-    condition: str      # 表达式: "frequency > 10 AND time_window < 60"
+    condition: str  # 表达式: "frequency > 10 AND time_window < 60"
     score: int = 10
     enabled: bool = True
     description: str = ""
@@ -126,22 +126,62 @@ class RiskEngine:
     def _initialize_default_rules(self) -> None:
         """初始化默认风控规则。"""
         self._rules = [
-            RiskRule("R001", "高频登录失败", RiskRuleCategory.LOGIN,
-                     "login_failures > 5 AND time_window < 300", score=20),
-            RiskRule("R002", "异地登录告警", RiskRuleCategory.LOGIN,
-                     "geo_distance > 1000 AND time_window < 3600", score=30),
-            RiskRule("R003", "快速下单异常", RiskRuleCategory.ORDER,
-                     "order_count > 10 AND time_window < 60", score=25),
-            RiskRule("R004", "大额交易预警", RiskRuleCategory.PAYMENT,
-                     "amount > 100000 AND user_trust < 50", score=35),
-            RiskRule("R005", "新设备登录", RiskRuleCategory.LOGIN,
-                     "new_device AND user_trust < 30", score=15),
-            RiskRule("R006", "支付信息变更", RiskRuleCategory.PAYMENT,
-                     "payment_info_changed AND time_since_change < 300", score=20),
-            RiskRule("R007", "批量注册检测", RiskRuleCategory.REGISTER,
-                     "same_ip_count > 10 AND time_window < 3600", score=40),
-            RiskRule("R008", "异常退款请求", RiskRuleCategory.ORDER,
-                     "refund_rate > 30 AND order_count > 5", score=30),
+            RiskRule(
+                "R001",
+                "高频登录失败",
+                RiskRuleCategory.LOGIN,
+                "login_failures > 5 AND time_window < 300",
+                score=20,
+            ),
+            RiskRule(
+                "R002",
+                "异地登录告警",
+                RiskRuleCategory.LOGIN,
+                "geo_distance > 1000 AND time_window < 3600",
+                score=30,
+            ),
+            RiskRule(
+                "R003",
+                "快速下单异常",
+                RiskRuleCategory.ORDER,
+                "order_count > 10 AND time_window < 60",
+                score=25,
+            ),
+            RiskRule(
+                "R004",
+                "大额交易预警",
+                RiskRuleCategory.PAYMENT,
+                "amount > 100000 AND user_trust < 50",
+                score=35,
+            ),
+            RiskRule(
+                "R005",
+                "新设备登录",
+                RiskRuleCategory.LOGIN,
+                "new_device AND user_trust < 30",
+                score=15,
+            ),
+            RiskRule(
+                "R006",
+                "支付信息变更",
+                RiskRuleCategory.PAYMENT,
+                "payment_info_changed AND time_since_change < 300",
+                score=20,
+            ),
+            RiskRule(
+                "R007",
+                "批量注册检测",
+                RiskRuleCategory.REGISTER,
+                "same_ip_count > 10 AND time_window < 3600",
+                score=40,
+            ),
+            RiskRule(
+                "R008",
+                "异常退款请求",
+                RiskRuleCategory.ORDER,
+                "refund_rate > 30 AND order_count > 5",
+                score=30,
+            ),
         ]
 
     def add_rule(self, rule: RiskRule) -> None:
@@ -203,8 +243,13 @@ class RiskEngine:
             result.decision = "allow"
 
         result.triggered_rules = triggered_rules
-        logger.info("Risk evaluation: score=%d level=%s decision=%s rules=%s",
-                     result.risk_score, result.risk_level.value, result.decision, triggered_rules)
+        logger.info(
+            "Risk evaluation: score=%d level=%s decision=%s rules=%s",
+            result.risk_score,
+            result.risk_level.value,
+            result.decision,
+            triggered_rules,
+        )
         return result
 
     def _check_frequency(self, event: RiskEvent) -> int:
@@ -214,9 +259,7 @@ class RiskEngine:
 
         self._frequency_tracker[key].append(now)
         # 清理 1 小时前的记录
-        self._frequency_tracker[key] = [
-            t for t in self._frequency_tracker[key] if now - t < 3600
-        ]
+        self._frequency_tracker[key] = [t for t in self._frequency_tracker[key] if now - t < 3600]
 
         # 1 分钟内超过 10 次 → 高频告警
         recent = [t for t in self._frequency_tracker[key] if now - t < 60]
@@ -238,23 +281,23 @@ class RiskEngine:
             return False
         if rule.category == RiskRuleCategory.REGISTER and event.event_type != "register":
             return False
-        
+
         # 检查黑名单 IP (简化)
         if "blacklist" in rule.condition.lower() and event.ip_address in self._ip_blacklist:
             return True
-            
+
         # 检查高频操作
         if "frequency" in rule.condition.lower():
             freq_score = self._check_frequency(event)
             if freq_score > 0:
                 return True
-                
+
         # 检查信任分数
         if "trust" in rule.condition.lower():
             trust = self._user_trust_score.get(event.user_id, 50)
             if trust < 30:  # 简化阈值
                 return True
-                
+
         return False
 
 

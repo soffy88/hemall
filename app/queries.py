@@ -243,15 +243,11 @@ async def list_storefront_products(
         # 价格过滤（SQL 后过滤，因为 JSONB 聚合不便在 WHERE 中过滤）
         if min_price is not None:
             results = [
-                r
-                for r in results
-                if r.get("min_price_cents") and r["min_price_cents"] >= min_price
+                r for r in results if r.get("min_price_cents") and r["min_price_cents"] >= min_price
             ]
         if max_price is not None:
             results = [
-                r
-                for r in results
-                if r.get("min_price_cents") and r["min_price_cents"] <= max_price
+                r for r in results if r.get("min_price_cents") and r["min_price_cents"] <= max_price
             ]
 
         return results
@@ -789,11 +785,7 @@ async def list_regions_admin(pool: Any) -> list[dict]:
 async def list_tax_rates(pool: Any, *, region_code: str | None = None) -> list[dict]:
     """税率列表；region_code 可选过滤。"""
     async with pool.acquire() as conn:
-        where = (
-            "region_code = $1 AND deleted_at IS NULL"
-            if region_code
-            else "deleted_at IS NULL"
-        )
+        where = "region_code = $1 AND deleted_at IS NULL" if region_code else "deleted_at IS NULL"
         params = [region_code] if region_code else []
         rows = await conn.fetch(
             f"""
@@ -1054,13 +1046,11 @@ async def get_batch_battle_report_summary(pool: Any, batch_id: str) -> dict | No
         聚合 dict；批次不存在时返回 None (调用方据此 404)。
     """
     async with pool.acquire() as conn:
-        exists = await conn.fetchval(
-            'SELECT 1 FROM "inventory_batch" WHERE id = $1', batch_id
-        )
+        exists = await conn.fetchval('SELECT 1 FROM "inventory_batch" WHERE id = $1', batch_id)
         if exists is None:
             return None
         rows = await conn.fetch(
-            'SELECT id, freshness_index, sentiment_polarity, keywords, '
+            "SELECT id, freshness_index, sentiment_polarity, keywords, "
             "raw_image_url, created_at "
             'FROM "batch_battle_report" WHERE batch_id = $1 '
             "AND status = 'published' ORDER BY created_at DESC",
@@ -1085,9 +1075,7 @@ async def get_batch_battle_report_summary(pool: Any, batch_id: str) -> dict | No
     for r in reversed(rows):
         if r["sentiment_polarity"] is None:
             continue
-        rating, count = compute_batch_dynamic_rating(
-            rating, count, float(r["sentiment_polarity"])
-        )
+        rating, count = compute_batch_dynamic_rating(rating, count, float(r["sentiment_polarity"]))
     dynamic_rating = rating if count else None
 
     # 核心特征：跨战报关键词共现计数，取 Top3。
@@ -1098,17 +1086,10 @@ async def get_batch_battle_report_summary(pool: Any, batch_id: str) -> dict | No
         for kw in r["keywords"]:
             if isinstance(kw, str) and kw.strip():
                 keyword_counts[kw.strip()] += 1
-    top_keywords = [
-        {"keyword": kw, "count": n}
-        for kw, n in keyword_counts.most_common(3)
-    ]
+    top_keywords = [{"keyword": kw, "count": n} for kw, n in keyword_counts.most_common(3)]
 
     # 最近带图实拍 (滚动缩略图条)：只取有 raw_image_url 的前 3 条。
-    recent_images = [
-        r["raw_image_url"]
-        for r in rows
-        if r["raw_image_url"]
-    ][:3]
+    recent_images = [r["raw_image_url"] for r in rows if r["raw_image_url"]][:3]
 
     recent_reports = [
         {
@@ -1117,15 +1098,11 @@ async def get_batch_battle_report_summary(pool: Any, batch_id: str) -> dict | No
                 float(r["freshness_index"]) if r["freshness_index"] is not None else None
             ),
             "sentiment_polarity": (
-                float(r["sentiment_polarity"])
-                if r["sentiment_polarity"] is not None
-                else None
+                float(r["sentiment_polarity"]) if r["sentiment_polarity"] is not None else None
             ),
             "keywords": r["keywords"] or [],
             "image_url": r["raw_image_url"],
-            "created_at": (
-                r["created_at"].isoformat() if r["created_at"] else None
-            ),
+            "created_at": (r["created_at"].isoformat() if r["created_at"] else None),
         }
         for r in rows[:5]
     ]
@@ -1140,7 +1117,6 @@ async def get_batch_battle_report_summary(pool: Any, batch_id: str) -> dict | No
         "recent_images": recent_images,
         "recent_reports": recent_reports,
     }
-
 
 
 def _row_to_dict(row: Any) -> dict:

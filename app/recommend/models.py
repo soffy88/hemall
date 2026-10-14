@@ -15,11 +15,11 @@ from pydantic import BaseModel
 class UserBehaviorType(Enum):
     """用户行为类型及权重。"""
 
-    VIEW = "view"         # 浏览 (权重 1)
-    CART_ADD = "cart_add" # 加购 (权重 3)
-    FAVORITE = "favorite" # 收藏 (权重 2)
-    PURCHASE = "purchase" # 购买 (权重 5)
-    SHARE = "share"       # 分享 (权重 4)
+    VIEW = "view"  # 浏览 (权重 1)
+    CART_ADD = "cart_add"  # 加购 (权重 3)
+    FAVORITE = "favorite"  # 收藏 (权重 2)
+    PURCHASE = "purchase"  # 购买 (权重 5)
+    SHARE = "share"  # 分享 (权重 4)
 
 
 # ── 用户行为事件 ────────────────────────────────────────────────
@@ -162,9 +162,9 @@ class RecommendConfig(BaseModel):
     trending_weight: float = 0.1  # 热门商品兜底
 
     # TopK 参数
-    top_k_similar: int = 20      # 相似商品数量
-    top_k_for_you: int = 50      # 个性化推荐数量
-    top_k_hot: int = 10          # 热门兜底数量
+    top_k_similar: int = 20  # 相似商品数量
+    top_k_for_you: int = 50  # 个性化推荐数量
+    top_k_hot: int = 10  # 热门兜底数量
 
     # 冷启动策略
     cold_start_mode: str = "trending"  # trending/popular/newest

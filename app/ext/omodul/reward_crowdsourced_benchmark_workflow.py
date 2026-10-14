@@ -112,8 +112,7 @@ async def reward_crowdsourced_benchmark_workflow(
                 for row in candidates:
                     product_name_lower = row["product_name"].lower()
                     if name_lower and (
-                        name_lower in product_name_lower
-                        or product_name_lower in name_lower
+                        name_lower in product_name_lower or product_name_lower in name_lower
                     ):
                         matched_variant_id = row["variant_id"]
                         break

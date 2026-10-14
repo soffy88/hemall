@@ -23,9 +23,9 @@ from app.ext.oskill_ghost_clustering import (
 
 class TestHaversine:
     def test_same_point(self):
-        assert _haversine_km(
-            (39.9042, 116.4074), (39.9042, 116.4074)
-        ) == pytest.approx(0, abs=1e-10)
+        assert _haversine_km((39.9042, 116.4074), (39.9042, 116.4074)) == pytest.approx(
+            0, abs=1e-10
+        )
 
     def test_known_distance_shanghai_beijing(self):
         """上海到北京约 1068 km (直线距离)。"""
@@ -58,15 +58,17 @@ class TestClusterIntentionsByRadius:
             for i in range(count):
                 # 在小范围内分散 (几百米内 = 同一簇)
                 lat_offset = (i * spread_meters / 111320) * math.cos(math.radians(base_lat))
-                lon_offset = (i * spread_meters / (111320 * math.cos(math.radians(base_lat))))
-                orders.append({
-                    "id": f"intent-{seed_base + i}",
-                    "variant_id": "variant-abc",
-                    "customer_id": f"customer-{seed_base + i}",
-                    "lat": round(base_lat + lat_offset, 6),
-                    "lon": round(base_lon + lon_offset, 6),
-                    "prepaid_amount_cents": 5000,
-                })
+                lon_offset = i * spread_meters / (111320 * math.cos(math.radians(base_lat)))
+                orders.append(
+                    {
+                        "id": f"intent-{seed_base + i}",
+                        "variant_id": "variant-abc",
+                        "customer_id": f"customer-{seed_base + i}",
+                        "lat": round(base_lat + lat_offset, 6),
+                        "lon": round(base_lon + lon_offset, 6),
+                        "prepaid_amount_cents": 5000,
+                    }
+                )
             return orders
 
         return _create
@@ -102,23 +104,27 @@ class TestClusterIntentionsByRadius:
 
         orders = []
         for i in range(110):
-            orders.append({
-                "id": f"beijing-{i}",
-                "variant_id": "var-a",
-                "customer_id": f"cust-b-{i}",
-                "lat": round(center1["lat"] + i * 0.0001, 6),
-                "lon": round(center1["lon"] + i * 0.0001, 6),
-                "prepaid_amount_cents": 5000,
-            })
+            orders.append(
+                {
+                    "id": f"beijing-{i}",
+                    "variant_id": "var-a",
+                    "customer_id": f"cust-b-{i}",
+                    "lat": round(center1["lat"] + i * 0.0001, 6),
+                    "lon": round(center1["lon"] + i * 0.0001, 6),
+                    "prepaid_amount_cents": 5000,
+                }
+            )
         for i in range(110):
-            orders.append({
-                "id": f"shanghai-{i}",
-                "variant_id": "var-a",
-                "customer_id": f"cust-s-{i}",
-                "lat": round(center2["lat"] + i * 0.0001, 6),
-                "lon": round(center2["lon"] + i * 0.0001, 6),
-                "prepaid_amount_cents": 5000,
-            })
+            orders.append(
+                {
+                    "id": f"shanghai-{i}",
+                    "variant_id": "var-a",
+                    "customer_id": f"cust-s-{i}",
+                    "lat": round(center2["lat"] + i * 0.0001, 6),
+                    "lon": round(center2["lon"] + i * 0.0001, 6),
+                    "prepaid_amount_cents": 5000,
+                }
+            )
 
         clusters = cluster_intentions_by_radius(orders)
         assert len(clusters) == 2
@@ -132,14 +138,16 @@ class TestClusterIntentionsByRadius:
         count = IGNITION_THRESHOLD
         base_lat, base_lon = 30.0, 120.0
         for i in range(count):
-            orders.append({
-                "id": f"test-{i}",
-                "variant_id": "v1",
-                "customer_id": f"c{i}",
-                "lat": base_lat + i * 0.00001,
-                "lon": base_lon + i * 0.00001,
-                "prepaid_amount_cents": 1000,
-            })
+            orders.append(
+                {
+                    "id": f"test-{i}",
+                    "variant_id": "v1",
+                    "customer_id": f"c{i}",
+                    "lat": base_lat + i * 0.00001,
+                    "lon": base_lon + i * 0.00001,
+                    "prepaid_amount_cents": 1000,
+                }
+            )
         clusters = cluster_intentions_by_radius(orders)
         assert len(clusters) == 1
         c = clusters[0]
@@ -155,14 +163,16 @@ class TestClusterIntentionsByRadius:
         variant_b = "variant-beta"
         for i in range(IGNITION_THRESHOLD):
             v = variant_a if i < 70 else variant_b
-            orders.append({
-                "id": f"m-{i}",
-                "variant_id": v,
-                "customer_id": f"c{i}",
-                "lat": 30.0 + i * 0.00001,
-                "lon": 120.0 + i * 0.00001,
-                "prepaid_amount_cents": 2000,
-            })
+            orders.append(
+                {
+                    "id": f"m-{i}",
+                    "variant_id": v,
+                    "customer_id": f"c{i}",
+                    "lat": 30.0 + i * 0.00001,
+                    "lon": 120.0 + i * 0.00001,
+                    "prepaid_amount_cents": 2000,
+                }
+            )
         clusters = cluster_intentions_by_radius(orders)
         c = clusters[0]
         assert c["total_prepaid_cents"] == 100 * 2000
@@ -176,14 +186,16 @@ class TestClusterIntentionsByRadius:
         # 100 个订单分布在 500m 范围 —— 默认 1km 半径时全在一簇
         large_orders = []
         for i in range(110):
-            large_orders.append({
-                "id": f"spread-{i}",
-                "variant_id": "v1",
-                "customer_id": f"c{i}",
-                "lat": 30.0 + i * 0.0005,  # 跨度约 550m
-                "lon": 120.0 + i * 0.0005,
-                "prepaid_amount_cents": 1000,
-            })
+            large_orders.append(
+                {
+                    "id": f"spread-{i}",
+                    "variant_id": "v1",
+                    "customer_id": f"c{i}",
+                    "lat": 30.0 + i * 0.0005,  # 跨度约 550m
+                    "lon": 120.0 + i * 0.0005,
+                    "prepaid_amount_cents": 1000,
+                }
+            )
         default_clusters = cluster_intentions_by_radius(large_orders, radius_km=1.0)
         assert len(default_clusters) >= 1, "Should have at least one cluster with 1km radius"
 
@@ -191,14 +203,16 @@ class TestClusterIntentionsByRadius:
         """验证 order_ids 都是字符串类型且无重复。"""
         orders = []
         for i in range(110):
-            orders.append({
-                "id": str(i),
-                "variant_id": "v1",
-                "customer_id": f"c{i}",
-                "lat": 30.0,
-                "lon": 120.0,
-                "prepaid_amount_cents": 1000,
-            })
+            orders.append(
+                {
+                    "id": str(i),
+                    "variant_id": "v1",
+                    "customer_id": f"c{i}",
+                    "lat": 30.0,
+                    "lon": 120.0,
+                    "prepaid_amount_cents": 1000,
+                }
+            )
         clusters = cluster_intentions_by_radius(orders)
         assert len(clusters) == 1
         ids = clusters[0]["order_ids"]
@@ -220,14 +234,16 @@ async def test_ignite_ghost_node_integration():
     # Step 1: 生成模拟意向订单 (120 单紧密分布在 ~20m 内，确保都在一簇)
     orders = []
     for i in range(120):
-        orders.append({
-            "id": f"intent-{i}",
-            "variant_id": "variant-guava",
-            "customer_id": f"cust-{i}",
-            "lat": 39.9042 + i * 0.000001,  # 极小偏移，全部在 1km 内
-            "lon": 116.4074 + i * 0.000001,
-            "prepaid_amount_cents": 5000,
-        })
+        orders.append(
+            {
+                "id": f"intent-{i}",
+                "variant_id": "variant-guava",
+                "customer_id": f"cust-{i}",
+                "lat": 39.9042 + i * 0.000001,  # 极小偏移，全部在 1km 内
+                "lon": 116.4074 + i * 0.000001,
+                "prepaid_amount_cents": 5000,
+            }
+        )
 
     # Step 2: 执行聚类
     clusters = cluster_intentions_by_radius(orders)

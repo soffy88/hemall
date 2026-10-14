@@ -67,9 +67,7 @@ _POST_HOOKS: dict[str, Callable[[dict, Request], Any]] = {
 }
 
 
-async def _fire_demand_aggregator_signal(
-    result: dict[str, Any], request: Request
-) -> None:
+async def _fire_demand_aggregator_signal(result: dict[str, Any], request: Request) -> None:
     """create_crowd_intent 达到阈值后的旁路: 拉起 demand_aggregator_engine 的
     信号扇出 (SPEC §5.1: "触发向下游产地的规模化采购 PO 通知")。
     """
@@ -87,9 +85,7 @@ async def _fire_demand_aggregator_signal(
     )
 
 
-async def _fire_batch_broadcast_signal(
-    result: dict[str, Any], request: Request
-) -> None:
+async def _fire_batch_broadcast_signal(result: dict[str, Any], request: Request) -> None:
     """create_inventory_batch 入库成功后的旁路: 拉起 batch_broadcast_engine
     推送底价实录 (SPEC §5.2: "批次视频上架"触发广播)。
     """
@@ -193,9 +189,7 @@ async def admin_list_products(
 
 
 @admin_read_router.get("/products/{product_id}")
-async def admin_get_product(
-    product_id: str, request: Request, _=Depends(_require_admin)
-):
+async def admin_get_product(product_id: str, request: Request, _=Depends(_require_admin)):
     product = await queries.get_product(_pool(request), product_id)
     if product is None:
         raise HTTPException(404, "product not found")
@@ -210,9 +204,7 @@ async def admin_list_orders(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    return await queries.list_orders(
-        _pool(request), status=status, limit=limit, offset=offset
-    )
+    return await queries.list_orders(_pool(request), status=status, limit=limit, offset=offset)
 
 
 @admin_read_router.get("/orders/{order_id}")
@@ -239,9 +231,7 @@ async def admin_dashboard_kpis(request: Request, _=Depends(_require_admin)):
 
 
 @admin_read_router.get("/orders/{order_id}/fulfillments")
-async def admin_list_fulfillments(
-    order_id: str, request: Request, _=Depends(_require_admin)
-):
+async def admin_list_fulfillments(order_id: str, request: Request, _=Depends(_require_admin)):
     return await queries.list_fulfillments(_pool(request), order_id)
 
 
@@ -361,9 +351,7 @@ async def admin_list_ext_probe_logs(request: Request, _=Depends(_require_admin))
 
 
 @admin_read_router.get("/growth/affiliate-contracts")
-async def admin_list_ext_affiliate_contracts(
-    request: Request, _=Depends(_require_admin)
-):
+async def admin_list_ext_affiliate_contracts(request: Request, _=Depends(_require_admin)):
     return await queries.list_ext_affiliate_contracts(_pool(request))
 
 
@@ -584,9 +572,7 @@ async def get_nearby_feed(
             "batches": [],
         }
 
-    loc_list = [
-        (str(row["id"]), float(row["lat"]), float(row["lng"])) for row in locations
-    ]
+    loc_list = [(str(row["id"]), float(row["lat"]), float(row["lng"])) for row in locations]
     nearest_id, distance_km = find_nearest_location(loc_list, lat=lat, lon=lon)
     nearest_row = next((r for r in locations if str(r["id"]) == nearest_id), None)
 
@@ -600,9 +586,7 @@ async def get_nearby_feed(
             )
             user_system_balance = int(bal_row or 0)
 
-    safety_cutoff = datetime.now(UTC) + timedelta(
-        hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS
-    )
+    safety_cutoff = datetime.now(UTC) + timedelta(hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS)
     async with pool.acquire() as conn:
         batches = await conn.fetch(
             "SELECT b.id, b.variant_id, b.retail_price_cents, b.stock_qty, "
@@ -674,8 +658,7 @@ async def get_nearby_feed(
                     _NEARBY_FEED_COOCCURRENCE_ORDER_CAP,
                 )
                 cooccurrence = {
-                    (str(r["left_id"]), str(r["right_id"])): r["n"]
-                    for r in cooccurrence_rows
+                    (str(r["left_id"]), str(r["right_id"])): r["n"] for r in cooccurrence_rows
                 }
                 user_ids = [str(r["product_id"]) for r in user_products]
                 candidate_ids = [str(r["product_id"]) for r in batch_rows]
@@ -698,9 +681,7 @@ async def get_nearby_feed(
             velocity_by_batch.get(str(enriched["id"]), 0)
         )
         # 可用量 = 物理库存 - 结算期硬锁
-        available = int(enriched.get("stock_qty") or 0) - int(
-            enriched.get("reserved_qty") or 0
-        )
+        available = int(enriched.get("stock_qty") or 0) - int(enriched.get("reserved_qty") or 0)
         enriched["stock_qty"] = max(0, available)
         feed_items.append(build_feed_item(enriched))
 
@@ -724,13 +705,9 @@ async def get_nearby_feed(
                 "title": row["title"],
                 "sku_code": row["sku_code"],
                 "retail_price_cents": row["retail_price_cents"],
-                "stock_qty": max(
-                    0, int(row["stock_qty"]) - int(row.get("reserved_qty") or 0)
-                ),
+                "stock_qty": max(0, int(row["stock_qty"]) - int(row.get("reserved_qty") or 0)),
                 "expiration_time": (
-                    row["expiration_time"].isoformat()
-                    if row["expiration_time"]
-                    else None
+                    row["expiration_time"].isoformat() if row["expiration_time"] else None
                 ),
                 "video_url": row["video_url"],
                 "location_name": row["location_name"],
@@ -887,10 +864,8 @@ async def issue_pickup_ticket(
         str(row["status"]) in paid_statuses
         and row["payment_status"] == "paid"
         and row["payment_verified_at"] is not None
-        and int(row["payment_amount_cents"] or -1)
-        == int(row["grand_total_cents"] or 0)
-        and str(row["payment_currency"] or "").upper()
-        == str(row["currency"] or "").upper()
+        and int(row["payment_amount_cents"] or -1) == int(row["grand_total_cents"] or 0)
+        and str(row["payment_currency"] or "").upper() == str(row["currency"] or "").upper()
     )
     if not payment_verified:
         raise HTTPException(
@@ -1042,9 +1017,7 @@ class _DouyinCallbackRequest(BaseModel):
 
 
 @ext_bespoke_router.post("/growth/douyin_callback")
-async def ext_douyin_callback(
-    body: _DouyinCallbackRequest, request: Request
-) -> JSONResponse:
+async def ext_douyin_callback(body: _DouyinCallbackRequest, request: Request) -> JSONResponse:
     """抖音开放平台转化回调入口 (补天计划 Task 1.1)。
 
     签名校验由 WebhookSignatureMiddleware 在 ASGI 层强制完成 (非法请求 403
@@ -1062,9 +1035,7 @@ async def ext_douyin_callback(
 
     result = await record_douyin_conversion_workflow(
         RecordDouyinConversionWorkflowConfig(),
-        RecordDouyinConversionWorkflowInput(
-            order_id=body.order_id, douyin_uid=body.douyin_uid
-        ),
+        RecordDouyinConversionWorkflowInput(order_id=body.order_id, douyin_uid=body.douyin_uid),
         _ext_bespoke_output_dir(request, "record_douyin_conversion_workflow"),
         pool=_pool(request),
     )

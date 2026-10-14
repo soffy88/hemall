@@ -70,9 +70,9 @@ def test_every_alert_has_the_fields_prometheus_needs():
             assert group.get("name"), f"{source}: 有 group 缺 name"
             for rule in group.get("rules", []):
                 for field in ("alert", "expr", "severity"):
-                    assert rule.get(field) or (
-                        rule.get("labels") or {}
-                    ).get(field), f"{source}: 规则 {rule.get('alert')} 缺 {field}"
+                    assert rule.get(field) or (rule.get("labels") or {}).get(field), (
+                        f"{source}: 规则 {rule.get('alert')} 缺 {field}"
+                    )
 
 
 def test_template_fails_loudly_instead_of_rendering_zero_alerts():

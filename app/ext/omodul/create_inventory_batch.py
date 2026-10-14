@@ -122,8 +122,7 @@ async def create_inventory_batch(
         )
         async with pool.acquire() as conn:
             await conn.execute(
-                'UPDATE "inventory_batch" SET expiration_time = $1, supplier_id = $2 '
-                "WHERE id = $3",
+                'UPDATE "inventory_batch" SET expiration_time = $1, supplier_id = $2 WHERE id = $3',
                 expiration_dt,
                 input_data.supplier_id,
                 batch_id,

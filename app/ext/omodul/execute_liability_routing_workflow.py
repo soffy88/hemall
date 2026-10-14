@@ -17,9 +17,7 @@ _MIN_DAMAGE_SEVERITY = 0.05
 #: 从供应商 escrow_balance 扣款；其余类型 (挤压/破损/丢件等) 视为微仓履约环节
 #: 造成，liable_party="location"，记入 location_loss_ledger (该表在 v2.0 第二轮
 #: 才补齐；上一轮先诚实记了"只判定不落账"的空白，这里已经跟着补上)。
-_SUPPLIER_LIABLE_DAMAGE_TYPES = frozenset(
-    {"spoiled", "rotten", "contaminated", "moldy"}
-)
+_SUPPLIER_LIABLE_DAMAGE_TYPES = frozenset({"spoiled", "rotten", "contaminated", "moldy"})
 
 
 class ExecuteLiabilityRoutingWorkflowConfig(BaseConfig):
@@ -106,9 +104,7 @@ async def execute_liability_routing_workflow(
             )
         elif input_data.vlm_severity < _MIN_DAMAGE_SEVERITY:
             decision = "rejected"
-            trail.record(
-                event="rejected_no_material_damage", severity=input_data.vlm_severity
-            )
+            trail.record(event="rejected_no_material_damage", severity=input_data.vlm_severity)
         elif input_data.credibility_decision == "honeypot":
             decision = "drop_to_bin"
             trail.record(event="honeypot_pending_physical_verification")
@@ -128,7 +124,7 @@ async def execute_liability_routing_workflow(
 
             async with pool.acquire() as conn:
                 order = await conn.fetchrow(
-                    'SELECT payment_provider_name, payment_intent_id '
+                    "SELECT payment_provider_name, payment_intent_id "
                     'FROM "customer_order" WHERE id = $1',
                     input_data.order_id,
                 )

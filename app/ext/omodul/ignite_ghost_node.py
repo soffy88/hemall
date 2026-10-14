@@ -74,11 +74,13 @@ async def ignite_ghost_node(
         nearest_lord (如果有匹配的).
     """
     trail = Trail()
-    fp = compute_fingerprint({
-        "cluster_id": input_data.cluster_id,
-        "center_lat": input_data.center_lat,
-        "center_lon": input_data.center_lon,
-    })
+    fp = compute_fingerprint(
+        {
+            "cluster_id": input_data.cluster_id,
+            "center_lat": input_data.center_lat,
+            "center_lon": input_data.center_lon,
+        }
+    )
 
     try:
         if pool is None:
@@ -167,9 +169,9 @@ async def ignite_ghost_node(
                 row = await conn.fetchrow(
                     'SELECT id, name FROM "digital_lord_contract" '
                     "WHERE status = 'active' "
-                    'AND ST_DWithin( '
-                    '  ST_MakePoint(lat, lng), '
-                    '  ST_MakePoint($1, $2), 5000)',
+                    "AND ST_DWithin( "
+                    "  ST_MakePoint(lat, lng), "
+                    "  ST_MakePoint($1, $2), 5000)",
                     input_data.center_lon,
                     input_data.center_lat,
                 )
@@ -213,8 +215,12 @@ async def ignite_ghost_node(
     except Exception as exc:
         trail.record(event="error", detail=str(exc))
         trail_path = trail.write(output_dir) if output_dir else None
-        logger.error("ghost node ignition failed for cluster %s: %s",
-                      input_data.cluster_id, exc, exc_info=True)
+        logger.error(
+            "ghost node ignition failed for cluster %s: %s",
+            input_data.cluster_id,
+            exc,
+            exc_info=True,
+        )
         return build_result(
             status="failed",
             error={"type": type(exc).__name__, "message": str(exc)},
@@ -227,5 +233,3 @@ async def ignite_ghost_node(
 def get_approx_distance(lat: float, lon: float) -> str:
     """占位距离计算——真实场景需要查询最近 active 仓库做精确 Haversine。"""
     return "计算中..."
-
-

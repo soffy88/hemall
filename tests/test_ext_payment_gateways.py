@@ -45,10 +45,14 @@ def _make_keypair() -> tuple[str, str]:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    pub_pem = key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    pub_pem = (
+        key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
     return priv_pem, pub_pem
 
 
@@ -117,9 +121,7 @@ async def test_wechat_prepay_request_shape():
         captured["url"] = str(request.url)
         captured["auth"] = request.headers.get("Authorization", "")
         captured["body"] = json.loads(request.content)
-        return httpx.Response(
-            200, json={"code_url": "weixin://wxpay/bizpayurl?pr=test123"}
-        )
+        return httpx.Response(200, json={"code_url": "weixin://wxpay/bizpayurl?pr=test123"})
 
     gw = _wechat_gateway(transport=httpx.MockTransport(handler))
     result = await gw.prepay(
@@ -148,9 +150,7 @@ async def test_wechat_prepay_api_error_raises():
 
     gw = _wechat_gateway(transport=httpx.MockTransport(handler))
     with pytest.raises(Exception) as exc:
-        await gw.prepay(
-            out_trade_no="o", total_fee_cents=100, description="x", notify_url=""
-        )
+        await gw.prepay(out_trade_no="o", total_fee_cents=100, description="x", notify_url="")
     assert "401" in str(exc.value)
 
 
@@ -165,10 +165,14 @@ def _wechat_platform_gateway() -> tuple[WechatPayNativeGateway, str]:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    pub_pem = key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    pub_pem = (
+        key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
 
     priv, _ = _make_keypair()  # 商户私钥
     gw = WechatPayNativeGateway(
@@ -307,9 +311,11 @@ async def test_stripe_refund_shape():
 def test_stripe_webhook_verify():
     body = b'{"type":"payment_intent.succeeded"}'
     ts = int(time.time())
-    expected = __import__("hmac").new(
-        b"whsec_test", f"{ts}.{body.decode()}".encode(), __import__("hashlib").sha256
-    ).hexdigest()
+    expected = (
+        __import__("hmac")
+        .new(b"whsec_test", f"{ts}.{body.decode()}".encode(), __import__("hashlib").sha256)
+        .hexdigest()
+    )
     header = f"t={ts},v1={expected}"
     assert stripe_webhook_verify("whsec_test", body, header)
     assert not stripe_webhook_verify("whsec_wrong", body, header)

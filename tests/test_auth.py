@@ -68,15 +68,18 @@ def test_login_without_db_returns_503(client):
     assert r.status_code == 503
 
 
-@pytest.mark.parametrize("payload", [
-    {"sub": "u42", "typ": "customer"},
-    {"sub": "u42", "typ": "pickup"},
-    {"sub": "u42", "typ": "receipt"},
-    {"sub": "u42"},
-    {"sub": "u42", "typ": "unknown"},
-    {"typ": "staff"},
-    {"sub": "", "typ": "staff"},
-])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"sub": "u42", "typ": "customer"},
+        {"sub": "u42", "typ": "pickup"},
+        {"sub": "u42", "typ": "receipt"},
+        {"sub": "u42"},
+        {"sub": "u42", "typ": "unknown"},
+        {"typ": "staff"},
+        {"sub": "", "typ": "staff"},
+    ],
+)
 def test_non_staff_or_invalid_subject_token_rejected(payload):
     s = Settings()
     token = CryptoUtil.jwt_sign(payload=payload, secret=s.jwt_secret)

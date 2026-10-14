@@ -62,9 +62,7 @@ async def batch_settlement(
 
     try:
         if pool is None:
-            raise ValueError(
-                "pool is required — batch_settlement always touches persisted stock"
-            )
+            raise ValueError("pool is required — batch_settlement always touches persisted stock")
 
         async with pool.acquire() as conn:
             batch = await conn.fetchrow(

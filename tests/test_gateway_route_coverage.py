@@ -51,9 +51,7 @@ _BACKEND_PREFIXES = frozenset(
 
 def _strip_caddy_comments(text: str) -> str:
     """去掉 # 行注释（注意不要误伤 URL 里的 #，本文件不含）。"""
-    return "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
 def _caddy_literal_handles(text: str) -> set[str]:
@@ -73,9 +71,7 @@ def _caddy_literal_handles(text: str) -> set[str]:
 def _caddy_regexp_alternatives(text: str) -> set[str]:
     """收集 `@omodul path_regexp api ^/(a|b|c)(/.*)?$` 的备择前缀。"""
     alts: set[str] = set()
-    for m in re.finditer(
-        r"path_regexp\s+\S+\s+\^?/\(([^)]*)\)", _strip_caddy_comments(text)
-    ):
+    for m in re.finditer(r"path_regexp\s+\S+\s+\^?/\(([^)]*)\)", _strip_caddy_comments(text)):
         for alt in m.group(1).split("|"):
             alt = alt.strip().rstrip("*")
             if alt:
@@ -146,9 +142,7 @@ def _nginx_covers_prefix(text: str, prefix: str) -> bool:
         if "proxy_pass" in body and not re.search(r"\breturn\s+404\b", body):
             return True
     # 否则必须有精确 location 且转发到后端
-    return _nginx_prefix_regex(text, prefix) and _nginx_serves_via_backend(
-        text, prefix
-    )
+    return _nginx_prefix_regex(text, prefix) and _nginx_serves_via_backend(text, prefix)
 
 
 # ── 测试 ────────────────────────────────────────────────────────────────────
@@ -210,9 +204,7 @@ def test_caddyfile_covers_hardware_webhook_and_ws():
 @pytest.mark.parametrize("prefix", sorted(_BACKEND_PREFIXES))
 def test_nginx_conf_serves_prefix(conf: Path, prefix: str):
     text = conf.read_text(encoding="utf-8")
-    assert _nginx_covers_prefix(text, prefix), (
-        f"{conf.name} 未把 {prefix} 前缀转发到后端"
-    )
+    assert _nginx_covers_prefix(text, prefix), f"{conf.name} 未把 {prefix} 前缀转发到后端"
 
 
 @pytest.mark.parametrize("conf", NGINX_CONFS, ids=lambda p: p.name)

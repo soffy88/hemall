@@ -220,7 +220,5 @@ def get_elasticsearch_url(settings: Settings) -> str:
         3. http://localhost:9200 (默认)
     """
     return (
-        settings.elasticsearch_url
-        or settings.hemall_elasticsearch_url
-        or "http://localhost:9200"
+        settings.elasticsearch_url or settings.hemall_elasticsearch_url or "http://localhost:9200"
     )

@@ -112,9 +112,7 @@ async def submit_battle_report_workflow(
         already_reported / ...)。
     """
     trail = Trail()
-    fp = compute_fingerprint(
-        {"order_id": input_data.order_id, "user_id": input_data.user_id}
-    )
+    fp = compute_fingerprint({"order_id": input_data.order_id, "user_id": input_data.user_id})
 
     try:
         if pool is None:
@@ -124,7 +122,9 @@ async def submit_battle_report_workflow(
 
         if not input_data.text and not input_data.image_url:
             return _fail(
-                trail, output_dir, fp,
+                trail,
+                output_dir,
+                fp,
                 reason="empty_report",
                 detail="at least one of text/image_url is required",
             )
@@ -132,31 +132,36 @@ async def submit_battle_report_workflow(
         # ── 1. 物理锁校验：订单属于该用户 + 已物理履约 + 未评价过 ──
         async with pool.acquire() as conn:
             order = await conn.fetchrow(
-                'SELECT id, customer_id, status FROM "customer_order" '
-                "WHERE id = $1",
+                'SELECT id, customer_id, status FROM "customer_order" WHERE id = $1',
                 input_data.order_id,
             )
             if order is None or str(order["customer_id"]) != input_data.user_id:
                 return _fail(
-                    trail, output_dir, fp,
+                    trail,
+                    output_dir,
+                    fp,
                     reason="invalid_or_incomplete_order",
                     detail="order does not exist or does not belong to this user",
                 )
             if str(order["status"]) not in _REPORTABLE_ORDER_STATUSES:
                 return _fail(
-                    trail, output_dir, fp,
+                    trail,
+                    output_dir,
+                    fp,
                     reason="invalid_or_incomplete_order",
                     detail=f"order status={order['status']} is not physically settled "
                     f"(need one of {sorted(_REPORTABLE_ORDER_STATUSES)})",
                 )
 
             already = await conn.fetchval(
-                'SELECT 1 FROM "batch_battle_report" WHERE order_id = $1', 
+                'SELECT 1 FROM "batch_battle_report" WHERE order_id = $1',
                 input_data.order_id,
             )
             if already:
                 return _fail(
-                    trail, output_dir, fp,
+                    trail,
+                    output_dir,
+                    fp,
                     reason="already_reported",
                     detail="one order can only produce one battle report (anti-spam)",
                 )
@@ -170,7 +175,9 @@ async def submit_battle_report_workflow(
 
         if not batch_ids:
             return _fail(
-                trail, output_dir, fp,
+                trail,
+                output_dir,
+                fp,
                 reason="invalid_or_incomplete_order",
                 detail="order has no line items",
             )
@@ -178,7 +185,9 @@ async def submit_battle_report_workflow(
         if input_data.batch_id:
             if input_data.batch_id not in batch_ids:
                 return _fail(
-                    trail, output_dir, fp,
+                    trail,
+                    output_dir,
+                    fp,
                     reason="batch_not_in_order",
                     detail="the reviewed batch was not actually purchased in this order",
                 )
@@ -187,7 +196,9 @@ async def submit_battle_report_workflow(
             batch_id = next(iter(batch_ids))
         else:
             return _fail(
-                trail, output_dir, fp,
+                trail,
+                output_dir,
+                fp,
                 reason="ambiguous_batch",
                 detail="order contains multiple batches; batch_id is required",
             )
@@ -202,7 +213,9 @@ async def submit_battle_report_workflow(
             )
         except Exception as exc:
             return _fail(
-                trail, output_dir, fp,
+                trail,
+                output_dir,
+                fp,
                 reason="vlm_parsing_error",
                 detail=f"battle report parsing failed: {exc}",
             )
@@ -251,16 +264,14 @@ async def submit_battle_report_workflow(
                         input_data.user_id,
                     )
                     if credited is None:
-                        raise ValueError(
-                            f"customer {input_data.user_id!r} not found"
-                        )
+                        raise ValueError(f"customer {input_data.user_id!r} not found")
 
                     # C. 联动供应商惩罚：极性严重为负 → 追溯该批次供应商扣信誉分
                     if quantified["sentiment_polarity"] < _SUPPLIER_PENALTY_POLARITY_THRESHOLD:
                         await conn.execute(
                             'UPDATE "supplier" '
                             "SET trust_score = GREATEST(trust_score - $1, 0) "
-                            "WHERE id = (SELECT supplier_id FROM \"inventory_batch\" "
+                            'WHERE id = (SELECT supplier_id FROM "inventory_batch" '
                             "WHERE id = $2)",
                             _SUPPLIER_PENALTY_TRUST_POINTS,
                             batch_id,
@@ -270,7 +281,9 @@ async def submit_battle_report_workflow(
             # 竞态兜底：两个请求同时提交同一订单，后到者撞 order_id 唯一约束，
             # 事务整体回滚 (算力金不会重复发放)。
             return _fail(
-                trail, output_dir, fp,
+                trail,
+                output_dir,
+                fp,
                 reason="already_reported",
                 detail=f"duplicate battle report for order {input_data.order_id!r}",
             )

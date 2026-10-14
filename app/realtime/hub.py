@@ -77,9 +77,7 @@ class ConnectionManager:
             self._pubsub_task = asyncio.create_task(self._listen_redis())
             logger.info("realtime hub started (Redis pub/sub)")
         except Exception as exc:
-            logger.warning(
-                "realtime Redis pub/sub init failed (degraded to local-only): %s", exc
-            )
+            logger.warning("realtime Redis pub/sub init failed (degraded to local-only): %s", exc)
             self._redis = None
 
     async def stop(self) -> None:
@@ -201,9 +199,7 @@ manager = ConnectionManager()
 # ── 推送 API (供其他服务调用) ────────────────────────────────────────
 
 
-async def publish_to_user(
-    user_id: str, event: str, data: dict[str, Any] | None = None
-) -> None:
+async def publish_to_user(user_id: str, event: str, data: dict[str, Any] | None = None) -> None:
     """向指定用户推送事件 (跨实例, 通过 Redis pub/sub)。"""
     message = {
         "event": event,
@@ -248,9 +244,7 @@ def _principal_from_ws_token(token: str) -> str | None:
             )
         except Exception:
             continue
-        subject = (
-            payload.get("sub") if typ == "staff" else payload.get("customer_id")
-        )
+        subject = payload.get("sub") if typ == "staff" else payload.get("customer_id")
         if isinstance(subject, str) and subject.strip():
             return subject
     return None

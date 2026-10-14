@@ -133,9 +133,7 @@ class ExtOservi:
         """
         for engine in self._cron_engines():
             interval = float(engine.config.get("interval_seconds", 3600))
-            task = asyncio.create_task(
-                _run_cron_loop(engine, interval), name=engine.name
-            )
+            task = asyncio.create_task(_run_cron_loop(engine, interval), name=engine.name)
             self._tasks.append(task)
         logger.info("started %d ext cron engine tasks", len(self._tasks))
 
@@ -155,9 +153,7 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     demand_aggregator = build_demand_aggregator_engine(
         notification_provider=settings.default_notification_provider
     )
-    weather_arbitrage = build_weather_arbitrage_engine(
-        pool, broadcast_engine=batch_broadcast
-    )
+    weather_arbitrage = build_weather_arbitrage_engine(pool, broadcast_engine=batch_broadcast)
     inventory_reaper = build_inventory_reaper_engine(pool, settings=settings)
     delivery_wave = build_delivery_wave_engine(pool)
     node_host_settlement = build_node_host_settlement_engine(pool, settings=settings)

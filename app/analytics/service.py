@@ -32,13 +32,13 @@ class TimeGranularity(Enum):
 
 
 class MetricType(Enum):
-    GMV = "gmv"                     # 总交易额
-    ORDER_COUNT = "order_count"     # 订单数
-    AOV = "aov"                     # 客单价
-    USER_COUNT = "user_count"       # 用户数
-    NEW_USER = "new_user"           # 新用户数
-    CONVERSION_RATE = "conv_rate"   # 转化率
-    REFUND_RATE = "refund_rate"     # 退款率
+    GMV = "gmv"  # 总交易额
+    ORDER_COUNT = "order_count"  # 订单数
+    AOV = "aov"  # 客单价
+    USER_COUNT = "user_count"  # 用户数
+    NEW_USER = "new_user"  # 新用户数
+    CONVERSION_RATE = "conv_rate"  # 转化率
+    REFUND_RATE = "refund_rate"  # 退款率
 
 
 # ── 数据模型 ──────────────────────────────────────────────────────
@@ -180,9 +180,7 @@ class AnalyticsService:
             logger.warning("Product ranking query failed, returning empty")
             return []
 
-    async def get_funnel(
-        self, start_date: str, end_date: str
-    ) -> list[FunnelData]:
+    async def get_funnel(self, start_date: str, end_date: str) -> list[FunnelData]:
         """Return no funnel until page-view/cart interaction events are ingested.
 
         Order and payment tables alone cannot truthfully provide the view and add-to-cart
@@ -196,9 +194,7 @@ class AnalyticsService:
         )
         return []
 
-    async def get_retention(
-        self, cohort_date: str, lookback_days: int = 30
-    ) -> list[UserRetention]:
+    async def get_retention(self, cohort_date: str, lookback_days: int = 30) -> list[UserRetention]:
         """Compute purchase-cohort retention from real paid orders only."""
         from datetime import date
 
@@ -305,7 +301,10 @@ class AnalyticsService:
                 "avg_order_value_cents": int(row["avg_order_value_cents"] or 0),
                 "refund_rate": None,
                 "unavailable_metrics": [
-                    "today_active_users", "today_new_users", "conversion_rate", "refund_rate"
+                    "today_active_users",
+                    "today_new_users",
+                    "conversion_rate",
+                    "refund_rate",
                 ],
             }
         except Exception:
@@ -319,7 +318,12 @@ class AnalyticsService:
                 "avg_order_value_cents": None,
                 "refund_rate": None,
                 "unavailable_metrics": [
-                    "today_gmv_cents", "today_orders", "today_active_users",
-                    "today_new_users", "conversion_rate", "avg_order_value_cents", "refund_rate"
+                    "today_gmv_cents",
+                    "today_orders",
+                    "today_active_users",
+                    "today_new_users",
+                    "conversion_rate",
+                    "avg_order_value_cents",
+                    "refund_rate",
                 ],
             }

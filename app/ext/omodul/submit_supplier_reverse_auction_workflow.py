@@ -110,9 +110,7 @@ async def submit_supplier_reverse_auction_workflow(
             supplier_bid_price_per_gram=input_data.supplier_bid_price_per_gram,
         )
         if not approved:
-            raise ValueError(
-                "margin_too_low: supplier bid does not clear the 50% margin red line"
-            )
+            raise ValueError("margin_too_low: supplier bid does not clear the 50% margin red line")
 
         async with pool.acquire() as conn:
             await conn.execute(

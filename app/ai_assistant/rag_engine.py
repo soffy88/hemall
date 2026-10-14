@@ -177,7 +177,7 @@ class RAGEngine:
             LLMResponse 包含生成的回答
         """
         # 构建 System Prompt
-        system_prompt = """You are Hemall's intelligent shopping assistant. 
+        system_prompt = """You are Hemall's intelligent shopping assistant.
 Answer customer questions based on the provided product information.
 Be helpful, accurate, and friendly. If you don't know the answer, say so honestly.
 Always respond in the same language as the user's question.

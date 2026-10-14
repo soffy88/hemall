@@ -41,9 +41,7 @@ ALL_TOKEN_TYPES: frozenset[str] = frozenset(
 )
 
 #: 无主体、只授权单一资源的能力令牌——用独立派生密钥签发。
-DERIVED_KEY_TOKEN_TYPES: frozenset[str] = frozenset(
-    {TOKEN_TYPE_CART, TOKEN_TYPE_RECEIPT}
-)
+DERIVED_KEY_TOKEN_TYPES: frozenset[str] = frozenset({TOKEN_TYPE_CART, TOKEN_TYPE_RECEIPT})
 
 #: 允许出现在 /ws 实时推送通道上的主体类型。
 WS_TOKEN_TYPES: frozenset[str] = frozenset({TOKEN_TYPE_STAFF, TOKEN_TYPE_CUSTOMER})
@@ -130,15 +128,18 @@ def decode_token(token: str, *, typ: str, secret: str, algorithm: str) -> dict[s
         token=token, secret=secret_for_type(secret, typ), algorithm=algorithm
     )
     if payload.get("typ") != typ:
-        raise TokenTypeError(
-            f"expected token type {typ!r}, got {payload.get('typ')!r}"
-        )
+        raise TokenTypeError(f"expected token type {typ!r}, got {payload.get('typ')!r}")
     return payload
 
 
 def has_typ(payload: dict[str, Any], typ: str) -> bool:
     """仅看 claims 的类型判断（用于审计/限流这类 best-effort 旁路）。"""
-    return payload.get("typ") in typ if isinstance(typ, str) else payload.get("typ") in set(typ)
+    t = payload.get("typ")
+    if t is None:
+        return False
+    if isinstance(typ, str):
+        return t in typ
+    return t in set(typ)
 
 
 def typ_in(payload: dict[str, Any], allowed: Iterable[str]) -> bool:

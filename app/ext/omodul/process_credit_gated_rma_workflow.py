@@ -83,9 +83,7 @@ async def process_credit_gated_rma_workflow(
             batch_anomaly_rate=input_data.batch_anomaly_rate,
             route_risk=input_data.route_risk,
         )
-        trail.record(
-            event="credibility_evaluated", credibility_decision=credibility_decision
-        )
+        trail.record(event="credibility_evaluated", credibility_decision=credibility_decision)
 
         refund_amount = 0
         if credibility_decision == "instant":
@@ -93,7 +91,7 @@ async def process_credit_gated_rma_workflow(
 
             async with pool.acquire() as conn:
                 order = await conn.fetchrow(
-                    'SELECT payment_provider_name, payment_intent_id '
+                    "SELECT payment_provider_name, payment_intent_id "
                     'FROM "customer_order" WHERE id = $1',
                     input_data.order_id,
                 )

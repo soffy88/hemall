@@ -77,9 +77,7 @@ def get_ai_service(
 
     app_state = get_app_state()
     if not hasattr(app_state, "ai_service") or app_state.ai_service is None:
-        raise HTTPException(
-            status_code=503, detail="AI Assistant Service not initialized"
-        )
+        raise HTTPException(status_code=503, detail="AI Assistant Service not initialized")
     return app_state.ai_service
 
 
@@ -193,9 +191,7 @@ async def delete_session(
 ) -> dict[str, Any]:
     """删除对话会话（仅限自己的）。"""
     try:
-        deleted = svc.delete_session_owned(
-            session_id, owner_id=str(principal.get("user_id") or "")
-        )
+        deleted = svc.delete_session_owned(session_id, owner_id=str(principal.get("user_id") or ""))
     except PermissionError as exc:
         # 对越权者回 404 而不是 403——不泄露"这个 session 存在"。
         raise HTTPException(status_code=404, detail="Session not found") from exc

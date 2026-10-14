@@ -47,9 +47,7 @@ def register_providers(settings: Settings) -> None:
     """
     reg = ProviderRegistry.get()
     reg.register_generic("payment", "manual", ManualPaymentProvider(), replace=True)
-    reg.register_generic(
-        "fulfillment", "manual", ManualFulfillmentProvider(), replace=True
-    )
+    reg.register_generic("fulfillment", "manual", ManualFulfillmentProvider(), replace=True)
     reg.register_generic("search", "log", LogSearchProvider(), replace=True)
     reg.register_generic("notification", "log", LogNotificationProvider(), replace=True)
     reg.register_generic(
@@ -65,16 +63,12 @@ def register_providers(settings: Settings) -> None:
     gateway_provider, gateway = build_payment_gateway(settings)
     reg.register_generic("payment_gateway", gateway_provider, gateway, replace=True)
     if gateway_provider != "manual":
-        reg.register_generic(
-            "payment_gateway", "manual", ManualPaymentGateway(), replace=True
-        )
+        reg.register_generic("payment_gateway", "manual", ManualPaymentGateway(), replace=True)
     reg.register_generic("weather", "manual", ManualWeatherProvider(), replace=True)
     reg.register_generic("vlm", "manual", ManualVLMProvider(), replace=True)
     reg.register_generic("cv", "manual", ManualCVProvider(), replace=True)
     reg.register_generic("llm", "manual", ManualLLMProvider(), replace=True)
-    reg.register_generic(
-        "wechat_channel", "manual", ManualWeChatChannelProvider(), replace=True
-    )
+    reg.register_generic("wechat_channel", "manual", ManualWeChatChannelProvider(), replace=True)
     reg.register_generic("spider", "manual", ManualSpiderProvider(), replace=True)
     # Phase 7 Task 2: 具象化真实爬虫 (苏宁/京东到家/OpenFoodFacts)。默认走
     # layered——测试覆写 (set_results) 仍然生效，关键词命中真实目标时发真实
@@ -120,9 +114,7 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
             from .payments.models import PAYMENT_SESSION_DDL
             from .security.audit import AUDIT_LOG_DDL
 
-            await _ensure_security_payment_schema(
-                pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL
-            )
+            await _ensure_security_payment_schema(pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL)
 
             # Phase 1: 库存管理表结构
             from .inventory.models import STOCK_MOVEMENT_DDL
@@ -150,14 +142,8 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
     async def update_metrics():
         while True:
             try:
-                used = (
-                    len(pool._used_connections)
-                    if hasattr(pool, "_used_connections")
-                    else 0
-                )
-                update_db_pool_metrics(
-                    settings.pg_pool_name, settings.pg_pool_max, used
-                )
+                used = len(pool._used_connections) if hasattr(pool, "_used_connections") else 0
+                update_db_pool_metrics(settings.pg_pool_name, settings.pg_pool_max, used)
             except Exception as e:
                 logger.warning("Failed to update DB pool metrics: %s", e)
             await asyncio.sleep(10)  # 每 10 秒更新一次
@@ -178,14 +164,10 @@ async def _ensure_hemall_local_schema(pool: PgPool) -> None:
     这里做 hemall 本地的幂等 ALTER, 只影响这一个数据库。
     """
     async with pool.acquire() as conn:
-        await conn.execute(
-            'ALTER TABLE "customer" ADD COLUMN IF NOT EXISTS password_hash TEXT'
-        )
+        await conn.execute('ALTER TABLE "customer" ADD COLUMN IF NOT EXISTS password_hash TEXT')
 
 
-async def _ensure_security_payment_schema(
-    pool: PgPool, audit_ddl: str, payment_ddl: str
-) -> None:
+async def _ensure_security_payment_schema(pool: PgPool, audit_ddl: str, payment_ddl: str) -> None:
     """Phase 0 Week 2: 幂等创建审计日志表 + 支付会话表。"""
     async with pool.acquire() as conn:
         await conn.execute(audit_ddl)
@@ -238,9 +220,7 @@ async def _verify_critical_schema(pool: PgPool) -> None:
             """
         )
         if not has_unique_index:
-            raise RuntimeError(
-                "stock_movement 表缺少 uq_stock_movement_idempotency 唯一索引"
-            )
+            raise RuntimeError("stock_movement 表缺少 uq_stock_movement_idempotency 唯一索引")
 
         # 检查 order_line_item.fulfilled_qty CHECK 约束
         has_fulfilled_check = await conn.fetchval(
@@ -252,9 +232,9 @@ async def _verify_critical_schema(pool: PgPool) -> None:
             """
         )
         if not has_fulfilled_check:
-            raise RuntimeError(
-                "order_line_item 表缺少 fulfilled_qty CHECK 约束"
-            )
+            raise RuntimeError("order_line_item 表缺少 fulfilled_qty CHECK 约束")
 
-    logger.info("critical schema verification passed (stock_movement.idempotency_key, "
-                "uq_stock_movement_idempotency, order_line_item_fulfilled_qty_check)")
+    logger.info(
+        "critical schema verification passed (stock_movement.idempotency_key, "
+        "uq_stock_movement_idempotency, order_line_item_fulfilled_qty_check)"
+    )

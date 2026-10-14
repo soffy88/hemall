@@ -79,9 +79,7 @@ class TestConnectionManager:
         cm = ConnectionManager()
         await cm.send_to_user("nonexistent", {"event": "test"})
 
-        assert "nonexistent" not in cm._connections, (
-            "给未知用户发消息不得创建连接集"
-        )
+        assert "nonexistent" not in cm._connections, "给未知用户发消息不得创建连接集"
         assert cm._connections == {}
 
         # 对已存在的用户，发送后连接仍应保留（不会被误清)。
@@ -254,6 +252,7 @@ class TestRealtimeIntegration:
     def test_realtime_manager_singleton(self):
         """验证 manager 是单例。"""
         from app.realtime.hub import manager as m2
+
         assert manager is m2
 
     def test_websocket_rejects_missing_and_invalid_token(self):
@@ -290,8 +289,11 @@ class TestRealtimeIntegration:
         with TestClient(app) as client:
             for typ, body in cases:
                 token = sign_token(
-                    body, typ=typ, secret=settings.jwt_secret,
-                    algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+                    body,
+                    typ=typ,
+                    secret=settings.jwt_secret,
+                    algorithm=settings.jwt_algorithm,
+                    expires_in_minutes=10,
                 )
                 with client.websocket_connect(f"/ws?token={token}") as ws:
                     ws.send_text("ping")
@@ -307,8 +309,10 @@ class TestRealtimeIntegration:
 
         settings = get_settings()
         token = sign_token(
-            {"cart_id": "c1", "order_id": "o1", "node_name": "n"}, typ=typ,
-            secret=settings.jwt_secret, algorithm=settings.jwt_algorithm,
+            {"cart_id": "c1", "order_id": "o1", "node_name": "n"},
+            typ=typ,
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
             expires_in_minutes=10,
         )
         with TestClient(app) as client:
@@ -353,13 +357,14 @@ class TestRealtimeIntegration:
         with TestClient(app) as client:
             for typ, body, expected in cases:
                 token = sign_token(
-                    body, typ=typ, secret=settings.jwt_secret,
-                    algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+                    body,
+                    typ=typ,
+                    secret=settings.jwt_secret,
+                    algorithm=settings.jwt_algorithm,
+                    expires_in_minutes=10,
                 )
                 with client.websocket_connect(f"/ws?token={token}") as ws:
                     ws.send_text("ping")
                     ws.receive_text()
-                    assert expected in manager._connections, (
-                        f"typ={typ} 应当以 {expected} 注册连接"
-                    )
+                    assert expected in manager._connections, f"typ={typ} 应当以 {expected} 注册连接"
                     manager.disconnect(list(manager._connections[expected])[0], expected)

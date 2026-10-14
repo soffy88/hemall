@@ -414,9 +414,7 @@ class InventoryService:
                     )
                     remaining -= to_reserve
 
-        await self._check_safety_stock(
-            product_id, variant_id, location_id, self._event_engine
-        )
+        await self._check_safety_stock(product_id, variant_id, location_id, self._event_engine)
         return allocations
 
     # ── 库存扣减 (发货时调用) ────────────────────────────────────

@@ -85,8 +85,11 @@ def _headers(role: str | None) -> dict[str, str]:
     if role is not None:
         payload["role"] = role
     token = sign_token(
-        payload, typ=TOKEN_TYPE_STAFF, secret=settings.jwt_secret,
-        algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+        payload,
+        typ=TOKEN_TYPE_STAFF,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        expires_in_minutes=10,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -156,17 +159,13 @@ def test_bare_name_fallback_resolves_same_name_across_domains():
         assert required_roles_for_op("supply-chain/create_inventory_batch") == frozenset(
             {ADMIN_ROLE}
         )
-        assert required_roles_for_op("inventory/create_inventory_batch") == frozenset(
-            {ADMIN_ROLE}
-        )
+        assert required_roles_for_op("inventory/create_inventory_batch") == frozenset({ADMIN_ROLE})
     finally:
         del OP_MIN_ROLES["create_inventory_batch"]
 
 
 def test_unclassified_high_risk_op_fails_closed_to_admin():
-    assert required_roles_for_op("madeup/do_something_with_refund") == frozenset(
-        {ADMIN_ROLE}
-    )
+    assert required_roles_for_op("madeup/do_something_with_refund") == frozenset({ADMIN_ROLE})
 
 
 def test_low_risk_unregistered_op_uses_the_default_roles():
@@ -184,8 +183,7 @@ def test_self_service_set_covers_the_public_registry_entries():
     from app.registry import all_endpoint_specs as std_specs
 
     public = {
-        f"{s.domain}/{s.name}" for s in list(std_specs()) + list(ext_specs())
-        if not s.require_auth
+        f"{s.domain}/{s.name}" for s in list(std_specs()) + list(ext_specs()) if not s.require_auth
     }
     missing = {op for op in public if not is_self_service(op)}
     assert missing == set(), f"这些公开 op 未登记在 OP_SELF_SERVICE: {missing}"
@@ -287,9 +285,7 @@ def test_plain_staff_is_denied_on_http_high_risk_endpoints(client, method, path,
 
 
 @pytest.mark.parametrize("method,path,body", HTTP_HIGH_RISK)
-def test_staff_without_role_is_denied_on_http_high_risk_endpoints(
-    client, method, path, body
-):
+def test_staff_without_role_is_denied_on_http_high_risk_endpoints(client, method, path, body):
     r = client.request(method, path, json=body, headers=_headers(None))
     assert r.status_code == 403
 
@@ -318,9 +314,7 @@ def test_execute_tool_and_http_endpoint_resolve_the_same_roles():
     from app.registry import all_endpoint_specs as std_specs
 
     http_ops = {
-        f"{s.domain}/{s.name}"
-        for s in list(std_specs()) + list(ext_specs())
-        if s.require_auth
+        f"{s.domain}/{s.name}" for s in list(std_specs()) + list(ext_specs()) if s.require_auth
     }
     assert len(http_ops) > 50, "路由表解析异常，端点过少"
 

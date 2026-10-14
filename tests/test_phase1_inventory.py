@@ -123,8 +123,7 @@ class TestInventoryRoutes:
         paths = app.openapi()["paths"]
         inventory_paths = [p for p in paths if p.startswith("/inventory")]
         assert len(inventory_paths) >= 8, (
-            f"expected >=8 inventory paths, got {len(inventory_paths)}: "
-            f"{inventory_paths}"
+            f"expected >=8 inventory paths, got {len(inventory_paths)}: {inventory_paths}"
         )
 
         expected_routes = [

@@ -72,7 +72,8 @@ class ElasticsearchClient:
             }
             if self._settings.elasticsearch_username and self._settings.elasticsearch_password:
                 client_options["basic_auth"] = (
-                    self._settings.elasticsearch_username, self._settings.elasticsearch_password
+                    self._settings.elasticsearch_username,
+                    self._settings.elasticsearch_password,
                 )
             if self._settings.elasticsearch_ca_cert:
                 client_options["ca_certs"] = self._settings.elasticsearch_ca_cert
@@ -305,9 +306,7 @@ class ElasticsearchClient:
                 "hits": response["hits"]["hits"],
                 "total": response["hits"]["total"]["value"],
                 "max_score": (
-                    response["hits"]["hits"][0]["_score"]
-                    if response["hits"]["hits"]
-                    else 0
+                    response["hits"]["hits"][0]["_score"] if response["hits"]["hits"] else 0
                 ),
                 "aggregations": response.get("aggregations", {}),
                 "took": took_ms,
@@ -346,11 +345,13 @@ class ElasticsearchClient:
             suggestions = response.get("suggest", {}).get("text_suggestions", [])
             results = []
             for option in suggestions[0].get("options", []):
-                results.append({
-                    "text": option.get("_source", {}).get("text", ""),
-                    "product_count": option.get("_source", {}).get("product_count"),
-                    "type": option.get("_source", {}).get("type", "keyword"),
-                })
+                results.append(
+                    {
+                        "text": option.get("_source", {}).get("text", ""),
+                        "product_count": option.get("_source", {}).get("product_count"),
+                        "type": option.get("_source", {}).get("type", "keyword"),
+                    }
+                )
             return results
         except Exception as exc:
             logger.warning("Autocomplete failed: %s", exc)

@@ -68,17 +68,13 @@ class AIQuotaGuard:
                 raise HTTPException(
                     status_code=429,
                     detail=(
-                        f"AI quota exceeded: {self._per_minute} calls/minute "
-                        f"for this principal"
+                        f"AI quota exceeded: {self._per_minute} calls/minute for this principal"
                     ),
                 )
             if len(hits) >= self._per_hour:
                 raise HTTPException(
                     status_code=429,
-                    detail=(
-                        f"AI quota exceeded: {self._per_hour} calls/hour "
-                        f"for this principal"
-                    ),
+                    detail=(f"AI quota exceeded: {self._per_hour} calls/hour for this principal"),
                 )
             hits.append(now)
         return True

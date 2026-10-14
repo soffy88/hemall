@@ -114,18 +114,14 @@ def test_recompute_voronoi_grid_rejects_too_few_or_duplicate():
 
 def test_verify_media_provenance_close_point_passes():
     assert (
-        verify_media_provenance(
-            {"gps_lat": 31.001, "gps_lon": 121.001}, supplier_loc=(31.0, 121.0)
-        )
+        verify_media_provenance({"gps_lat": 31.001, "gps_lon": 121.001}, supplier_loc=(31.0, 121.0))
         is True
     )
 
 
 def test_verify_media_provenance_far_point_fails():
     assert (
-        verify_media_provenance(
-            {"gps_lat": 40.0, "gps_lon": 100.0}, supplier_loc=(31.0, 121.0)
-        )
+        verify_media_provenance({"gps_lat": 40.0, "gps_lon": 100.0}, supplier_loc=(31.0, 121.0))
         is False
     )
 
@@ -138,9 +134,7 @@ def test_verify_media_provenance_missing_gps_fails_closed():
 
 
 def test_calculate_decay_price_decays_from_markup_to_floor():
-    fresh = calculate_decay_price(
-        datetime.now(UTC), shelf_life_hours=24, base_cost=2000
-    )
+    fresh = calculate_decay_price(datetime.now(UTC), shelf_life_hours=24, base_cost=2000)
     half = calculate_decay_price(
         datetime.now(UTC) - timedelta(hours=12), shelf_life_hours=24, base_cost=2000
     )
@@ -164,10 +158,7 @@ def test_calculate_decay_price_rejects_invalid_params():
 
 
 def test_adjust_demand_curve_by_weather_below_threshold_unchanged():
-    assert (
-        adjust_demand_curve_by_weather(3900, rain_probability=0.3, rain_intensity=1)
-        == 3900
-    )
+    assert adjust_demand_curve_by_weather(3900, rain_probability=0.3, rain_intensity=1) == 3900
 
 
 def test_adjust_demand_curve_by_weather_storm_discounts():
@@ -254,31 +245,19 @@ def test_predict_household_burn_rate_rejects_insufficient_history_or_bad_family_
 
 
 def test_evaluate_claim_credibility_high_trust_low_risk_is_instant():
-    assert (
-        evaluate_claim_credibility(100, batch_anomaly_rate=0.0, route_risk=0.0)
-        == "instant"
-    )
+    assert evaluate_claim_credibility(100, batch_anomaly_rate=0.0, route_risk=0.0) == "instant"
 
 
 def test_evaluate_claim_credibility_low_trust_high_risk_is_honeypot():
-    assert (
-        evaluate_claim_credibility(0, batch_anomaly_rate=1.0, route_risk=1.0)
-        == "honeypot"
-    )
+    assert evaluate_claim_credibility(0, batch_anomaly_rate=1.0, route_risk=1.0) == "honeypot"
 
 
 def test_evaluate_claim_credibility_boundary_is_instant_not_honeypot():
     # distrust(0)*0.5 + anomaly(1.0)*0.3 + risk(0)*0.2 = 0.30，等于阈值本身
     # (> 阈值才判 honeypot，等于阈值仍是 instant)。
-    assert (
-        evaluate_claim_credibility(100, batch_anomaly_rate=1.0, route_risk=0.0)
-        == "instant"
-    )
+    assert evaluate_claim_credibility(100, batch_anomaly_rate=1.0, route_risk=0.0) == "instant"
     # 同样的组合再加一点点 route_risk，刚好越过阈值 -> honeypot。
-    assert (
-        evaluate_claim_credibility(100, batch_anomaly_rate=1.0, route_risk=0.01)
-        == "honeypot"
-    )
+    assert evaluate_claim_credibility(100, batch_anomaly_rate=1.0, route_risk=0.01) == "honeypot"
 
 
 def test_evaluate_claim_credibility_rejects_out_of_range_params():
@@ -516,21 +495,12 @@ def test_validate_supplier_margin_rejects_invalid_params():
 
 
 def test_calculate_next_probe_price_holds_when_velocity_meets_target():
-    assert (
-        calculate_next_probe_price(1000, observed_velocity=0.5, target_velocity=0.5)
-        == 1000
-    )
-    assert (
-        calculate_next_probe_price(1000, observed_velocity=0.8, target_velocity=0.5)
-        == 1000
-    )
+    assert calculate_next_probe_price(1000, observed_velocity=0.5, target_velocity=0.5) == 1000
+    assert calculate_next_probe_price(1000, observed_velocity=0.8, target_velocity=0.5) == 1000
 
 
 def test_calculate_next_probe_price_cuts_5_percent_when_undersold():
-    assert (
-        calculate_next_probe_price(1000, observed_velocity=0.1, target_velocity=0.5)
-        == 950
-    )
+    assert calculate_next_probe_price(1000, observed_velocity=0.1, target_velocity=0.5) == 950
 
 
 def test_calculate_next_probe_price_rejects_invalid_params():

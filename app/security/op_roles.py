@@ -250,9 +250,7 @@ def required_roles_for_op(op: str) -> frozenset[str]:
 
 
 def is_self_service(op: str) -> bool:
-    return op in OP_SELF_SERVICE or bare_name(op) in {
-        bare_name(s) for s in OP_SELF_SERVICE
-    }
+    return op in OP_SELF_SERVICE or bare_name(op) in {bare_name(s) for s in OP_SELF_SERVICE}
 
 
 def assert_op_role(op: str, principal: dict[str, Any]) -> dict[str, Any]:
@@ -265,10 +263,7 @@ def assert_op_role(op: str, principal: dict[str, Any]) -> dict[str, Any]:
     if role not in allowed:
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"operation {op!r} requires one of {sorted(allowed)}; "
-                f"current role {role!r}"
-            ),
+            detail=(f"operation {op!r} requires one of {sorted(allowed)}; current role {role!r}"),
         )
     return principal
 
@@ -288,9 +283,6 @@ def assert_command_kind_role(kind: str, principal: dict[str, Any]) -> dict[str, 
     if role not in allowed:
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"command {kind!r} requires one of {sorted(allowed)}; "
-                f"current role {role!r}"
-            ),
+            detail=(f"command {kind!r} requires one of {sorted(allowed)}; current role {role!r}"),
         )
     return principal

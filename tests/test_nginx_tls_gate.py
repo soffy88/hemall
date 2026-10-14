@@ -33,6 +33,7 @@ TEMPLATES = sorted(REPO_ROOT.glob("nginx*.conf.template"))
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
 MALL_COMPOSE = REPO_ROOT / "docker-compose.mall-sxueji.yml"
 
+
 def _composes_with_nginx() -> list[Path]:
     out = []
     for p in (PROD_COMPOSE, MALL_COMPOSE):
@@ -68,7 +69,8 @@ def test_no_hardcoded_absolute_cert_path_in_repo_templates():
     for tpl in TEMPLATES:
         # 忽略注释行 (模板头部注释会引用历史问题里的旧写法)
         text = "\n".join(
-            ln for ln in tpl.read_text(encoding="utf-8").splitlines()
+            ln
+            for ln in tpl.read_text(encoding="utf-8").splitlines()
             if not ln.lstrip().startswith("#")
         )
         for m in re.finditer(r"ssl_certificate(_key)?\s+([^;]+);", text):
@@ -246,9 +248,7 @@ def test_entrypoint_fails_when_ssl_dir_absent(tmp_path: Path):
     )
 
 
-def test_entrypoint_renders_template_without_leftover_placeholders(
-    tmp_path: Path, tls_dir: Path
-):
+def test_entrypoint_renders_template_without_leftover_placeholders(tmp_path: Path, tls_dir: Path):
     out = tmp_path / "nginx.conf"
     proc = _run(
         [],

@@ -114,9 +114,7 @@ class LLMProvider(ABC):
         (tool_calls=None)，调用方据此走"无工具直答"分支——绝不因缺能力而 500。
         支持原生工具调用的 provider (如 OpenAI) 覆盖本方法。
         """
-        return await self.chat(
-            messages, temperature=temperature, max_tokens=max_tokens, **kwargs
-        )
+        return await self.chat(messages, temperature=temperature, max_tokens=max_tokens, **kwargs)
 
 
 class OpenAIProvider(LLMProvider):
@@ -139,8 +137,7 @@ class OpenAIProvider(LLMProvider):
     def __repr__(self) -> str:
         # 凭据不进 repr: provider 会被 logger / 调试器打印。
         return (
-            f"{type(self).__name__}(model_name={self._model_name!r}, "
-            f"api_base={self._api_base!r})"
+            f"{type(self).__name__}(model_name={self._model_name!r}, api_base={self._api_base!r})"
         )
 
     async def _ensure_client(self) -> None:
@@ -202,12 +199,8 @@ class OpenAIProvider(LLMProvider):
                 content=choice.message.content or "",
                 finish_reason=choice.finish_reason or "stop",
                 usage={
-                    "prompt_tokens": response.usage.prompt_tokens
-                    if response.usage
-                    else 0,
-                    "completion_tokens": response.usage.completion_tokens
-                    if response.usage
-                    else 0,
+                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
                 },
                 model=response.model,
                 latency_ms=latency,
@@ -543,9 +536,9 @@ class LocalLLMProvider(LLMProvider):
                         import json
 
                         chunk = json.loads(line[6:])
-                        if chunk.get("choices") and chunk["choices"][0].get(
-                            "delta", {}
-                        ).get("content"):
+                        if chunk.get("choices") and chunk["choices"][0].get("delta", {}).get(
+                            "content"
+                        ):
                             yield chunk["choices"][0]["delta"]["content"]
         except Exception as exc:
             logger.error("Local LLM stream error: %s", _safe_error(exc))

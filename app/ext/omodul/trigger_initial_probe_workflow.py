@@ -67,30 +67,22 @@ async def trigger_initial_probe_workflow(
 
         async with pool.acquire() as conn:
             batch = await conn.fetchrow(
-                "SELECT id, status, stock_qty, reserved_qty "
-                'FROM "inventory_batch" WHERE id = $1',
+                'SELECT id, status, stock_qty, reserved_qty FROM "inventory_batch" WHERE id = $1',
                 input_data.batch_id,
             )
             if batch is None:
                 raise ValueError(f"batch {input_data.batch_id!r} not found")
             if batch["status"] != "active":
-                raise ValueError(
-                    f"batch {input_data.batch_id!r} not active (cannot start a probe)"
-                )
+                raise ValueError(f"batch {input_data.batch_id!r} not active (cannot start a probe)")
             if batch["stock_qty"] - batch["reserved_qty"] <= 0:
-                raise ValueError(
-                    f"batch {input_data.batch_id!r} has no available stock to probe"
-                )
+                raise ValueError(f"batch {input_data.batch_id!r} has no available stock to probe")
 
             existing = await conn.fetchrow(
-                "SELECT id FROM \"probe_order_log\" "
-                "WHERE batch_id = $1 AND status = 'testing'",
+                "SELECT id FROM \"probe_order_log\" WHERE batch_id = $1 AND status = 'testing'",
                 input_data.batch_id,
             )
             if existing is not None:
-                raise ValueError(
-                    f"batch {input_data.batch_id!r} already has an active probe"
-                )
+                raise ValueError(f"batch {input_data.batch_id!r} already has an active probe")
 
             probe_id = uuid7()
             await conn.execute(
@@ -102,7 +94,7 @@ async def trigger_initial_probe_workflow(
             )
             # 同步顾客端可见价 = 试探起始价 (跟引擎"调价即写库"一致)。
             await conn.execute(
-                "UPDATE \"inventory_batch\" SET retail_price_cents = $1 WHERE id = $2",
+                'UPDATE "inventory_batch" SET retail_price_cents = $1 WHERE id = $2',
                 input_data.initial_price,
                 input_data.batch_id,
             )

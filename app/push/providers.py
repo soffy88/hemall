@@ -30,7 +30,7 @@ class FCMClient:
 
     依赖:
         firebase-admin (可选，用于 credential 管理)
-        
+
     环境变量:
         FIREBASE_CREDENTIALS_JSON: Base64 编码的 service-account-key.json
         FCM_SANDBOX: "1" 启用模拟模式 (无需真实 key)
@@ -77,11 +77,11 @@ class FCMClient:
                     logger.warning("firebase-admin not installed — using sandbox mode")
                 except Exception as exc:
                     logger.warning("FCM credential load failed (sandbox mode): %s", exc)
-            
+
             if not self._credentials_loaded:
                 # Sandbox mode
                 logger.info("FCM running in SANDBOX mode (no real push)")
-                
+
         except Exception as exc:
             logger.warning("FCM init failed (sandbox fallback): %s", exc)
 
@@ -108,7 +108,9 @@ class FCMClient:
             # Sandbox mock
             if not self._credentials_loaded:
                 logger.debug(
-                    "[FCM SANDBOX] Would POST %s: %s", device_token, payload,
+                    "[FCM SANDBOX] Would POST %s: %s",
+                    device_token,
+                    payload,
                 )
                 return PushResult(device_token=device_token, success=True)
 
@@ -262,20 +264,20 @@ class APNSClient:
             try:
                 from apns2 import client as apns_client
                 from apns2.credentials import Credentials
-                
+
                 key_id = self._settings.apns_key_id or ""
                 team_id = self._settings.apns_team_id or ""
                 cert_base64 = self._settings.apns_cert_base64 or ""
-                
+
                 if key_id and team_id and cert_base64:
                     import base64
-                    
+
                     credentials = Credentials(
-                    key_id, team_id, cert_data=base64.b64decode(cert_base64)
-                )
+                        key_id, team_id, cert_data=base64.b64decode(cert_base64)
+                    )
                     sandbox = self._settings.apns_sandbox == "1"
                     host = "api.sandbox.push.apple.com" if sandbox else "api.push.apple.com"
-                    
+
                     self._apns_client = apns_client.APNsClient(
                         credentials=credentials,
                         use_sandbox=sandbox,
@@ -285,10 +287,10 @@ class APNSClient:
                     logger.info("APNs initialized: %s", host)
                 else:
                     logger.info("APNs running in SANDBOX mode (no certificate)")
-                    
+
             except ImportError:
                 logger.info("apns2 not installed — APNs disabled")
-                
+
         except Exception as exc:
             logger.warning("APNs init failed: %s", exc)
 
@@ -331,7 +333,7 @@ class APNSClient:
             #           identifier=str(uuid.uuid4()),
             #           topic=self._settings.apns_bundle_id,
             #           expiration=datetime.now(timezone.utc)
-#           + timedelta(seconds=notification.ttl_seconds),
+            #           + timedelta(seconds=notification.ttl_seconds),
             #           priority=10 if notification.priority == PushPriority.HIGH else 5,
             #           payload=payload,
             #           target_device_token=bytes.fromhex(clean_token),

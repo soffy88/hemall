@@ -82,9 +82,7 @@ class InvalidTransitionError(Exception):
     def __init__(self, from_status: PaymentStatus, to_status: PaymentStatus) -> None:
         self.from_status = from_status
         self.to_status = to_status
-        super().__init__(
-            f"invalid payment transition: {from_status.value} → {to_status.value}"
-        )
+        super().__init__(f"invalid payment transition: {from_status.value} → {to_status.value}")
 
 
 def validate_transition(from_status: PaymentStatus, to_status: PaymentStatus) -> None:
@@ -106,9 +104,7 @@ class PaymentSession(BaseModel):
     currency: str = "CNY"
     provider: PaymentProvider
     status: PaymentStatus = PaymentStatus.PENDING
-    provider_trade_no: str | None = Field(
-        None, description="第三方支付流水号 (微信/支付宝)"
-    )
+    provider_trade_no: str | None = Field(None, description="第三方支付流水号 (微信/支付宝)")
     payer_info: str | None = Field(None, description="付款人信息 (加密存储)")
     refund_amount: Decimal | None = Field(None, description="退款金额")
     metadata: dict[str, Any] = Field(default_factory=dict)

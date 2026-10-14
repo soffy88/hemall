@@ -102,15 +102,19 @@ class EventStore:
                 for event in events:
                     d = event.to_dict()
                     sql = """
-                        INSERT INTO event_store 
+                        INSERT INTO event_store
                         (event_id, event_type, aggregate_id, aggregate_type,
                          version, data, occurred_at)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """
                     await conn.execute(
                         sql,
-                        d["event_id"], d["event_type"], d["aggregate_id"],
-                        d["aggregate_type"], d["version"], str(d["data"]),
+                        d["event_id"],
+                        d["event_type"],
+                        d["aggregate_id"],
+                        d["aggregate_type"],
+                        d["version"],
+                        str(d["data"]),
                         d["occurred_at"].isoformat(),
                     )
                     inserted += 1
@@ -155,9 +159,7 @@ class EventStore:
             events.append(DomainEvent.from_dict(d))
         return events
 
-    async def get_latest_snapshot(
-        self, aggregate_id: str
-    ) -> Snapshot | None:
+    async def get_latest_snapshot(self, aggregate_id: str) -> Snapshot | None:
         """获取最新的聚合快照。"""
         if not self._initialized:
             return None
@@ -198,7 +200,10 @@ class EventStore:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     sql,
-                    aggregate_id, event.aggregate_type, event.version, str(event.data),
+                    aggregate_id,
+                    event.aggregate_type,
+                    event.version,
+                    str(event.data),
                 )
             logger.debug("Snapshot created for %s at version %d", aggregate_id, event.version)
             return True

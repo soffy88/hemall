@@ -35,9 +35,9 @@ class SearchService:
         self._settings = settings
         # 搜索权重配置
         self._field_boosts = {
-            "name": 10,       # 名称最高权重
-            "subtitle": 8,     # 副标题次高
-            "brand_name": 5,   # 品牌中等
+            "name": 10,  # 名称最高权重
+            "subtitle": 8,  # 副标题次高
+            "brand_name": 5,  # 品牌中等
             "description": 3,  # 描述最低
         }
 
@@ -71,15 +71,17 @@ class SearchService:
         # ── 关键词匹配 (multi_match with field boosts) ───────────
         if params.keyword:
             fields = [f"{f}^{boost}" for f, boost in self._field_boosts.items()]
-            must_clauses.append({
-                "multi_match": {
-                    "query": params.keyword,
-                    "fields": fields,
-                    "type": "best_fields",
-                    "fuzziness": "AUTO",  # 自动模糊匹配
-                    "minimum_should_match": "75%",
+            must_clauses.append(
+                {
+                    "multi_match": {
+                        "query": params.keyword,
+                        "fields": fields,
+                        "type": "best_fields",
+                        "fuzziness": "AUTO",  # 自动模糊匹配
+                        "minimum_should_match": "75%",
+                    }
                 }
-            })
+            )
         else:
             # 无关键词时返回所有商品
             must_clauses.append({"match_all": {}})
@@ -167,9 +169,7 @@ class SearchService:
             prefix=request.prefix,
             size=request.limit,
         )
-        return AutoCompleteResult(
-            suggestions=[AutoCompleteSuggestion(**s) for s in suggestions]
-        )
+        return AutoCompleteResult(suggestions=[AutoCompleteSuggestion(**s) for s in suggestions])
 
     # ── 数据同步 ────────────────────────────────────────────────
 
@@ -206,14 +206,10 @@ class SearchService:
         aggs: dict[str, Any] = {}
 
         if "category" in facets:
-            aggs["category_dist"] = {
-                "terms": {"field": "category_id", "size": 50}
-            }
+            aggs["category_dist"] = {"terms": {"field": "category_id", "size": 50}}
 
         if "brand" in facets:
-            aggs["brand_dist"] = {
-                "terms": {"field": "brand_id", "size": 50}
-            }
+            aggs["brand_dist"] = {"terms": {"field": "brand_id", "size": 50}}
 
         if "price_range" in facets:
             aggs["price_ranges"] = {

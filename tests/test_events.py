@@ -64,9 +64,9 @@ async def test_fire_event_swallows_dispatch_errors(caplog):
         before = EVENT_DISPATCH_FAILURES_TOTAL.labels(event_type="checkout.completed")._value.get()
         assert await fire_event(BadEngine(), "checkout.completed", {"order_id": "o1"}) is None
         assert (
-        EVENT_DISPATCH_FAILURES_TOTAL.labels(event_type="checkout.completed")._value.get()
-        == before + 1
-    )
+            EVENT_DISPATCH_FAILURES_TOTAL.labels(event_type="checkout.completed")._value.get()
+            == before + 1
+        )
 
     warnings = [r for r in caplog.records if r.name == "hemall.events"]
     assert warnings, "旁路失败必须留下 WARNING 日志，不能静默吞掉"

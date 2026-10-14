@@ -678,7 +678,5 @@ def build_payment_gateway(settings: Any) -> tuple[str, Any]:
         return provider, ManualPaymentGateway()
 
     if str(getattr(settings, "environment", "development")).lower() == "production":
-        raise RuntimeError(
-            f"unsupported production payment gateway provider: {provider!r}"
-        )
+        raise RuntimeError(f"unsupported production payment gateway provider: {provider!r}")
     return "manual", ManualPaymentGateway()

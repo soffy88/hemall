@@ -124,9 +124,7 @@ async def list_projections() -> dict[str, Any]:
     projections = []
     for event_type, projs in registry._projections.items():
         for proj in projs:
-            projections.append(
-                {"name": type(proj).__name__, "event_type": event_type.value}
-            )
+            projections.append({"name": type(proj).__name__, "event_type": event_type.value})
     return {"available": True, "projections": projections}
 
 

@@ -175,23 +175,15 @@ class Settings(BaseSettings):
         problems: list[str] = []
         for field, insecure in _INSECURE_DEFAULTS.items():
             if getattr(self, field) == insecure:
-                problems.append(
-                    f"HEMALL_{field.upper()} 仍是开发默认值 (必须显式设置强密钥)"
-                )
+                problems.append(f"HEMALL_{field.upper()} 仍是开发默认值 (必须显式设置强密钥)")
         for field in ("jwt_secret", "webhook_secret", "hardware_secret"):
             value = str(getattr(self, field) or "")
             if len(value.encode("utf-8")) < 32:
-                problems.append(
-                    f"HEMALL_{field.upper()} 必须至少 32 字节，避免弱 HMAC 密钥"
-                )
-        if "test@" in self.pg_dsn or self.pg_dsn.startswith(
-            "postgresql://postgres:test@"
-        ):
+                problems.append(f"HEMALL_{field.upper()} 必须至少 32 字节，避免弱 HMAC 密钥")
+        if "test@" in self.pg_dsn or self.pg_dsn.startswith("postgresql://postgres:test@"):
             problems.append("HEMALL_PG_DSN 仍是开发默认凭据 (postgres:test)")
         if "*" in self.cors_origins:
-            problems.append(
-                "HEMALL_CORS_ORIGINS 含通配 '*' (生产必须收紧为具体来源列表)"
-            )
+            problems.append("HEMALL_CORS_ORIGINS 含通配 '*' (生产必须收紧为具体来源列表)")
 
         if not self.privileged_staff_ids.strip():
             problems.append(
@@ -215,9 +207,7 @@ class Settings(BaseSettings):
             }
             missing = [name for name, value in required.items() if not str(value).strip()]
             if missing:
-                problems.append(
-                    "微信支付生产配置缺失: " + ", ".join(missing)
-                )
+                problems.append("微信支付生产配置缺失: " + ", ".join(missing))
         elif provider == "stripe":
             required = {
                 "stripe_secret_key": self.stripe_secret_key,
@@ -225,9 +215,7 @@ class Settings(BaseSettings):
             }
             missing = [name for name, value in required.items() if not str(value).strip()]
             if missing:
-                problems.append(
-                    "Stripe 生产配置缺失: " + ", ".join(missing)
-                )
+                problems.append("Stripe 生产配置缺失: " + ", ".join(missing))
 
         es_url = self.elasticsearch_url or self.hemall_elasticsearch_url
         if es_url.lower().startswith("https://"):
@@ -241,9 +229,7 @@ class Settings(BaseSettings):
                 if not str(value).strip()
             ]
             if es_missing:
-                problems.append(
-                    "Elasticsearch HTTPS 生产认证配置缺失: " + ", ".join(es_missing)
-                )
+                problems.append("Elasticsearch HTTPS 生产认证配置缺失: " + ", ".join(es_missing))
 
         encryption_key = os.getenv("ENCRYPTION_KEY", "")
         if not encryption_key:

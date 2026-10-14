@@ -112,16 +112,24 @@ def test_non_staff_typ_cannot_be_decoded_as_staff(typ):
 def test_every_token_type_is_accepted_only_for_its_own_typ(typ):
     settings = get_settings()
     token = sign_token(
-        {"x": "1"}, typ=typ, secret=settings.jwt_secret,
-        algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+        {"x": "1"},
+        typ=typ,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        expires_in_minutes=10,
     )
-    assert decode_token(
-        token, typ=typ, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
-    )["typ"] == typ
+    assert (
+        decode_token(token, typ=typ, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm)[
+            "typ"
+        ]
+        == typ
+    )
     for other in ALL_TOKEN_TYPES - {typ}:
         with pytest.raises((TokenTypeError, ObaseAuthError)):
             decode_token(
-                token, typ=other, secret=settings.jwt_secret,
+                token,
+                typ=other,
+                secret=settings.jwt_secret,
                 algorithm=settings.jwt_algorithm,
             )
 
@@ -139,12 +147,17 @@ def test_same_key_type_mismatch_raises_token_type_error(issued, requested):
     """同密钥的几种身份令牌互换时，失败原因明确是类型不符而非验签失败。"""
     settings = get_settings()
     token = sign_token(
-        {"sub": "u1"}, typ=issued, secret=settings.jwt_secret,
-        algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+        {"sub": "u1"},
+        typ=issued,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        expires_in_minutes=10,
     )
     with pytest.raises(TokenTypeError):
         decode_token(
-            token, typ=requested, secret=settings.jwt_secret,
+            token,
+            typ=requested,
+            secret=settings.jwt_secret,
             algorithm=settings.jwt_algorithm,
         )
 
@@ -156,13 +169,17 @@ def test_untyped_token_is_rejected_by_every_whitelist():
     for typ in ALL_TOKEN_TYPES:
         with pytest.raises((TokenTypeError, ObaseAuthError)):
             decode_token(
-                token, typ=typ, secret=settings.jwt_secret,
+                token,
+                typ=typ,
+                secret=settings.jwt_secret,
                 algorithm=settings.jwt_algorithm,
             )
     # 对同密钥类型，失败原因必须是"缺 typ"而不是别的。
     with pytest.raises(TokenTypeError):
         decode_token(
-            token, typ=TOKEN_TYPE_STAFF, secret=settings.jwt_secret,
+            token,
+            typ=TOKEN_TYPE_STAFF,
+            secret=settings.jwt_secret,
             algorithm=settings.jwt_algorithm,
         )
 
@@ -191,8 +208,11 @@ def test_capability_tokens_are_not_signed_with_the_primary_secret(typ):
 def test_identity_tokens_still_use_the_primary_secret(typ):
     settings = get_settings()
     token = sign_token(
-        {"sub": "u1"}, typ=typ, secret=settings.jwt_secret,
-        algorithm=settings.jwt_algorithm, expires_in_minutes=10,
+        {"sub": "u1"},
+        typ=typ,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        expires_in_minutes=10,
     )
     payload = CryptoUtil.jwt_decode(
         token=token, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
@@ -208,23 +228,31 @@ def test_storefront_signs_cart_and_receipt_tokens_with_isolated_keys():
     cart_token = storefront._sign_cart_capability(
         "cart-1", settings.jwt_secret, settings.jwt_algorithm
     )
-    receipt_token = storefront._sign_receipt(
-        "order-1", settings.jwt_secret, settings.jwt_algorithm
-    )
+    receipt_token = storefront._sign_receipt("order-1", settings.jwt_secret, settings.jwt_algorithm)
     # 主密钥解不出
     for token in (cart_token, receipt_token):
         with pytest.raises(ObaseAuthError):
             CryptoUtil.jwt_decode(
                 token=token, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
             )
-    assert decode_token(
-        cart_token, typ=TOKEN_TYPE_CART, secret=settings.jwt_secret,
-        algorithm=settings.jwt_algorithm,
-    )["cart_id"] == "cart-1"
-    assert decode_token(
-        receipt_token, typ=TOKEN_TYPE_RECEIPT, secret=settings.jwt_secret,
-        algorithm=settings.jwt_algorithm,
-    )["order_id"] == "order-1"
+    assert (
+        decode_token(
+            cart_token,
+            typ=TOKEN_TYPE_CART,
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+        )["cart_id"]
+        == "cart-1"
+    )
+    assert (
+        decode_token(
+            receipt_token,
+            typ=TOKEN_TYPE_RECEIPT,
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+        )["order_id"]
+        == "order-1"
+    )
 
 
 # ── 4. 端到端：签发出来的能力令牌在各自端点上可用 ──────────────────────
@@ -316,8 +344,11 @@ def test_identity_tokens_cannot_be_used_as_receipt_tokens(typ):
         def acquire(self):
             raise AssertionError("token must be rejected before touching the DB")
 
-    assert asyncio.run(
-        queries.get_order_by_receipt_token(
-            _Boom(), token, settings.jwt_secret, settings.jwt_algorithm
+    assert (
+        asyncio.run(
+            queries.get_order_by_receipt_token(
+                _Boom(), token, settings.jwt_secret, settings.jwt_algorithm
+            )
         )
-    ) is None
+        is None
+    )

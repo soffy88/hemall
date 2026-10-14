@@ -64,9 +64,7 @@ async def dispatch_labor_payment(
                 input_data.worker_id,
             )
         if not rows:
-            raise ValueError(
-                f"worker {input_data.worker_id!r} has no pending wage entries"
-            )
+            raise ValueError(f"worker {input_data.worker_id!r} has no pending wage entries")
         entry_ids = [r["id"] for r in rows]
         total_amount = sum(r["wage_amount"] for r in rows)
         trail.record(

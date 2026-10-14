@@ -52,6 +52,7 @@ class AIAssistantService:
         if self._knowledge is not None:
             try:
                 from . import router as _router
+
                 _router.set_knowledge_base(self._knowledge)
             except Exception:  # noqa: BLE001
                 pass
@@ -67,13 +68,15 @@ class AIAssistantService:
         self._set_local_router_kb()
 
         # 创建 LLM Provider
-        self._llm = create_llm_provider({
-            "provider": self._config.provider,
-            "api_key": self._config.api_key,
-            "model_name": self._config.model_name,
-            "api_base": self._config.api_base,
-            "timeout": self._config.timeout_seconds,
-        })
+        self._llm = create_llm_provider(
+            {
+                "provider": self._config.provider,
+                "api_key": self._config.api_key,
+                "model_name": self._config.model_name,
+                "api_base": self._config.api_base,
+                "timeout": self._config.timeout_seconds,
+            }
+        )
 
         # 创建 RAG 引擎
         self._rag = RAGEngine(
@@ -87,8 +90,11 @@ class AIAssistantService:
             await self._rag.initialize(self._pool)
 
         self._initialized = True
-        logger.info("AIAssistantService initialized (provider=%s, model=%s)",
-                     self._config.provider, self._config.model_name)
+        logger.info(
+            "AIAssistantService initialized (provider=%s, model=%s)",
+            self._config.provider,
+            self._config.model_name,
+        )
 
     async def close(self) -> None:
         """关闭服务。"""
@@ -207,12 +213,16 @@ class AIAssistantService:
         )
 
         # 保存助手回复
-        session.add_message("assistant", response.content, {
-            "intent": intent.value,
-            "confidence": confidence,
-            "model": response.model,
-            "latency_ms": response.latency_ms,
-        })
+        session.add_message(
+            "assistant",
+            response.content,
+            {
+                "intent": intent.value,
+                "confidence": confidence,
+                "model": response.model,
+                "latency_ms": response.latency_ms,
+            },
+        )
 
         # 提取推荐商品
         suggested_products = self._extract_product_ids(response.content, context_docs)
@@ -276,10 +286,9 @@ class AIAssistantService:
 
         if context_docs:
             context_text = "\n\n".join(context_docs)
-            messages.append(LLMMessage(
-                role="system",
-                content=f"以下是相关商品信息:\n{context_text}"
-            ))
+            messages.append(
+                LLMMessage(role="system", content=f"以下是相关商品信息:\n{context_text}")
+            )
 
         messages.append(LLMMessage(role="user", content=request.question))
 
@@ -313,16 +322,19 @@ class AIAssistantService:
         style_guide = style_prompts.get(request.style, style_prompts["professional"])
 
         messages = [
-            LLMMessage(role="system", content=f"""You are an expert e-commerce copywriter.
+            LLMMessage(
+                role="system",
+                content=f"""You are an expert e-commerce copywriter.
 {style_guide}
 Target audience: {request.target_audience}
-Include SEO keywords: {', '.join(request.keywords) if request.keywords else 'auto-detect'}
+Include SEO keywords: {", ".join(request.keywords) if request.keywords else "auto-detect"}
 Generate:
 1. A compelling headline (1 line)
 2. A short description (2-3 sentences)
 3. Key features (bullet points, 3-5 items)
 4. SEO meta description (150-160 characters)
-Return in JSON format."""),
+Return in JSON format.""",
+            ),
             LLMMessage(
                 role="user",
                 content=f"Product ID: {request.product_id}\nGenerate a product description.",
@@ -346,12 +358,15 @@ Return in JSON format."""),
             await self.initialize()
 
         messages = [
-            LLMMessage(role="system", content="""Analyze the sentiment of the following text.
+            LLMMessage(
+                role="system",
+                content="""Analyze the sentiment of the following text.
 Return JSON with:
 - sentiment: positive/negative/neutral/mixed
 - confidence: 0.0-1.0
 - keywords: list of key sentiment words
-- aspects: dict of aspect -> sentiment (e.g., {"price": "negative", "quality": "positive"})"""),
+- aspects: dict of aspect -> sentiment (e.g., {"price": "negative", "quality": "positive"})""",
+            ),
             LLMMessage(role="user", content=text),
         ]
 
@@ -365,6 +380,7 @@ Return JSON with:
 
         try:
             import json
+
             data = json.loads(response.content)
             sentiment = SentimentType(data.get("sentiment", "neutral"))
             confidence = data.get("confidence", 0.5)
@@ -423,10 +439,9 @@ Return JSON with:
         # 添加检索到的上下文
         if context_docs:
             context_text = "\n\n---\n\n".join(context_docs)
-            messages.append(LLMMessage(
-                role="system",
-                content=f"Relevant product information:\n{context_text}"
-            ))
+            messages.append(
+                LLMMessage(role="system", content=f"Relevant product information:\n{context_text}")
+            )
 
         # 添加对话历史
         for msg in session.get_history(self._config.max_history_turns):
@@ -444,8 +459,7 @@ Return JSON with:
         if any(word in message_lower for word in ["投诉", "complaint", "problem", "issue"]):
             return UserIntent.COMPLAINT, 0.85
         if any(
-            word in message_lower
-            for word in ["物流", "快递", "shipping", "delivery", "tracking"]
+            word in message_lower for word in ["物流", "快递", "shipping", "delivery", "tracking"]
         ):
             return UserIntent.SHIPPING_INQUIRY, 0.9
         if any(word in message_lower for word in ["推荐", "recommend", "suggest", "which"]):
@@ -457,10 +471,13 @@ Return JSON with:
 
         # LLM 意图识别 (复杂场景)
         messages = [
-            LLMMessage(role="system", content="""Classify the user's intent into one of:
-product_inquiry, purchase_intent, complaint, refund_request, shipping_inquiry, 
+            LLMMessage(
+                role="system",
+                content="""Classify the user's intent into one of:
+product_inquiry, purchase_intent, complaint, refund_request, shipping_inquiry,
 general_question, recommendation, comparison, unknown
-Return only the intent name and confidence (0.0-1.0), separated by comma."""),
+Return only the intent name and confidence (0.0-1.0), separated by comma.""",
+            ),
             LLMMessage(role="user", content=message),
         ]
 

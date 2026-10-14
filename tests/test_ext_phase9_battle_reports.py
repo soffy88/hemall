@@ -28,9 +28,7 @@ from app.ext.oskill import (
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-DB_TESTS = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+DB_TESTS = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 # ── oskill: 贝叶斯平滑动态评分 ─────────────────────────────────────────────
@@ -134,9 +132,7 @@ class TestVlmParseBattleReport:
         llm_provider.set_response(
             system_prompt=_BATTLE_REPORT_SYSTEM_PROMPT,
             user_prompt="Text: x\nImage: (无)",
-            text=json.dumps(
-                {"freshness_index": 3.5, "sentiment_polarity": -7.0, "keywords": []}
-            ),
+            text=json.dumps({"freshness_index": 3.5, "sentiment_polarity": -7.0, "keywords": []}),
         )
         out = await _vlm("x")
         assert out["freshness_index"] == 1.0
@@ -178,12 +174,8 @@ async def cn_pool(tmp_path_factory):
     from app.ext.llm_provider import ManualLLMProvider
     from app.ext.schema import ensure_ext_schema
 
-    ProviderRegistry.get().register_generic(
-        "llm", "manual", ManualLLMProvider(), replace=True
-    )
-    pool = await PgPool.create(
-        name="hemall_phase9_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    ProviderRegistry.get().register_generic("llm", "manual", ManualLLMProvider(), replace=True)
+    pool = await PgPool.create(name="hemall_phase9_test", dsn=TEST_DSN, min_size=1, max_size=5)
     from db_test_utils import cleanup_db_test_rows
 
     await cleanup_db_test_rows(pool)
@@ -542,10 +534,7 @@ class TestBattleReportReadSide:
         assert summary is not None
         assert summary["report_count_total"] == 3
         assert summary["report_count_24h"] == 3
-        assert (
-            summary["freshness_fit_pct"] is not None
-            and 0 <= summary["freshness_fit_pct"] <= 100
-        )
+        assert summary["freshness_fit_pct"] is not None and 0 <= summary["freshness_fit_pct"] <= 100
         assert summary["dynamic_rating"] is not None
         assert len(summary["recent_images"]) == 3
         assert summary["recent_images"][0].startswith("https://cdn.example/")
@@ -629,9 +618,7 @@ async def _seed_via_own_pool() -> dict:
     """HTTP 测试专用: 用自己的短命连接池种一笔已履约订单。"""
     from obase.persistence.pool import PgPool
 
-    pool = await PgPool.create(
-        name="hemall_phase9_http_seed", dsn=TEST_DSN, min_size=1, max_size=2
-    )
+    pool = await PgPool.create(name="hemall_phase9_http_seed", dsn=TEST_DSN, min_size=1, max_size=2)
     try:
         return await _seed_order(pool)
     finally:

@@ -20,9 +20,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -41,9 +39,7 @@ async def cn_pool():
     reg.register_generic("cv", "manual", cv, replace=True)
     reg.register_generic("spider", "manual", ManualSpiderProvider(), replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_phase6_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase6_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     pool._test_cv = cv  # type: ignore[attr-defined]
     yield pool
@@ -152,9 +148,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1, test_redis_url: str)
         set_payment_session,
     )
 
-    cart_result = await create_cart(
-        CreateCartConfig(), CreateCartInput(), Path("/tmp"), pool=pool
-    )
+    cart_result = await create_cart(CreateCartConfig(), CreateCartInput(), Path("/tmp"), pool=pool)
     assert cart_result["status"] == "completed", cart_result
     cart_id = cart_result["cart_id"]
 
@@ -204,9 +198,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1, test_redis_url: str)
 
 
 @pytest.mark.asyncio
-async def test_reward_crowdsourced_benchmark_rejects_unrecognized_receipt(
-    cn_pool, tmp_path
-):
+async def test_reward_crowdsourced_benchmark_rejects_unrecognized_receipt(cn_pool, tmp_path):
     from app.ext.omodul.reward_crowdsourced_benchmark_workflow import (
         RewardCrowdsourcedBenchmarkWorkflowConfig,
         RewardCrowdsourcedBenchmarkWorkflowInput,
@@ -216,9 +208,7 @@ async def test_reward_crowdsourced_benchmark_rejects_unrecognized_receipt(
     customer_id = await _make_customer(cn_pool)
     result = await reward_crowdsourced_benchmark_workflow(
         RewardCrowdsourcedBenchmarkWorkflowConfig(),
-        RewardCrowdsourcedBenchmarkWorkflowInput(
-            customer_id=customer_id, receipt_image=b"blank"
-        ),
+        RewardCrowdsourcedBenchmarkWorkflowInput(customer_id=customer_id, receipt_image=b"blank"),
         tmp_path,
         pool=cn_pool,
     )
@@ -227,9 +217,7 @@ async def test_reward_crowdsourced_benchmark_rejects_unrecognized_receipt(
 
 
 @pytest.mark.asyncio
-async def test_reward_crowdsourced_benchmark_matches_variant_and_rewards_balance(
-    cn_pool, tmp_path
-):
+async def test_reward_crowdsourced_benchmark_matches_variant_and_rewards_balance(cn_pool, tmp_path):
     from obase.uuid7 import uuid7
 
     from app.ext.omodul.reward_crowdsourced_benchmark_workflow import (
@@ -285,15 +273,11 @@ async def test_reward_crowdsourced_benchmark_matches_variant_and_rewards_balance
     unmatched = next(r for r in rows if r["raw_price_cents"] == 800)
     assert unmatched["variant_id"] is None
     assert unmatched["raw_item_name"] == "完全不存在的水果p6"
-    assert (
-        unmatched["normalized_price_per_unit"] is None
-    )  # "1盒" 无法归一化，NULL 不污染均值
+    assert unmatched["normalized_price_per_unit"] is None  # "1盒" 无法归一化，NULL 不污染均值
 
 
 @pytest.mark.asyncio
-async def test_reward_crowdsourced_benchmark_accumulates_balance_across_calls(
-    cn_pool, tmp_path
-):
+async def test_reward_crowdsourced_benchmark_accumulates_balance_across_calls(cn_pool, tmp_path):
     from app.ext.omodul.reward_crowdsourced_benchmark_workflow import (
         RewardCrowdsourcedBenchmarkWorkflowConfig,
         RewardCrowdsourcedBenchmarkWorkflowInput,
@@ -440,9 +424,7 @@ async def test_market_maker_probe_engine_clears_and_reprices(cn_pool, tmp_path, 
     now = datetime.now(UTC)
 
     # 会成交的批次: 1 单真实成交
-    cleared_batch = await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, retail_price=3900
-    )
+    cleared_batch = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, retail_price=3900)
     await _make_order(cn_pool, batch_id=cleared_batch, qty=1, test_redis_url=test_redis_url)
     cleared_probe = uuid7()
     async with cn_pool.acquire() as conn:
@@ -456,9 +438,7 @@ async def test_market_maker_probe_engine_clears_and_reprices(cn_pool, tmp_path, 
         )
 
     # 卖不动的批次: 零成交
-    slow_batch = await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, retail_price=4200
-    )
+    slow_batch = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, retail_price=4200)
     slow_probe = uuid7()
     async with cn_pool.acquire() as conn:
         await conn.execute(
@@ -471,9 +451,7 @@ async def test_market_maker_probe_engine_clears_and_reprices(cn_pool, tmp_path, 
         )
 
     # 刚创建、还没到 1 小时冷却期的探针，这一 tick 不该被处理
-    fresh_batch = await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, retail_price=3500
-    )
+    fresh_batch = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, retail_price=3500)
     fresh_probe = uuid7()
     async with cn_pool.acquire() as conn:
         await conn.execute(

@@ -44,9 +44,7 @@ async def get_pool(settings: Settings = Depends(get_settings)) -> PgPool:
     try:
         return PgPool.get(settings.pg_pool_name)
     except Exception as exc:  # noqa: BLE001 - 翻译为 HTTP 语义
-        raise HTTPException(
-            status_code=503, detail=f"database pool unavailable: {exc}"
-        ) from exc
+        raise HTTPException(status_code=503, detail=f"database pool unavailable: {exc}") from exc
 
 
 # ── Redis 连接 ──────────────────────────────────────────────────────────
@@ -88,9 +86,7 @@ def anon_ref(identity: str, settings: Settings) -> str:
     同用户恒得同引用 (幂等去重/记轨迹不变), 但不可反推真实身份——
     omodul 的 fingerprint / decision_trail 因此不接触真实 PII。
     """
-    return hashlib.sha256((settings.anon_salt + identity).encode("utf-8")).hexdigest()[
-        :24
-    ]
+    return hashlib.sha256((settings.anon_salt + identity).encode("utf-8")).hexdigest()[:24]
 
 
 def _token_from_request(
@@ -145,9 +141,7 @@ ANONYMOUS_PRINCIPAL: dict[str, Any] = {
 }
 
 
-def assert_staff_role(
-    principal: dict[str, Any], allowed_roles: Iterable[str]
-) -> dict[str, Any]:
+def assert_staff_role(principal: dict[str, Any], allowed_roles: Iterable[str]) -> dict[str, Any]:
     """白名单检查角色 claim；不在集合内 → 403。返回 principal 便于链式使用。
 
     角色集合是**白名单**：没有 role claim、role 是未知字符串、role 拼错，
@@ -198,9 +192,7 @@ def get_current_customer(
     return {"customer_id": customer_id, "email": payload.get("email")}
 
 
-def build_output_dir(
-    settings: Settings, principal: dict[str, Any], omodul_name: str
-) -> Path:
+def build_output_dir(settings: Settings, principal: dict[str, Any], omodul_name: str) -> Path:
     """omodul 输出目录: <output_root>/<omodul_name>/<伪名化用户引用>。"""
     ref = anon_ref(str(principal.get("user_id") or "anonymous"), settings)
     return settings.output_root / omodul_name / ref

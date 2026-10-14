@@ -191,14 +191,82 @@ _KIND_TOOL: dict[str, str] = {
 
 #: 商品名里的干扰词 (动词/量词/语气词, 从标题里剔除)
 _TITLE_NOISE = [
-    "上架", "新品", "传货", "进货", "创建商品", "新建商品", "建档",
-    "补货", "加库存", "降价", "调价", "改价", "折扣", "报废", "下架", "销毁",
-    "结算", "结款", "佣金", "分润", "提成", "工资", "劳务", "意向", "集单",
-    "预售", "退款", "退货", "轮播", "视频号", "广播", "推广", "行情", "基准价",
-    "比价", "竞品", "补天", "赔付", "补偿", "这批", "那批", "刚刚", "的", "到",
-    "至", "吧", "啊", "请", "麻烦", "帮", "我", "给", "把", ",", "，", ".",
-    "。", "!", "！", "?", "？", " ", "　",
-    "件", "个", "斤", "箱", "包", "份", "袋", "瓶", "盒", "公斤", "千克", "克", "元",
+    "上架",
+    "新品",
+    "传货",
+    "进货",
+    "创建商品",
+    "新建商品",
+    "建档",
+    "补货",
+    "加库存",
+    "降价",
+    "调价",
+    "改价",
+    "折扣",
+    "报废",
+    "下架",
+    "销毁",
+    "结算",
+    "结款",
+    "佣金",
+    "分润",
+    "提成",
+    "工资",
+    "劳务",
+    "意向",
+    "集单",
+    "预售",
+    "退款",
+    "退货",
+    "轮播",
+    "视频号",
+    "广播",
+    "推广",
+    "行情",
+    "基准价",
+    "比价",
+    "竞品",
+    "补天",
+    "赔付",
+    "补偿",
+    "这批",
+    "那批",
+    "刚刚",
+    "的",
+    "到",
+    "至",
+    "吧",
+    "啊",
+    "请",
+    "麻烦",
+    "帮",
+    "我",
+    "给",
+    "把",
+    ",",
+    "，",
+    ".",
+    "。",
+    "!",
+    "！",
+    "?",
+    "？",
+    " ",
+    "　",
+    "件",
+    "个",
+    "斤",
+    "箱",
+    "包",
+    "份",
+    "袋",
+    "瓶",
+    "盒",
+    "公斤",
+    "千克",
+    "克",
+    "元",
 ]
 
 _UUID_RE = re.compile(
@@ -317,12 +385,12 @@ async def _resolve_batch_by_title(
     async with pool.acquire() as conn:
         if title and title != "未命名商品":
             row = await conn.fetchrow(
-                'SELECT b.id AS batch_id, b.variant_id, b.location_id '
+                "SELECT b.id AS batch_id, b.variant_id, b.location_id "
                 'FROM "inventory_batch" b '
                 'JOIN "product_variant" v ON v.id = b.variant_id '
                 'JOIN "product" p ON p.id = v.product_id '
-                'WHERE b.status = $1 AND p.deleted_at IS NULL AND p.title ILIKE $2 '
-                'ORDER BY b.created_at DESC LIMIT 1',
+                "WHERE b.status = $1 AND p.deleted_at IS NULL AND p.title ILIKE $2 "
+                "ORDER BY b.created_at DESC LIMIT 1",
                 "active",
                 f"%{title}%",
             )
@@ -824,6 +892,7 @@ async def ingest_media(
     # 2. 商品名 + SKU (加随机后缀防止同秒同名文件冲突)
     title = _clean_filename(safe_name)
     import uuid
+
     sku = f"AGT-{uuid.uuid4().hex[:12]}"
 
     # 3. 上架 (整个过程放在一个事务里)

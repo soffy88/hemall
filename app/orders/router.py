@@ -13,9 +13,7 @@ from .models import OrderStatus
 
 # 后台/员工订单管理 API。顾客自己的订单走 /store/*(get_current_customer);
 # 这里列全量订单 (含地址 PII)、驱动履约状态机, 一律要求员工 JWT。
-router = APIRouter(
-    prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)]
-)
+router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger("hemall.orders.router")
 

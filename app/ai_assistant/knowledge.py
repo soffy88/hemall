@@ -27,14 +27,14 @@ logger = logging.getLogger("hemall.ai.knowledge")
 
 
 class KnowledgeCategory(Enum):
-    ORDER = "order"          # 订单相关
-    SHIPPING = "shipping"    # 物流相关
-    PAYMENT = "payment"      # 支付相关
-    PRODUCT = "product"      # 商品相关
-    RETURN = "return"        # 退换货相关
-    ACCOUNT = "account"      # 账号相关
+    ORDER = "order"  # 订单相关
+    SHIPPING = "shipping"  # 物流相关
+    PAYMENT = "payment"  # 支付相关
+    PRODUCT = "product"  # 商品相关
+    RETURN = "return"  # 退换货相关
+    ACCOUNT = "account"  # 账号相关
     PROMOTION = "promotion"  # 活动优惠
-    GENERAL = "general"      # 通用知识
+    GENERAL = "general"  # 通用知识
 
 
 @dataclass
@@ -45,7 +45,7 @@ class KnowledgeItem:
     category: KnowledgeCategory
     title: str
     question: str  # 用户常见问题
-    answer: str    # 标准答案
+    answer: str  # 标准答案
     keywords: list[str] = field(default_factory=list)
     embedding: list[float] | None = None
     is_active: bool = True

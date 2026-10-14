@@ -98,9 +98,9 @@ def test_rule_files_globs_are_declared():
 def test_compose_mounts_alert_rules(compose: Path):
     data = _compose(compose)
     sources = _mounted_sources(data, "prometheus")
-    assert any(
-        s.endswith("prometheus.rules.yml") for s in sources
-    ), f"{compose.name}: prometheus 未挂载 prometheus.rules.yml → 告警静默不生效"
+    assert any(s.endswith("prometheus.rules.yml") for s in sources), (
+        f"{compose.name}: prometheus 未挂载 prometheus.rules.yml → 告警静默不生效"
+    )
 
 
 @pytest.mark.parametrize("compose", _compose_with_prometheus(), ids=lambda p: p.name)
@@ -179,7 +179,7 @@ def test_prometheus_alerts_to_alertmanager(compose: Path):
     data = _compose(compose)
     mount = _prom_config_mount(data)
     cfg = yaml.safe_load((REPO_ROOT / mount).read_text(encoding="utf-8"))
-    managers = ((cfg.get("alerting") or {}).get("alertmanagers") or [])
+    managers = (cfg.get("alerting") or {}).get("alertmanagers") or []
     targets = [
         t
         for am in managers

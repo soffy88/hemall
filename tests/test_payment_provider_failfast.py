@@ -259,9 +259,7 @@ def test_no_mock_token_is_left_as_a_default_argument_value():
                             f"{path.name}:{node.lineno} {node.name} "
                             f"默认 access_token={default.value!r}"
                         )
-    assert offenders == [], "生产函数签名里仍带硬编码 MOCK 占位符:\n  - " + "\n  - ".join(
-        offenders
-    )
+    assert offenders == [], "生产函数签名里仍带硬编码 MOCK 占位符:\n  - " + "\n  - ".join(offenders)
 
 
 def test_placeholder_access_token_is_rejected_at_construction():
@@ -276,9 +274,7 @@ def test_placeholder_access_token_is_rejected_at_construction():
             build_social_broadcast_engine(None, settings=None, access_token=bad)
 
     # 显式声明"未接入"是允许的（引擎照常装配，只是播报会失败）。
-    engine = build_social_broadcast_engine(
-        None, settings=None, access_token=UNCONFIGURED_TOKEN
-    )
+    engine = build_social_broadcast_engine(None, settings=None, access_token=UNCONFIGURED_TOKEN)
     assert engine is not None
 
 

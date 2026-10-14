@@ -38,7 +38,7 @@ def _fake_bin(tmp_path: Path, *, cluster_image: str) -> Path:
 
     def write(name: str, body: str) -> None:
         p = bindir / name
-        p.write_text(f"#!/bin/sh\necho \"{name} $*\" >> {log}\n{body}\n", encoding="utf-8")
+        p.write_text(f'#!/bin/sh\necho "{name} $*" >> {log}\n{body}\n', encoding="utf-8")
         p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     # helm: 记录参数后成功返回
@@ -47,9 +47,7 @@ def _fake_bin(tmp_path: Path, *, cluster_image: str) -> Path:
     # 其余子命令一律成功 (rollout status / wait / create 都过)。
     write(
         "kubectl",
-        "case \"$*\" in\n"
-        f"  *jsonpath*) printf '%s' '{cluster_image}' ;;\n"
-        "esac\nexit 0",
+        f"case \"$*\" in\n  *jsonpath*) printf '%s' '{cluster_image}' ;;\nesac\nexit 0",
     )
     write("docker", "exit 0")
     # git 也被 check_prerequisites 检查
@@ -205,7 +203,7 @@ def test_script_uses_strict_shell_mode_and_quotes():
     """`set -euo pipefail` + 变量引用加引号，否则 unset 变量/管道失败会静默继续。"""
     script = DEPLOY_SH.read_text(encoding="utf-8")
     assert "set -euo pipefail" in script, "deploy.sh 必须开 set -euo pipefail"
-    assert 'set -e  #' not in script, "旧的 `set -e`（无 -u/-o pipefail）还在"
+    assert "set -e  #" not in script, "旧的 `set -e`（无 -u/-o pipefail）还在"
 
     unquoted = [
         f"{i}: {ln.strip()}"

@@ -80,14 +80,11 @@ async def process_cloud_franchise_claim_workflow(
 
         async with pool.acquire() as conn:
             existing = await conn.fetch(
-                'SELECT lat, lng FROM "stock_location" '
-                "WHERE lat IS NOT NULL AND lng IS NOT NULL"
+                'SELECT lat, lng FROM "stock_location" WHERE lat IS NOT NULL AND lng IS NOT NULL'
             )
         existing_coords = [(float(r["lat"]), float(r["lng"])) for r in existing]
 
-        conflict = check_spatial_conflict(
-            (input_data.lat, input_data.lon), existing_coords
-        )
+        conflict = check_spatial_conflict((input_data.lat, input_data.lon), existing_coords)
         trail.record(
             event="spatial_conflict_checked",
             conflict=conflict,

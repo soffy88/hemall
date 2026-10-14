@@ -177,9 +177,7 @@ class CacheManager:
             return []
         return [
             (
-                member.decode("utf-8", errors="replace")
-                if isinstance(member, bytes)
-                else member,
+                member.decode("utf-8", errors="replace") if isinstance(member, bytes) else member,
                 score,
             )
             for member, score in results

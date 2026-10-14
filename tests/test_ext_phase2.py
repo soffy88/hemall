@@ -20,9 +20,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -41,9 +39,7 @@ async def cn_pool():
     log_notify = LogNotificationProvider()
     reg.register_generic("notification", "log", log_notify, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_phase2_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase2_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     pool._test_log_notify = log_notify  # type: ignore[attr-defined]
     yield pool
@@ -148,9 +144,7 @@ async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path, test_r
         set_payment_session,
     )
 
-    cart_result = await create_cart(
-        CreateCartConfig(), CreateCartInput(), tmp_path, pool=pool
-    )
+    cart_result = await create_cart(CreateCartConfig(), CreateCartInput(), tmp_path, pool=pool)
     assert cart_result["status"] == "completed", cart_result
     cart_id = cart_result["cart_id"]
 
@@ -319,9 +313,7 @@ async def test_batch_settlement(cn_pool, tmp_path):
     assert result["amount"] == 4 * 1500
 
     async with cn_pool.acquire() as conn:
-        status = await conn.fetchval(
-            "SELECT status FROM inventory_batch WHERE id=$1", batch_id
-        )
+        status = await conn.fetchval("SELECT status FROM inventory_batch WHERE id=$1", batch_id)
     assert status == "settled"
 
 
@@ -354,9 +346,7 @@ async def test_confirm_batch_pick_finalizes_stock_and_records_wage(
 
     pick = await confirm_batch_pick(
         ConfirmBatchPickConfig(),
-        ConfirmBatchPickInput(
-            order_line_item_id=str(oli_id), worker_id="worker_dama_1"
-        ),
+        ConfirmBatchPickInput(order_line_item_id=str(oli_id), worker_id="worker_dama_1"),
         tmp_path,
         pool=cn_pool,
     )
@@ -469,9 +459,7 @@ async def test_commission_new_location(cn_pool, tmp_path):
 
     result = await commission_new_location(
         CommissionNewLocationConfig(),
-        CommissionNewLocationInput(
-            host_id="host_new_1", address="新车库", lat=31.5, lon=121.3
-        ),
+        CommissionNewLocationInput(host_id="host_new_1", address="新车库", lat=31.5, lon=121.3),
         tmp_path,
         pool=cn_pool,
     )
@@ -642,9 +630,7 @@ async def test_execute_ambient_replenishment_not_due_yet(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(
-    cn_pool, tmp_path
-):
+async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(cn_pool, tmp_path):
     from obase.uuid7 import uuid7
 
     from app.ext.omodul.execute_ambient_replenishment import (
@@ -717,9 +703,7 @@ async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(
 
 
 @pytest.mark.asyncio
-async def test_execute_ambient_replenishment_fails_when_no_stock_nearby(
-    cn_pool, tmp_path
-):
+async def test_execute_ambient_replenishment_fails_when_no_stock_nearby(cn_pool, tmp_path):
     from app.ext.omodul.execute_ambient_replenishment import (
         ExecuteAmbientReplenishmentConfig,
         ExecuteAmbientReplenishmentInput,

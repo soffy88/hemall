@@ -63,9 +63,7 @@ async def commission_new_location(
         (bool) / neighbors (grid_recomputed=True 时该节点的最近邻列表)。
     """
     trail = Trail()
-    fp = compute_fingerprint(
-        {"host_id": input_data.host_id, "address": input_data.address}
-    )
+    fp = compute_fingerprint({"host_id": input_data.host_id, "address": input_data.address})
 
     try:
         if pool is None:
@@ -94,7 +92,6 @@ async def commission_new_location(
                 location_id=location_id,
                 host_id=input_data.host_id,
             )
-
 
             # 门店有坐标)——旧版实现的 lat/lon 是 NOT NULL，统一
             # 之后不能再假设"active 节点都有坐标"，WHERE 里过滤掉没坐标的。

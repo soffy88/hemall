@@ -389,7 +389,7 @@ async def test_reserve_stock_allocations_success():
     # INSERT stock_movement
     conn.on(r"INSERT\s+INTO\s+stock_movement", "mov-1")
     # _check_safety_stock: get_available_stock -> get_stock (second query to
-# inventory_batch) - matches JOIN stock_location
+    # inventory_batch) - matches JOIN stock_location
     conn.on(
         r"FROM\s+inventory_batch.*JOIN\s+stock_location",
         [

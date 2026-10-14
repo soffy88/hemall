@@ -123,8 +123,7 @@ async def generate_crushing_offer_workflow(
                 name_lower = name.lower()
                 for product_name, candidate in cheapest_by_product.items():
                     if name_lower and (
-                        name_lower in product_name.lower()
-                        or product_name.lower() in name_lower
+                        name_lower in product_name.lower() or product_name.lower() in name_lower
                     ):
                         match = candidate
                         break
@@ -134,9 +133,7 @@ async def generate_crushing_offer_workflow(
                     continue
 
                 our_price = match["retail_price"]
-                savings = compute_user_savings_yield(
-                    competitor_price, node_retail_price=our_price
-                )
+                savings = compute_user_savings_yield(competitor_price, node_retail_price=our_price)
                 total_savings += savings
                 subtotal_cents += our_price
 
@@ -160,8 +157,7 @@ async def generate_crushing_offer_workflow(
 
             if subtotal_cents:
                 await conn.execute(
-                    'UPDATE "cart" SET subtotal_cents = $1, grand_total_cents = $1 '
-                    "WHERE id = $2",
+                    'UPDATE "cart" SET subtotal_cents = $1, grand_total_cents = $1 WHERE id = $2',
                     subtotal_cents,
                     cart_id,
                 )

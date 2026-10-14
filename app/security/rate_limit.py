@@ -52,9 +52,7 @@ def _resolve_storage_uri() -> str:
             redis_url = f"redis://{redis_url}"
         return redis_url
 
-    logger.warning(
-        "rate limiter using in-memory storage (NOT for production multi-instance)"
-    )
+    logger.warning("rate limiter using in-memory storage (NOT for production multi-instance)")
     return "memory://"
 
 
@@ -82,9 +80,7 @@ def _key_func(request: Request) -> str:
                     )
                 except Exception:
                     continue
-                subject = (
-                    payload.get("sub") if typ == "staff" else payload.get("customer_id")
-                )
+                subject = payload.get("sub") if typ == "staff" else payload.get("customer_id")
                 if isinstance(subject, str) and subject.strip():
                     return f"user:{subject}"
             return get_remote_address(request)
@@ -101,9 +97,7 @@ limiter = Limiter(
 )
 
 
-async def RATE_LIMIT_EXCEEDED_HANDLER(
-    request: Request, exc: RateLimitExceeded
-) -> JSONResponse:
+async def RATE_LIMIT_EXCEEDED_HANDLER(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     """限流超限时的标准响应 (429 Too Many Requests)。"""
     return JSONResponse(
         status_code=429,
@@ -116,4 +110,5 @@ async def RATE_LIMIT_EXCEEDED_HANDLER(
 
 def is_redis_backend() -> bool:
     """检查限流器是否使用 Redis 后端。"""
-    return not limiter._storage_uri.startswith("memory://")
+    uri = limiter._storage_uri
+    return uri is not None and not uri.startswith("memory://")

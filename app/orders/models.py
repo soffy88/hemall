@@ -115,8 +115,7 @@ class InvalidOrderTransitionError(Exception):
         self.from_status = from_status
         self.to_status = to_status
         super().__init__(
-            f"invalid order transition for {order_id}: "
-            f"{from_status.value} → {to_status.value}"
+            f"invalid order transition for {order_id}: {from_status.value} → {to_status.value}"
         )
 
 

@@ -87,9 +87,7 @@ async def scrap_batch_inventory(
 
             available = batch["stock_qty"] - batch["reserved_qty"]
             if available <= 0:
-                raise ValueError(
-                    f"batch {input_data.batch_id!r} has no available stock to scrap"
-                )
+                raise ValueError(f"batch {input_data.batch_id!r} has no available stock to scrap")
 
             # 报损清零：status 置 disposed + 库存/预留同时归零，单条原子 UPDATE。
             await conn.execute(
@@ -115,9 +113,7 @@ async def scrap_batch_inventory(
                 "reason": input_data.reason,
             },
         )
-        trail.record(
-            event="scrap_task_dispatched", location_id=str(batch["location_id"])
-        )
+        trail.record(event="scrap_task_dispatched", location_id=str(batch["location_id"]))
 
         trail_path = trail.write(output_dir)
         return build_result(

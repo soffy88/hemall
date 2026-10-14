@@ -162,9 +162,7 @@ def _extract_actor(request: Request) -> tuple[str | None, str]:
                     )
                 except Exception:
                     continue
-                subject = (
-                    payload.get("sub") if typ == "staff" else payload.get("customer_id")
-                )
+                subject = payload.get("sub") if typ == "staff" else payload.get("customer_id")
                 if isinstance(subject, str) and subject.strip():
                     return subject, "user"
             return None, "anonymous"
@@ -236,9 +234,7 @@ def audit(
                                 resource_id=rid,
                                 request_method=request.method,
                                 request_path=request.url.path,
-                                ip_address=(
-                                    request.client.host if request.client else None
-                                ),
+                                ip_address=(request.client.host if request.client else None),
                                 user_agent=request.headers.get("user-agent"),
                                 response_status=status,
                                 duration_ms=round(duration_ms, 2),

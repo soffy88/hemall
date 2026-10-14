@@ -158,9 +158,7 @@ def test_no_fake_migration_and_no_swallowed_failure():
         "app/bootstrap.py:init_db()（lifespan 幂等执行 + advisory lock）"
     )
     # 任何一步都不能用 `|| warn` / `|| true` 吞掉真实失败（原缺陷的核心）
-    swallowing = [
-        f"{i}: {ln.strip()}" for i, ln in code if re.search(r"\|\|\s*(warn|true)\b", ln)
-    ]
+    swallowing = [f"{i}: {ln.strip()}" for i, ln in code if re.search(r"\|\|\s*(warn|true)\b", ln)]
     assert not swallowing, f"部署步骤的失败被静默吞掉: {swallowing}"
 
 

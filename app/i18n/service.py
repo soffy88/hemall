@@ -148,8 +148,14 @@ class CurrencyConverter:
         """格式化价格显示。"""
         amount = amount_cents / 100
         symbols = {
-            "CNY": "¥", "USD": "$", "EUR": "€", "JPY": "¥",
-            "GBP": "£", "KRW": "₩", "HKD": "HK$", "SGD": "S$",
+            "CNY": "¥",
+            "USD": "$",
+            "EUR": "€",
+            "JPY": "¥",
+            "GBP": "£",
+            "KRW": "₩",
+            "HKD": "HK$",
+            "SGD": "S$",
         }
         symbol = symbols.get(currency, "")
         if currency == "JPY" or currency == "KRW":

@@ -1,6 +1,5 @@
 """Phase 4+ AI 助手模块测试 — LLM Provider、RAG 引擎、AI 服务。"""
 
-
 import pytest
 
 from app.ai_assistant.knowledge import FAQItem, KnowledgeBase, KnowledgeCategory
@@ -288,9 +287,7 @@ async def test_ai_service_session_management():
     assert session2 is session
 
     # 创建新会话 (无 session_id)
-    session3 = service.get_or_create_session(
-        None, owner_id="staff-1", claimed_user_id="user-456"
-    )
+    session3 = service.get_or_create_session(None, owner_id="staff-1", claimed_user_id="user-456")
     assert session3.session_id != "test-session"
 
 
@@ -346,14 +343,24 @@ async def test_knowledge_base_search():
     await kb.initialize()
 
     # 添加多个条目
-    await kb.add_item(FAQItem(
-        category="return", title="退换货政策", question="怎么申请退货？",
-        answer="7天无理由退货", keywords=["退货", "退款"],
-    ))
-    await kb.add_item(FAQItem(
-        category="shipping", title="物流时效", question="多久能收到货？",
-        answer="默认3-5天", keywords=["物流", "时效"],
-    ))
+    await kb.add_item(
+        FAQItem(
+            category="return",
+            title="退换货政策",
+            question="怎么申请退货？",
+            answer="7天无理由退货",
+            keywords=["退货", "退款"],
+        )
+    )
+    await kb.add_item(
+        FAQItem(
+            category="shipping",
+            title="物流时效",
+            question="多久能收到货？",
+            answer="默认3-5天",
+            keywords=["物流", "时效"],
+        )
+    )
 
     # 检索退货相关
     results = await kb.search("怎么退货")
@@ -372,8 +379,11 @@ async def test_knowledge_base_mark_helpful():
     await kb.initialize()
 
     item = FAQItem(
-        category="payment", title="支付方式", question="支持哪些支付方式？",
-        answer="微信支付和支付宝", keywords=["支付"],
+        category="payment",
+        title="支付方式",
+        question="支持哪些支付方式？",
+        answer="微信支付和支付宝",
+        keywords=["支付"],
     )
     result = await kb.add_item(item)
 
@@ -415,7 +425,9 @@ async def test_knowledge_invalid_category():
 
     item = FAQItem(
         category="invalid_category",
-        title="测试", question="q", answer="a",
+        title="测试",
+        question="q",
+        answer="a",
     )
     result = await kb.add_item(item)
     assert result.category == KnowledgeCategory.GENERAL

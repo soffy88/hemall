@@ -30,8 +30,10 @@ router = APIRouter(prefix="/admin", tags=["admin-agent"])
 
 # ── Tool 注册定义 ──────────────────────────────────────────────────────────────
 
+
 class ToolDefinition(BaseModel):
     """Tool Calling 的函数定义 (兼容 OpenAI / Anthropic 格式)。"""
+
     name: str
     description: str
     parameters: dict[str, Any]
@@ -328,6 +330,7 @@ def _require_admin_ops(request: Request) -> None:
 
 class AgentChatRequest(BaseModel):
     """Agent Chat 请求体。"""
+
     message: str = Field(..., description="管理员的自然语言查询。")
     model: str | None = Field(None, description="覆盖默认模型的模型名，可选。")
     temperature: float = Field(0.3, ge=0, le=1, description="LLM 温度参数。")
@@ -335,6 +338,7 @@ class AgentChatRequest(BaseModel):
 
 class ToolCallResult(BaseModel):
     """工具调用执行结果。"""
+
     tool_name: str
     arguments: dict[str, Any]
     result: dict[str, Any] | None = None
@@ -343,6 +347,7 @@ class ToolCallResult(BaseModel):
 
 class AgentChatResponse(BaseModel):
     """Agent Chat 响应体 (流式时逐条 SSE event)。"""
+
     role: str = "assistant"  # always assistant
     content: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
@@ -385,9 +390,7 @@ async def admin_agent_chat(
     from app.ai_assistant.llm_provider import LLMMessage
 
     compensation_amount = (
-        settings.sla_compensation_cents
-        if hasattr(settings, 'sla_compensation_cents')
-        else 400
+        settings.sla_compensation_cents if hasattr(settings, "sla_compensation_cents") else 400
     )
 
     async def execute_tool(tool_name: str, args: dict[str, Any]) -> str:
@@ -499,9 +502,7 @@ async def admin_agent_chat(
 # ── Tool 执行器实现 ────────────────────────────────────────────────────────────
 
 
-async def _execute_query_node_revenue(
-    pool: Any, args: dict[str, Any]
-) -> str:
+async def _execute_query_node_revenue(pool: Any, args: dict[str, Any]) -> str:
     """执行微仓营收查询。"""
     from datetime import UTC, datetime, timedelta
 
@@ -531,7 +532,7 @@ async def _execute_query_node_revenue(
     params.append(start_time.isoformat())
 
     if location_name:
-        safe_sql = safe_sql.replace("b.location_id = :location_id", 'sl.name ILIKE :loc_name')
+        safe_sql = safe_sql.replace("b.location_id = :location_id", "sl.name ILIKE :loc_name")
         safe_sql = safe_sql.replace(f"${len(params) - 1}", ":loc_name")
         params.append(f"%{location_name}%")
         # Reconstruct with named params
@@ -540,18 +541,19 @@ async def _execute_query_node_revenue(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(safe_sql[:500], *params[:3])  # truncation safety
         if row:
-            return json.dumps({
-                "total_orders": row.get("total_orders", 0),
-                "total_revenue_cents": row.get("total_revenue_cents", 0),
-                "avg_order_value_cents": row.get("avg_order_value_cents", 0),
-                "active_batches": row.get("active_batches", 0),
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "total_orders": row.get("total_orders", 0),
+                    "total_revenue_cents": row.get("total_revenue_cents", 0),
+                    "avg_order_value_cents": row.get("avg_order_value_cents", 0),
+                    "active_batches": row.get("active_batches", 0),
+                },
+                ensure_ascii=False,
+            )
         return json.dumps({"message": "no revenue data found"}, ensure_ascii=False)
 
 
-async def _execute_query_batch_status(
-    pool: Any, args: dict[str, Any]
-) -> str:
+async def _execute_query_batch_status(pool: Any, args: dict[str, Any]) -> str:
     """执行批次状态查询。"""
     batch_id = args.get("batch_id")
     product_search = args.get("product_search")
@@ -574,7 +576,7 @@ async def _execute_query_batch_status(
     for r in rows:
         d = dict(r)
         for k, v in d.items():
-            if hasattr(v, 'isoformat'):
+            if hasattr(v, "isoformat"):
                 d[k] = v.isoformat()
         results.append(d)
 
@@ -613,7 +615,7 @@ async def _execute_query_system_liabilities(
 
         # 待结分润
         row = await conn.fetchval(
-            'SELECT SUM(dividend_amount_cents) '
+            "SELECT SUM(dividend_amount_cents) "
             'FROM "douyin_conversion_log" WHERE settlement_status = $1',
             "pending",
         )
@@ -633,9 +635,7 @@ async def _execute_query_system_liabilities(
     return json.dumps(liability_data, ensure_ascii=False, default=str)
 
 
-async def _execute_query_intent_summary(
-    pool: Any, args: dict[str, Any]
-) -> str:
+async def _execute_query_intent_summary(pool: Any, args: dict[str, Any]) -> str:
     """执行意向金聚类统计查询。"""
     min_size = args.get("min_cluster_size", IGNITION_THRESHOLD)
 
@@ -657,15 +657,18 @@ async def _execute_query_intent_summary(
 
         # 近期点火成功的簇
         recent_ignitions = await conn.fetchval(
-            "SELECT COUNT(*) FROM \"stock_location\" "
+            'SELECT COUNT(*) FROM "stock_location" '
             "WHERE status = $1 AND created_at > NOW() - INTERVAL '7 days'",
             "pending_hardware",
         )
 
-    return json.dumps({
-        "total_pending_intentions": int(total_pending or 0),
-        "total_prepaid_cents": int(total_prepaid or 0),
-        "pending_hardware_nodes": int(ghost_nodes or 0),
-        "recent_ignitions_7d": int(recent_ignitions or 0),
-        "threshold_for_ignition": min_size,
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "total_pending_intentions": int(total_pending or 0),
+            "total_prepaid_cents": int(total_prepaid or 0),
+            "pending_hardware_nodes": int(ghost_nodes or 0),
+            "recent_ignitions_7d": int(recent_ignitions or 0),
+            "threshold_for_ignition": min_size,
+        },
+        ensure_ascii=False,
+    )

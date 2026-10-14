@@ -40,58 +40,44 @@ class TestOrderStateMachine:
 
     def test_pending_cancel(self):
         """pending → cancelled (超时未支付 / 用户取消)"""
-        assert validate_order_transition(
-            "o1", OrderStatus.PENDING, OrderStatus.CANCELLED
-        ) is None
+        assert validate_order_transition("o1", OrderStatus.PENDING, OrderStatus.CANCELLED) is None
         assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.PENDING]
 
     def test_confirmed_cancel(self):
         """confirmed → cancelled (商家取消)"""
-        assert validate_order_transition(
-            "o1", OrderStatus.CONFIRMED, OrderStatus.CANCELLED
-        ) is None
+        assert validate_order_transition("o1", OrderStatus.CONFIRMED, OrderStatus.CANCELLED) is None
         assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.CONFIRMED]
 
     def test_processing_cancel(self):
         """processing → cancelled"""
-        assert validate_order_transition(
-            "o1", OrderStatus.PROCESSING, OrderStatus.CANCELLED
-        ) is None
+        assert (
+            validate_order_transition("o1", OrderStatus.PROCESSING, OrderStatus.CANCELLED) is None
+        )
         assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.PROCESSING]
 
     def test_packed_cancel(self):
         """packed → cancelled (打包后仍可取消)"""
-        assert validate_order_transition(
-            "o1", OrderStatus.PACKED, OrderStatus.CANCELLED
-        ) is None
+        assert validate_order_transition("o1", OrderStatus.PACKED, OrderStatus.CANCELLED) is None
         assert OrderStatus.CANCELLED in VALID_ORDER_TRANSITIONS[OrderStatus.PACKED]
 
     def test_shipped_return(self):
         """shipped → returning (退货)"""
-        assert validate_order_transition(
-            "o1", OrderStatus.SHIPPED, OrderStatus.RETURNING
-        ) is None
+        assert validate_order_transition("o1", OrderStatus.SHIPPED, OrderStatus.RETURNING) is None
         assert OrderStatus.RETURNING in VALID_ORDER_TRANSITIONS[OrderStatus.SHIPPED]
 
     def test_delivered_return(self):
         """delivered → returning"""
-        assert validate_order_transition(
-            "o1", OrderStatus.DELIVERED, OrderStatus.RETURNING
-        ) is None
+        assert validate_order_transition("o1", OrderStatus.DELIVERED, OrderStatus.RETURNING) is None
         assert OrderStatus.RETURNING in VALID_ORDER_TRANSITIONS[OrderStatus.DELIVERED]
 
     def test_returning_refund(self):
         """returning → refunded (退货成功)"""
-        assert validate_order_transition(
-            "o1", OrderStatus.RETURNING, OrderStatus.REFUNDED
-        ) is None
+        assert validate_order_transition("o1", OrderStatus.RETURNING, OrderStatus.REFUNDED) is None
         assert OrderStatus.REFUNDED in VALID_ORDER_TRANSITIONS[OrderStatus.RETURNING]
 
     def test_returning_completed(self):
         """returning → completed (退货被拒, 交易完成)"""
-        assert validate_order_transition(
-            "o1", OrderStatus.RETURNING, OrderStatus.COMPLETED
-        ) is None
+        assert validate_order_transition("o1", OrderStatus.RETURNING, OrderStatus.COMPLETED) is None
         assert OrderStatus.COMPLETED in VALID_ORDER_TRANSITIONS[OrderStatus.RETURNING]
 
     # ── 非法转换 ────────────────────────────────────────────────
@@ -113,15 +99,11 @@ class TestOrderStateMachine:
     def test_invalid_cancelled_to_confirmed(self):
         """终态不能恢复"""
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition(
-                "o1", OrderStatus.CANCELLED, OrderStatus.CONFIRMED
-            )
+            validate_order_transition("o1", OrderStatus.CANCELLED, OrderStatus.CONFIRMED)
 
     def test_invalid_completed_to_cancelled(self):
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition(
-                "o1", OrderStatus.COMPLETED, OrderStatus.CANCELLED
-            )
+            validate_order_transition("o1", OrderStatus.COMPLETED, OrderStatus.CANCELLED)
 
     def test_invalid_refunded_to_pending(self):
         with pytest.raises(InvalidOrderTransitionError):
@@ -130,16 +112,12 @@ class TestOrderStateMachine:
     def test_invalid_delivered_to_confirmed(self):
         """不能回退"""
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition(
-                "o1", OrderStatus.DELIVERED, OrderStatus.CONFIRMED
-            )
+            validate_order_transition("o1", OrderStatus.DELIVERED, OrderStatus.CONFIRMED)
 
     def test_invalid_processing_to_delivered(self):
         """不能跳过打包/发货"""
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition(
-                "o1", OrderStatus.PROCESSING, OrderStatus.DELIVERED
-            )
+            validate_order_transition("o1", OrderStatus.PROCESSING, OrderStatus.DELIVERED)
 
     def test_invalid_pending_to_returning(self):
         """未发货不能退货"""
@@ -148,9 +126,7 @@ class TestOrderStateMachine:
 
     def test_invalid_confirmed_to_returning(self):
         with pytest.raises(InvalidOrderTransitionError):
-            validate_order_transition(
-                "o1", OrderStatus.CONFIRMED, OrderStatus.RETURNING
-            )
+            validate_order_transition("o1", OrderStatus.CONFIRMED, OrderStatus.RETURNING)
 
     # ── 终态测试 ────────────────────────────────────────────────
 
@@ -221,9 +197,7 @@ class TestOrderRoutes:
 
         paths = app.openapi()["paths"]
         order_paths = [p for p in paths if p.startswith("/orders")]
-        assert len(order_paths) >= 8, (
-            f"expected >=8 order paths, got {len(order_paths)}"
-        )
+        assert len(order_paths) >= 8, f"expected >=8 order paths, got {len(order_paths)}"
 
         expected_routes = [
             "/orders/",

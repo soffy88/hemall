@@ -65,16 +65,12 @@ async def process_drop_return(
                 input_data.order_line_item_id,
             )
         if row is None:
-            raise ValueError(
-                f"order_line_item {input_data.order_line_item_id!r} not found"
-            )
+            raise ValueError(f"order_line_item {input_data.order_line_item_id!r} not found")
         if row["payment_intent_id"] is None:
             raise ValueError(
                 f"order for {input_data.order_line_item_id!r} has no captured payment to refund"
             )
-        trail.record(
-            event="order_line_item_loaded", refund_amount=row["line_total_cents"]
-        )
+        trail.record(event="order_line_item_loaded", refund_amount=row["line_total_cents"])
 
         from obase.provider_registry import ProviderRegistry
 

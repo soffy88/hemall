@@ -60,9 +60,7 @@ async def dispatch_host_dividend(
     """
     trail = Trail()
     period_obj = (
-        date.fromisoformat(input_data.period_date)
-        if input_data.period_date
-        else date.today()
+        date.fromisoformat(input_data.period_date) if input_data.period_date else date.today()
     )
     period = period_obj.isoformat()
     fp = compute_fingerprint(
@@ -82,16 +80,12 @@ async def dispatch_host_dividend(
             raise ValueError("tote_count must be positive")
 
         amount = input_data.tote_count * config.dividend_per_tote_cents
-        trail.record(
-            event="dividend_computed", tote_count=input_data.tote_count, amount=amount
-        )
+        trail.record(event="dividend_computed", tote_count=input_data.tote_count, amount=amount)
 
         transfer_result = await ext_pay_transfer(
             config.payout_provider, account=input_data.payout_account, amount=amount
         )
-        trail.record(
-            event="host_paid", transfer_id=transfer_result["transfer_id"], amount=amount
-        )
+        trail.record(event="host_paid", transfer_id=transfer_result["transfer_id"], amount=amount)
 
         from obase.uuid7 import uuid7
 

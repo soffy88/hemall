@@ -109,15 +109,11 @@ async def execute_channel_broadcast_workflow(
         )
 
         batch_info = dict(batch)
-        batch_info["supplier_polygon_name"] = (
-            batch_info["supplier_polygon_name"] or "溯源信息保密"
-        )
+        batch_info["supplier_polygon_name"] = batch_info["supplier_polygon_name"] or "溯源信息保密"
         batch_info["broadcast_type"] = input_data.broadcast_type
 
         sys_prompt = build_fomo_system_prompt()
-        usr_prompt = construct_fomo_user_prompt(
-            batch_info, market_price=input_data.market_price
-        )
+        usr_prompt = construct_fomo_user_prompt(batch_info, market_price=input_data.market_price)
 
         try:
             copywriting = await ext_llm_generate_text(

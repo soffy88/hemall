@@ -120,21 +120,17 @@ class AlipayProvider:
 
         if self._sandbox:
             logger.warning(
-                "AlipayProvider running in SANDBOX mode "
-                "(set ALIPAY_APP_ID for production)"
+                "AlipayProvider running in SANDBOX mode (set ALIPAY_APP_ID for production)"
             )
 
-    async def create_order(
-        self, request: AlipayOrderRequest
-    ) -> AlipayOrderResponse:
+    async def create_order(self, request: AlipayOrderRequest) -> AlipayOrderResponse:
         """创建支付宝当面付订单 (预下单)。"""
         if self._sandbox:
             return self._sandbox_create_order(request)
 
         # TODO: 生产实现 — 调用 alipay.trade.precreate
         raise NotImplementedError(
-            "production Alipay not yet implemented; "
-            "set ALIPAY_APP_ID='' for sandbox mode"
+            "production Alipay not yet implemented; set ALIPAY_APP_ID='' for sandbox mode"
         )
 
     async def handle_notify(self, params: dict[str, str]) -> AlipayNotify | None:
@@ -180,9 +176,7 @@ class AlipayProvider:
 
     # ── 沙箱实现 ──────────────────────────────────────────────────
 
-    def _sandbox_create_order(
-        self, request: AlipayOrderRequest
-    ) -> AlipayOrderResponse:
+    def _sandbox_create_order(self, request: AlipayOrderRequest) -> AlipayOrderResponse:
         trade_no = f"alipay_{uuid.uuid4().hex[:16]}"
         self._orders[request.out_trade_no] = {
             "out_trade_no": request.out_trade_no,
@@ -228,7 +222,5 @@ class AlipayProvider:
 
         fail-closed 存根：未接支付宝公钥验签，永不返回 True。
         """
-        logger.warning(
-            "legacy alipay _verify_notify_signature called — fail-closed"
-        )
+        logger.warning("legacy alipay _verify_notify_signature called — fail-closed")
         return False

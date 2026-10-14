@@ -371,7 +371,6 @@ async def get_csrf_token(
 # ── 顾客认证端点 (Cookie 会话，复用相同的 cookie 设施) ───────────────────
 
 
-
 class CustomerLoginInput(BaseModel):
     email: str = Field(..., description="顾客邮箱")
     password: str = Field(..., description="明文密码")
@@ -530,8 +529,11 @@ async def customer_register(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             'INSERT INTO "customer" (email, password_hash, phone, name, status) '
-            'VALUES ($1, $2, $3, $4, \'active\') RETURNING id, email',
-            body.email, password_hash, body.phone, body.name,
+            "VALUES ($1, $2, $3, $4, 'active') RETURNING id, email",
+            body.email,
+            password_hash,
+            body.phone,
+            body.name,
         )
 
     customer_id = str(row["id"])

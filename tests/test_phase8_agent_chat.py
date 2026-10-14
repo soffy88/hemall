@@ -41,9 +41,13 @@ class TestToolDefinitions:
         sql_keys = set(SQL_QUERIES.keys())
         tool_names = {t.name for t in TOOLS}
         # query_node_revenue 对应两条 SQL (带位置过滤 + 按名称过滤)
-        expected_coverage = {"query_node_revenue", "query_batch_status",
-                             "query_batch_search", "query_system_balance_liabilities",
-                             "query_intent_cluster_summary"}
+        expected_coverage = {
+            "query_node_revenue",
+            "query_batch_status",
+            "query_batch_search",
+            "query_system_balance_liabilities",
+            "query_intent_cluster_summary",
+        }
         assert tool_names.issubset(sql_keys | set(expected_coverage)), (
             f"Tools not covered by SQL: {tool_names - sql_keys}"
         )
@@ -68,16 +72,21 @@ class TestSQLQueryTemplates:
 
     def test_no_delete_or_update_in_read_tools(self):
         """只读工具不应该包含 DELETE / UPDATE / DROP。"""
-        read_tools = {"query_node_revenue", "query_batch_status",
-                      "query_batch_search", "query_system_balance_liabilities",
-                      "query_intent_cluster_summary"}
+        read_tools = {
+            "query_node_revenue",
+            "query_batch_status",
+            "query_batch_search",
+            "query_system_balance_liabilities",
+            "query_intent_cluster_summary",
+        }
         for name, (sql, _) in SQL_QUERIES.items():
             if name in read_tools:
                 sql_upper = sql.upper()
-                assert "DELETE " not in sql_upper and "UPDATE " not in sql_upper and \
-                       "DROP " not in sql_upper, (
-                    f"Read-only tool '{name}' contains destructive SQL: {sql[:50]}"
-                )
+                assert (
+                    "DELETE " not in sql_upper
+                    and "UPDATE " not in sql_upper
+                    and "DROP " not in sql_upper
+                ), f"Read-only tool '{name}' contains destructive SQL: {sql[:50]}"
 
 
 @pytest.mark.asyncio
@@ -98,17 +107,22 @@ class TestExecuteQueriesMocked:
     @pytest.mark.asyncio
     async def test_query_node_revenue_success(self, mock_pool_and_conn):
         mock_pool, mock_conn = mock_pool_and_conn
-        mock_conn.fetchrow = AsyncMock(return_value={
-            "total_orders": 42,
-            "total_revenue_cents": 420000,
-            "avg_order_value_cents": 10000,
-            "active_batches": 5,
-        })
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "total_orders": 42,
+                "total_revenue_cents": 420000,
+                "avg_order_value_cents": 10000,
+                "active_batches": 5,
+            }
+        )
 
-        result = await _execute_query_node_revenue(mock_pool, {
-            "location_id": "test-loc-id",
-            "time_range": "last_7_days",
-        })
+        result = await _execute_query_node_revenue(
+            mock_pool,
+            {
+                "location_id": "test-loc-id",
+                "time_range": "last_7_days",
+            },
+        )
 
         data = json.loads(result)
         assert data["total_orders"] == 42
@@ -119,10 +133,13 @@ class TestExecuteQueriesMocked:
         mock_pool, mock_conn = mock_pool_and_conn
         mock_conn.fetchrow = AsyncMock(return_value=None)
 
-        result = await _execute_query_node_revenue(mock_pool, {
-            "location_id": "nonexistent",
-            "time_range": "today",
-        })
+        result = await _execute_query_node_revenue(
+            mock_pool,
+            {
+                "location_id": "nonexistent",
+                "time_range": "today",
+            },
+        )
 
         data = json.loads(result)
         assert "no revenue data" in data.get("message", "").lower()
@@ -130,19 +147,26 @@ class TestExecuteQueriesMocked:
     @pytest.mark.asyncio
     async def test_query_batch_status_by_id(self, mock_pool_and_conn):
         mock_pool, mock_conn = mock_pool_and_conn
-        mock_conn.fetch = AsyncMock(return_value=[{
-            "batch_id": "b1",
-            "product_title": "Test Product",
-            "stock_qty": 5,
-            "reserved_qty": 3,
-            "available_qty": 2,
-            "retail_price_cents": 1000,
-            "status": "active",
-        }])
+        mock_conn.fetch = AsyncMock(
+            return_value=[
+                {
+                    "batch_id": "b1",
+                    "product_title": "Test Product",
+                    "stock_qty": 5,
+                    "reserved_qty": 3,
+                    "available_qty": 2,
+                    "retail_price_cents": 1000,
+                    "status": "active",
+                }
+            ]
+        )
 
-        result = await _execute_query_batch_status(mock_pool, {
-            "batch_id": "test-batch-id",
-        })
+        result = await _execute_query_batch_status(
+            mock_pool,
+            {
+                "batch_id": "test-batch-id",
+            },
+        )
 
         data = json.loads(result)
         assert len(data) >= 1
@@ -159,20 +183,22 @@ class TestExecuteQueriesMocked:
     @pytest.mark.asyncio
     async def test_query_system_liabilities_success(self, mock_pool_and_conn):
         mock_pool, mock_conn = mock_pool_and_conn
-        mock_conn.fetchval = AsyncMock(side_effect=[
-            500000,   # user_balances
-            300000,   # tote_deposits
-            100000,   # affiliate_payouts
-            80000,    # labor_wages
-        ])
-        mock_conn.fetchrow = AsyncMock(return_value={
-            "cnt": 5,
-            "total_cents": 2000,
-        })
-
-        result = await _execute_query_system_liabilities(
-            mock_pool, {}, compensation_amount=400
+        mock_conn.fetchval = AsyncMock(
+            side_effect=[
+                500000,  # user_balances
+                300000,  # tote_deposits
+                100000,  # affiliate_payouts
+                80000,  # labor_wages
+            ]
         )
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "cnt": 5,
+                "total_cents": 2000,
+            }
+        )
+
+        result = await _execute_query_system_liabilities(mock_pool, {}, compensation_amount=400)
 
         data = json.loads(result)
         assert data["user_balances_cents"] == 500000
@@ -184,12 +210,14 @@ class TestExecuteQueriesMocked:
     @pytest.mark.asyncio
     async def test_query_intent_summary_success(self, mock_pool_and_conn):
         mock_pool, mock_conn = mock_pool_and_conn
-        mock_conn.fetchval = AsyncMock(side_effect=[
-            1500,     # total_pending_intentions
-            7500000,  # total_prepaid_cents
-            3,        # ghost_nodes (pending_hardware)
-            2,        # recent_ignitions
-        ])
+        mock_conn.fetchval = AsyncMock(
+            side_effect=[
+                1500,  # total_pending_intentions
+                7500000,  # total_prepaid_cents
+                3,  # ghost_nodes (pending_hardware)
+                2,  # recent_ignitions
+            ]
+        )
 
         result = await _execute_query_intent_summary(mock_pool, {})
         data = json.loads(result)
@@ -216,23 +244,22 @@ class TestAdminAuthLogic:
                 expires_in_minutes=60,
                 algorithm="HS256",
             )
+
         return _create
 
     def test_admin_ops_role_allowed(self, make_token):
         from obase.crypto.util import CryptoUtil
+
         token = make_token(role="ADMIN_OPS")
         assert len(token) > 0
-        decoded = CryptoUtil.jwt_decode(
-            token=token, secret=CRYPTO_SECRET, algorithm="HS256"
-        )
+        decoded = CryptoUtil.jwt_decode(token=token, secret=CRYPTO_SECRET, algorithm="HS256")
         assert decoded.get("role") == "ADMIN_OPS"
 
     def test_non_admin_role_rejected(self, make_token):
         from obase.crypto.util import CryptoUtil
+
         token = make_token(role="USER")
-        decoded = CryptoUtil.jwt_decode(
-            token=token, secret=CRYPTO_SECRET, algorithm="HS256"
-        )
+        decoded = CryptoUtil.jwt_decode(token=token, secret=CRYPTO_SECRET, algorithm="HS256")
         assert decoded.get("role") == "USER"
         # 在 _require_admin_ops 中会 403
 

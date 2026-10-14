@@ -22,9 +22,7 @@ from ..deps import get_current_user, get_settings
 from .engine import RiskEngine, RiskEvent, RiskRule
 
 # 风控管理 API：改规则、看/裁决审核队列 —— 后台风控台专用，一律要求员工 JWT。
-router = APIRouter(
-    prefix="/risk", tags=["risk"], dependencies=[Depends(get_current_user)]
-)
+router = APIRouter(prefix="/risk", tags=["risk"], dependencies=[Depends(get_current_user)])
 logger = logging.getLogger("hemall.risk.router")
 
 

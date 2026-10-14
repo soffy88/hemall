@@ -83,9 +83,7 @@ async def execute_peer_delivery_workflow(
 
         from obase.provider_registry import ProviderRegistry
 
-        payment_provider = ProviderRegistry.get().generic(
-            "payment", config.payment_provider
-        )
+        payment_provider = ProviderRegistry.get().generic("payment", config.payment_provider)
         auth_result = await payment_provider.authorize(
             amount=input_data.bounty_amount,
             currency=config.currency,

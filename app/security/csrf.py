@@ -32,10 +32,10 @@ CSRF_EXEMPT_PATHS = {
 }
 
 CSRF_EXEMPT_PREFIXES = (
-    "/store/",      # 零登录商城端点 (用 cart capability token)
+    "/store/",  # 零登录商城端点 (用 cart capability token)
     "/recommend/",  # 公开推荐端点
-    "/agent/",      # 智能体网关 (Bearer token)
-    "/media/",      # 静态文件
+    "/agent/",  # 智能体网关 (Bearer token)
+    "/media/",  # 静态文件
 )
 
 
@@ -79,7 +79,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
     def _check_sec_fetch_site(self, request: Request) -> bool:
         """校验 Sec-Fetch-Site 头 (现代浏览器自动发送)。
-        
+
         same-origin: 同源请求
         same-site: 同站点跨子域
         cross-site: 跨站点

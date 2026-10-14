@@ -21,12 +21,8 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-COMPOSE_FILES = sorted(
-    p for p in REPO_ROOT.glob("docker-compose*.yml") if p.is_file()
-)
-DEPLOY_SCRIPTS = sorted(
-    p for p in (REPO_ROOT / "scripts").glob("*.sh") if p.is_file()
-)
+COMPOSE_FILES = sorted(p for p in REPO_ROOT.glob("docker-compose*.yml") if p.is_file())
+DEPLOY_SCRIPTS = sorted(p for p in (REPO_ROOT / "scripts").glob("*.sh") if p.is_file())
 
 P3O_PACKAGES = ("obase", "oprim", "oskill", "omodul", "oservi")
 
@@ -34,9 +30,7 @@ P3O_PACKAGES = ("obase", "oprim", "oskill", "omodul", "oservi")
 def test_dockerfile_prod_has_no_platform3o_copy():
     text = (REPO_ROOT / "Dockerfile.prod").read_text(encoding="utf-8")
     offenders = [
-        ln
-        for ln in text.splitlines()
-        if "platform3o" in ln and not ln.strip().startswith("#")
+        ln for ln in text.splitlines() if "platform3o" in ln and not ln.strip().startswith("#")
     ]
     assert not offenders, (
         "Dockerfile.prod 仍有 platform3o 构建指令（死拷贝，且使 ../platform/3O "
