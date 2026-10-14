@@ -23,6 +23,11 @@ export default defineConfig({
     trace: 'off',
     video: 'off',
     screenshot: 'off',
+    // /shop/feed 依赖 navigator.geolocation；无头环境默认不给定位，
+    // 这里授予北京坐标（种子里唯一微仓的坐标，页面失败回退的也是同一组）。
+    permissions: ['geolocation'],
+    geolocation: { latitude: 39.9042, longitude: 116.4074 },
+    locale: 'zh-CN',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 });

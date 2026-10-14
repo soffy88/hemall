@@ -29,8 +29,9 @@ test.describe('hemal 前端冒烟', () => {
     page.on('pageerror', (e) => errors.push(String(e)));
 
     await page.goto('/login');
-    await page.getByLabel('邮箱').fill(ADMIN_EMAIL as string);
-    await page.getByLabel('密码').fill(ADMIN_PASSWORD as string);
+    // 登录页的 <label> 没有 htmlFor，只能按控件类型定位
+    await page.locator('input[type="email"]').fill(ADMIN_EMAIL as string);
+    await page.locator('input[type="password"]').fill(ADMIN_PASSWORD as string);
     await Promise.all([
       page.waitForURL(/\/admin(\/|$)/, { timeout: 30_000 }),
       page.getByRole('button', { name: '登录' }).click(),
