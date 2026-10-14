@@ -29,6 +29,8 @@ _SECRET_FILE_MAP: dict[str, str] = {
     "HEMALL_WECHAT_PAY_PLATFORM_CERT_FILE": "wechat_pay_platform_cert_path",
     "HEMALL_STRIPE_SECRET_KEY_FILE": "stripe_secret_key",
     "HEMALL_STRIPE_WEBHOOK_SECRET_FILE": "stripe_webhook_secret",
+    "HEMALL_ALIPAY_PRIVATE_KEY_FILE": "alipay_private_key_path",
+    "HEMALL_ALIPAY_PUBLIC_KEY_FILE": "alipay_public_key_path",
     "HEMALL_REDIS_URL_FILE": "redis_url",
 }
 
@@ -146,6 +148,11 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_notify_url: str = ""
+    # Alipay (RSA2)
+    alipay_app_id: str = ""
+    alipay_private_key_path: str = ""  # 支持 HEMALL_ALIPAY_PRIVATE_KEY_FILE
+    alipay_public_key_path: str = ""   # 支持 HEMALL_ALIPAY_PUBLIC_KEY_FILE
+    alipay_notify_url: str = ""
 
     # ── omodul 输出 (decision_trail / report 落盘) ─────────────────────
     output_root: Path = Path("./var/omodul_output")
@@ -345,9 +352,9 @@ class Settings(BaseSettings):
             problems.append("HEMALL_PRIVILEGED_STAFF_IDS must list at least one privileged app_user ID")
 
         provider = self.payment_gateway_provider.strip().lower()
-        if provider not in {"wechat", "stripe"}:
+        if provider not in {"wechat", "stripe", "alipay"}:
             problems.append(
-                "HEMALL_PAYMENT_GATEWAY_PROVIDER 必须是已配置的真实网关 wechat 或 stripe；"
+                "HEMALL_PAYMENT_GATEWAY_PROVIDER 必须是已配置的真实网关 wechat、stripe 或 alipay；"
                 "production 禁止 manual 或未知 provider"
             )
         elif provider == "wechat":
@@ -373,6 +380,17 @@ class Settings(BaseSettings):
             if missing:
                 problems.append(
                     "Stripe 生产配置缺失: " + ", ".join(missing)
+                )
+        elif provider == "alipay":
+            required = {
+                "alipay_app_id": self.alipay_app_id,
+                "alipay_private_key_path": self.alipay_private_key_path,
+                "alipay_public_key_path": self.alipay_public_key_path,
+            }
+            missing = [name for name, value in required.items() if not str(value).strip()]
+            if missing:
+                problems.append(
+                    "支付宝生产配置缺失: " + ", ".join(missing)
                 )
 
         es_url = self.elasticsearch_url or self.hemall_elasticsearch_url

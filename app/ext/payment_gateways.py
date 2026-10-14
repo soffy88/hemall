@@ -469,6 +469,230 @@ class WechatPayNativeGateway:
         return json.loads(plaintext)
 
 
+# ── Alipay 真实网关 (RSA2 验签) ──────────────────────────────────────────
+
+_ALIPAY_API_BASE = "https://openapi.alipay.com/gateway.do"
+_ALIPAY_REPLAY_WINDOW = 300
+
+
+def _rsa_sha256_sign_alipay(private_key: Any, message: str) -> str:
+    """RSA2 (SHA256 with RSA) 签名，返回 base64。"""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    signature = private_key.sign(
+        message.encode("utf-8"),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
+    )
+    return base64.b64encode(signature).decode()
+
+
+def _rsa_sha256_verify_alipay(public_key: Any, message: str, signature_b64: str) -> bool:
+    """RSA2 验签。"""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    try:
+        public_key.verify(
+            base64.b64decode(signature_b64),
+            message.encode("utf-8"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _alipay_build_sign_str(params: dict[str, str]) -> str:
+    """构造支付宝签名字符串 (按 key 排序, k=v 拼接, & 连接)。"""
+    return "&".join(f"{k}={v}" for k, v in sorted(params.items()) if v != "")
+
+
+class AlipayPaymentGateway:
+    """支付宝当面付/网页支付 统一下单/退款/回调验签 (RSA2)。
+
+    Args:
+        app_id: 支付宝应用 APPID。
+        private_key: 应用私钥 PEM (PKCS8, 路径或内容)。
+        alipay_public_key: 支付宝公钥 PEM (路径或内容)。
+        notify_url: 异步通知地址。
+        base_url: 测试注入沙盒地址。
+        transport: 测试注入 httpx.MockTransport。
+    """
+
+    def __init__(
+        self,
+        *,
+        app_id: str = "",
+        private_key: str | Path = "",
+        alipay_public_key: str | Path = "",
+        notify_url: str = "",
+        base_url: str = _ALIPAY_API_BASE,
+        transport: Any = None,
+    ) -> None:
+        self._app_id = app_id
+        self._private_key = load_private_key_pem(private_key) if private_key else None
+        self._alipay_public_key = load_public_key_pem(alipay_public_key) if alipay_public_key else None
+        self._notify_url = notify_url
+        self._base_url = base_url.rstrip("/")
+        self._transport = transport
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(
+            self._app_id
+            and self._private_key is not None
+            and self._alipay_public_key is not None
+        )
+
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self._base_url,
+            transport=self._transport,
+            timeout=10.0,
+        )
+
+    def _build_common_params(self, method: str, biz_content: dict[str, Any]) -> dict[str, str]:
+        """构造公共请求参数 (不含 sign)。"""
+        return {
+            "app_id": self._app_id,
+            "method": method,
+            "format": "JSON",
+            "charset": "utf-8",
+            "sign_type": "RSA2",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "version": "1.0",
+            "biz_content": json.dumps(biz_content, ensure_ascii=False, separators=(",", ":")),
+            "notify_url": self._notify_url,
+        }
+
+    def _sign_params(self, params: dict[str, str]) -> str:
+        """对参数进行 RSA2 签名。"""
+        sign_str = _alipay_build_sign_str(params)
+        return _rsa_sha256_sign_alipay(self._private_key, sign_str)
+
+    async def _post(self, params: dict[str, str]) -> dict[str, Any]:
+        """发送请求到支付宝网关。"""
+        async with self._client() as client:
+            resp = await client.post("", data=params)
+        if resp.status_code >= 300:
+            raise PaymentGatewayError(
+                f"alipay api -> {resp.status_code}: {resp.text[:300]}"
+            )
+        return resp.json()
+
+    async def prepay(
+        self,
+        *,
+        out_trade_no: str,
+        total_fee_cents: int,
+        description: str,
+        notify_url: str,
+    ) -> dict[str, Any]:
+        """统一下单 (当面付 precreate) → qr_code (二维码链接)。"""
+        if total_fee_cents <= 0:
+            raise ValueError("prepay: total_fee_cents must be positive")
+        # 支付宝金额单位为元，保留两位小数
+        total_amount = f"{total_fee_cents / 100:.2f}"
+        biz_content = {
+            "out_trade_no": out_trade_no,
+            "total_amount": total_amount,
+            "subject": description,
+        }
+        params = self._build_common_params("alipay.trade.precreate", biz_content)
+        params["sign"] = self._sign_params(params)
+        data = await self._post(params)
+        result = data.get("alipay_trade_precreate_response", {})
+        return {
+            "out_trade_no": out_trade_no,
+            "total_fee_cents": total_fee_cents,
+            "status": "pending" if result.get("code") == "10000" else "failed",
+            "code_url": result.get("qr_code", ""),
+            "prepay_id": None,
+            "payment_intent_id": None,
+            "client_secret": None,
+            "gateway": "alipay",
+        }
+
+    async def stripe_prepay(
+        self,
+        *,
+        out_trade_no: str,
+        total_fee_cents: int,
+        description: str,
+        currency: str = "CNY",
+    ) -> dict[str, Any]:
+        raise PaymentGatewayError("stripe_prepay is not supported by AlipayPaymentGateway")
+
+    async def refund(
+        self,
+        *,
+        out_trade_no: str,
+        out_refund_no: str,
+        refund_fee_cents: int,
+        reason: str = "",
+        total_fee_cents: int | None = None,
+        payment_intent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """退款 (alipay.trade.refund)。"""
+        if refund_fee_cents <= 0:
+            raise ValueError("refund: refund_fee_cents must be positive")
+        refund_amount = f"{refund_fee_cents / 100:.2f}"
+        biz_content = {
+            "out_trade_no": out_trade_no,
+            "out_request_no": out_refund_no,
+            "refund_amount": refund_amount,
+            "refund_reason": reason[:250] or "requested_by_customer",
+        }
+        params = self._build_common_params("alipay.trade.refund", biz_content)
+        params["sign"] = self._sign_params(params)
+        data = await self._post(params)
+        result = data.get("alipay_trade_refund_response", {})
+        return {
+            "out_refund_no": out_refund_no,
+            "out_trade_no": out_trade_no,
+            "refund_fee_cents": refund_fee_cents,
+            "status": result.get("code") == "10000" and "success" or "failed",
+            "refund_id": result.get("trade_no", ""),
+            "gateway": "alipay",
+        }
+
+    async def verify_callback(self, headers: dict[str, str], body: bytes) -> dict[str, Any] | None:
+        """支付宝异步通知验签 (RSA2)。
+
+        支付宝异步通知为 application/x-www-form-urlencoded 格式，
+        包含 sign 和 sign_type 字段，需用支付宝公钥验签。
+        """
+        if self._alipay_public_key is None:
+            raise PaymentGatewayError("alipay gateway not configured (missing alipay public key)")
+        try:
+            # 解析 form 数据
+            from urllib.parse import parse_qs
+
+            form_data = parse_qs(body.decode("utf-8"))
+            # 转为单值 dict
+            params = {k: v[0] for k, v in form_data.items()}
+            sign = params.pop("sign", "")
+            sign_type = params.pop("sign_type", "")
+            if not sign or sign_type != "RSA2":
+                return None
+            # 验签
+            sign_str = _alipay_build_sign_str(params)
+            if not _rsa_sha256_verify_alipay(self._alipay_public_key, sign_str, sign):
+                logger.warning("alipay callback signature invalid")
+                return None
+            # 校验 app_id
+            if params.get("app_id") != self._app_id:
+                logger.warning("alipay callback app_id mismatch")
+                return None
+            return params
+        except Exception as exc:
+            logger.warning("alipay callback verify failed: %s", exc)
+            return None
+
+
 # ── Stripe PaymentIntent 真实网关 ───────────────────────────────────────
 
 
@@ -674,6 +898,25 @@ def build_payment_gateway(settings: Any) -> tuple[str, Any]:
         logger.warning(
             "HEMALL_PAYMENT_GATEWAY_PROVIDER=stripe but keys missing "
             "(secret_key/webhook_secret); falling back to manual"
+        )
+        return provider, ManualPaymentGateway()
+
+    if provider == "alipay":
+        gateway = AlipayPaymentGateway(
+            app_id=settings.alipay_app_id,
+            private_key=settings.alipay_private_key_path or "",
+            alipay_public_key=settings.alipay_public_key_path or "",
+            notify_url=settings.alipay_notify_url,
+        )
+        if gateway.is_configured:
+            return provider, gateway
+        if str(getattr(settings, "environment", "development")).lower() == "production":
+            raise RuntimeError(
+                "production Alipay payment gateway is not configured; refusing manual fallback"
+            )
+        logger.warning(
+            "HEMALL_PAYMENT_GATEWAY_PROVIDER=alipay but keys missing "
+            "(app_id/private_key/alipay_public_key); falling back to manual"
         )
         return provider, ManualPaymentGateway()
 
