@@ -108,7 +108,9 @@ def _echo_lines(script: str) -> str:
         stripped = ln.strip()
         if stripped.startswith("#"):
             continue
-        if re.match(r"^(echo|printf|log|warn|error|step)\b", stripped) or re.search(r'"[^"]*\$\{?[A-Za-z_]', stripped):
+        if re.match(r"^(echo|printf|log|warn|error|step)\b", stripped) or re.search(
+            r'"[^"]*\$\{?[A-Za-z_]', stripped
+        ):
             out.append(stripped)
     return "\n".join(out)
 
@@ -139,9 +141,9 @@ def test_health_check_goes_through_nginx_or_into_the_container():
     """健康检查必须走 nginx (80/443) 或进容器内打 localhost:8000。"""
     script = DEPLOY_PROD.read_text(encoding="utf-8")
     in_container = re.search(r"exec -T api curl[^\n]*localhost:8000/health/live", script)
-    via_nginx = re.search(r"curl[^\n]*\$(?:\{)?API_SERVER_NAME|\$(?:\{)?API_SERVER_NAME[^\n]*https", script) or re.search(
-        r"https://\$\{?API_SERVER_NAME", script
-    )
+    via_nginx = re.search(
+        r"curl[^\n]*\$(?:\{)?API_SERVER_NAME|\$(?:\{)?API_SERVER_NAME[^\n]*https", script
+    ) or re.search(r"https://\$\{?API_SERVER_NAME", script)
     assert in_container or via_nginx, (
         "健康检查必须走 nginx 入口或进容器内打 8000；两者都没有说明还在探宿主机的 8000"
     )
@@ -165,7 +167,9 @@ def test_no_fake_migration_and_no_swallowed_failure():
 def test_schema_step_asserts_real_state():
     """替换掉的迁移步骤必须是**真断言**：调用真实函数并校验结果。"""
     script = _script()
-    assert "init_db" in script, "schema 步骤应调用真实的 app.bootstrap.init_db（幂等 + advisory lock）"
+    assert "init_db" in script, (
+        "schema 步骤应调用真实的 app.bootstrap.init_db（幂等 + advisory lock）"
+    )
     assert re.search(r"(to_regclass|information_schema|pg_tables)", script), (
         "schema 步骤必须真的查库确认表存在，而不是只跑一个函数就宣布成功"
     )
@@ -240,7 +244,13 @@ exit 0
     return bindir
 
 
-def _run(tmp_path: Path, *, healthy: bool, schema_ok: bool, tag: str = "v1.2.1") -> tuple[int, str, str]:
+def _run(
+    tmp_path: Path,
+    *,
+    healthy: bool,
+    schema_ok: bool,
+    tag: str = "v1.2.1",
+) -> tuple[int, str, str]:
     bindir = _fake_bin(tmp_path, healthy=healthy, schema_ok=schema_ok)
     log = tmp_path / "calls.log"
     env = dict(os.environ)
@@ -326,7 +336,10 @@ def test_tag_defaults_to_the_real_chart_app_version():
     )
     assert proc.returncode == 0, f"提取 appVersion 失败:\n{proc.stderr}"
     got = proc.stdout.strip()
-    expected = str((yaml.safe_load((REPO_ROOT / "charts" / "hemal" / "Chart.yaml").read_text(encoding="utf-8")) or {})["appVersion"])
+    chart = yaml.safe_load(
+        (REPO_ROOT / "charts" / "hemal" / "Chart.yaml").read_text(encoding="utf-8")
+    )
+    expected = str((chart or {})["appVersion"])
     assert got == expected, f"取到 {got!r}，Chart.yaml 里是 {expected!r}"
     assert got, "appVersion 提取结果为空 —— 发布 tag 会变成空字符串"
 

@@ -103,7 +103,8 @@ class EventStore:
                     d = event.to_dict()
                     sql = """
                         INSERT INTO event_store 
-                        (event_id, event_type, aggregate_id, aggregate_type, version, data, occurred_at)
+                        (event_id, event_type, aggregate_id, aggregate_type,
+                         version, data, occurred_at)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """
                     await conn.execute(
@@ -161,7 +162,11 @@ class EventStore:
         if not self._initialized:
             return None
 
-        sql = "SELECT aggregate_id, aggregate_type, version, state, created_at FROM snapshots WHERE aggregate_id = $1 ORDER BY version DESC LIMIT 1"
+        sql = (
+            "SELECT aggregate_id, aggregate_type, version, state, created_at "
+            "FROM snapshots WHERE aggregate_id = $1 "
+            "ORDER BY version DESC LIMIT 1"
+        )
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, aggregate_id)
             if not row:
@@ -174,7 +179,11 @@ class EventStore:
             aggregate_type=d["aggregate_type"],
             version=d["version"],
             state=d["state"],
-            created_at=datetime.fromisoformat(d["created_at"]) if isinstance(d.get("created_at"), str) else d.get("created_at"),
+            created_at=(
+                datetime.fromisoformat(d["created_at"])
+                if isinstance(d.get("created_at"), str)
+                else d.get("created_at")
+            ),
         )
 
     async def _try_create_snapshot(self, aggregate_id: str, event: DomainEvent) -> bool:

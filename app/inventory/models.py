@@ -154,7 +154,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movement_idempotency
     ON stock_movement(idempotency_key)
     WHERE idempotency_key IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_stock_mov_product ON stock_movement(product_id, variant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_mov_product
+    ON stock_movement(product_id, variant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_mov_location ON stock_movement(location_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_mov_reference ON stock_movement(reference_type, reference_id);
 CREATE INDEX IF NOT EXISTS idx_stock_mov_type ON stock_movement(movement_type, created_at DESC);

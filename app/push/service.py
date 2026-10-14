@@ -137,8 +137,12 @@ class PushManager:
         # 同一 platform 下**不同** device_token 是不同设备 (用户可以有多个),
         # 全部保留——所以这里不是"同平台换 token"。
         self._device_tokens[user_id] = [
-            d for d in self._device_tokens[user_id]
-            if not (d.platform == device_token.platform and d.device_token == device_token.device_token)
+            d
+            for d in self._device_tokens[user_id]
+            if not (
+                d.platform == device_token.platform
+                and d.device_token == device_token.device_token
+            )
         ]
         self._device_tokens[user_id].append(device_token)
         return True
@@ -257,7 +261,11 @@ class PushManager:
         else:
             logger.warning("No provider available for platform %s", platform)
             return PushResult(
-                device_token=notification.target_device_ids[0] if notification.target_device_ids else "",
+                device_token=(
+                    notification.target_device_ids[0]
+                    if notification.target_device_ids
+                    else ""
+                ),
                 success=False,
                 error_code=503,
                 error_message=f"No provider for {platform.value}",

@@ -82,7 +82,8 @@ async def create_crowd_intent(
                 input_data.prepaid_amount_cents,
             )
             pending_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM \"crowd_intent\" WHERE variant_id = $1 AND status = 'pending'",
+                "SELECT COUNT(*) FROM \"crowd_intent\" "
+                "WHERE variant_id = $1 AND status = 'pending'",
                 input_data.variant_id,
             )
         trail.record(

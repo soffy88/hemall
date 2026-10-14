@@ -101,7 +101,11 @@ class DomainEvent:
             event_type=event_type,
             aggregate_id=d.get("aggregate_id", ""),
             aggregate_type=d.get("aggregate_type", ""),
-            occurred_at=datetime.fromisoformat(d["occurred_at"]) if isinstance(d.get("occurred_at"), str) else d.get("occurred_at", datetime.now()),
+            occurred_at=(
+                datetime.fromisoformat(d["occurred_at"])
+                if isinstance(d.get("occurred_at"), str)
+                else d.get("occurred_at", datetime.now())
+            ),
             version=d.get("version", 1),
             data=d.get("data", {}),
         )

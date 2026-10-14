@@ -407,7 +407,11 @@ class HybridRecommender:
 
         # 加权融合
         hybrid_scores: dict[str, float] = defaultdict(float)
-        all_products = set(list(collab_map.keys()) + list(content_map.keys()) + list(trending_map.keys()))
+        all_products = set(
+            list(collab_map.keys())
+            + list(content_map.keys())
+            + list(trending_map.keys())
+        )
 
         for pid in all_products:
             score = 0.0

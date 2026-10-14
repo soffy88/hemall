@@ -102,7 +102,11 @@ class ConnectionManager:
         if user_id not in self._connections:
             self._connections[user_id] = set()
         self._connections[user_id].add(websocket)
-        logger.info("WebSocket connected: user=%s (total=%d)", user_id, len(self._connections[user_id]))
+        logger.info(
+            "WebSocket connected: user=%s (total=%d)",
+            user_id,
+            len(self._connections[user_id]),
+        )
 
     def disconnect(self, websocket: WebSocket, user_id: str) -> None:
         """从连接池移除。"""

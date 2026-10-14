@@ -83,7 +83,10 @@ async def log_behavior(
     except ValueError as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid behavior_type: {behavior_type}. Must be one of: view/cart_add/favorite/purchase/share",
+            detail=(
+                f"Invalid behavior_type: {behavior_type}. "
+                "Must be one of: view/cart_add/favorite/purchase/share"
+            ),
         ) from e
 
     event = UserBehaviorEvent(
@@ -92,7 +95,12 @@ async def log_behavior(
         behavior_type=btype,
     )
     await svc.log_behavior(event)
-    return {"status": "logged", "user_id": user_id, "product_id": product_id, "behavior_type": behavior_type}
+    return {
+        "status": "logged",
+        "user_id": user_id,
+        "product_id": product_id,
+        "behavior_type": behavior_type,
+    }
 
 
 @router.get("/stats")

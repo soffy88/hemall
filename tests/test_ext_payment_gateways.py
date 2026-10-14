@@ -193,7 +193,14 @@ async def test_wechat_callback_verify_and_decrypt():
     )
     ct, ad = _aes_256_gcm_encrypt("0" * 32, nonce_iv, plaintext)
     envelope = json.dumps(
-        {"resource": {"algorithm": "AEAD_AES_256_GCM", "ciphertext": ct, "nonce": nonce_iv, "associated_data": ad}}
+        {
+            "resource": {
+                "algorithm": "AEAD_AES_256_GCM",
+                "ciphertext": ct,
+                "nonce": nonce_iv,
+                "associated_data": ad,
+            }
+        }
     ).encode()
     ts = str(int(time.time()))
     nonce = "platform_nonce_1"
@@ -262,7 +269,11 @@ async def test_stripe_prepay_request_shape():
         captured["body"] = request.content.decode()
         return httpx.Response(
             200,
-            json={"id": "pi_123", "client_secret": "pi_123_secret", "status": "requires_payment_method"},
+            json={
+                "id": "pi_123",
+                "client_secret": "pi_123_secret",
+                "status": "requires_payment_method",
+            },
         )
 
     gw = _stripe_gateway(transport=httpx.MockTransport(handler))
@@ -362,17 +373,23 @@ def test_build_gateway_stripe_with_keys_real():
 
 def test_production_security_rejects_manual_payment_gateway():
     with pytest.raises(RuntimeError, match="HEMALL_PAYMENT_GATEWAY_PROVIDER"):
-        Settings(environment="production", payment_gateway_provider="manual").validate_production_security()
+        Settings(
+            environment="production", payment_gateway_provider="manual"
+        ).validate_production_security()
 
 
 def test_production_security_rejects_incomplete_wechat_gateway():
     with pytest.raises(RuntimeError, match="微信支付生产配置缺失"):
-        Settings(environment="production", payment_gateway_provider="wechat").validate_production_security()
+        Settings(
+            environment="production", payment_gateway_provider="wechat"
+        ).validate_production_security()
 
 
 def test_production_security_rejects_incomplete_stripe_gateway():
     with pytest.raises(RuntimeError, match="Stripe 生产配置缺失"):
-        Settings(environment="production", payment_gateway_provider="stripe").validate_production_security()
+        Settings(
+            environment="production", payment_gateway_provider="stripe"
+        ).validate_production_security()
 
 
 def test_build_gateway_refuses_manual_fallback_in_production():
@@ -395,4 +412,6 @@ def test_production_security_rejects_short_hmac_secrets():
 def test_production_security_rejects_invalid_fernet_key(monkeypatch):
     monkeypatch.setenv("ENCRYPTION_KEY", "not-a-fernet-key")
     with pytest.raises(RuntimeError, match="ENCRYPTION_KEY 必须是有效的 Fernet base64 key"):
-        Settings(environment="production", payment_gateway_provider="manual").validate_production_security()
+        Settings(
+            environment="production", payment_gateway_provider="manual"
+        ).validate_production_security()

@@ -29,7 +29,11 @@ from .deps import (
 from .security.op_roles import assert_op_role
 
 # omodul 状态 → HTTP 状态码
-_STATUS_CODES = {"completed": None, "failed": 422, "cancelled": 409}  # completed 由 success_status 定
+_STATUS_CODES = {
+    "completed": None,
+    "failed": 422,
+    "cancelled": 409,
+}  # completed 由 success_status 定
 
 
 def omodul_to_response(result: dict[str, Any], *, success_status: int = 200) -> JSONResponse:
@@ -114,7 +118,16 @@ def omodul_endpoint(
             pool: PgPool = Depends(get_pool),
         ) -> JSONResponse:
             return await _invoke(
-                fn, config_cls, body, omodul_name, pool, principal, settings, success_status, request, post_hook
+                fn,
+                config_cls,
+                body,
+                omodul_name,
+                pool,
+                principal,
+                settings,
+                success_status,
+                request,
+                post_hook,
             )
 
     else:
@@ -126,7 +139,16 @@ def omodul_endpoint(
             pool: PgPool = Depends(get_pool),
         ) -> JSONResponse:
             return await _invoke(
-                fn, config_cls, body, omodul_name, pool, ANONYMOUS_PRINCIPAL, settings, success_status, request, post_hook
+                fn,
+                config_cls,
+                body,
+                omodul_name,
+                pool,
+                ANONYMOUS_PRINCIPAL,
+                settings,
+                success_status,
+                request,
+                post_hook,
             )
 
     handler.__name__ = f"handle_{fn.__name__}"
@@ -148,7 +170,8 @@ async def _invoke(
 ) -> JSONResponse:
     """实例化 config、拼 output_dir、调 omodul、completed 后跑 post_hook、翻译结果。
 
-    失败不 raise (omodul 自返 failed)。post_hook 是旁路 (如事件派发), 异常吞掉只记日志。
+    失败不 raise (omodul 自返 failed)。post_hook 是旁路 (如事件派发),
+    异常吞掉只记日志。
     """
     config = config_cls()
     output_dir = build_output_dir(settings, principal, omodul_name)
@@ -166,6 +189,8 @@ async def _invoke(
         except Exception:  # noqa: BLE001 - 旁路失败不阻断主响应
             import logging
 
-            logging.getLogger("hemall.respond").warning("post_hook failed for %s", omodul_name, exc_info=True)
+            logging.getLogger("hemall.respond").warning(
+                "post_hook failed for %s", omodul_name, exc_info=True
+            )
 
     return omodul_to_response(result, success_status=success_status)

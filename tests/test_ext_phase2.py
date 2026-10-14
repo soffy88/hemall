@@ -55,12 +55,14 @@ async def _make_variant(pool) -> tuple[str, str]:
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
+            "INSERT INTO stock_location (id, name, region_code, host_id, address, "
+            "lat, lng, status) "
             "VALUES ($1,'p2_loc','cn-east','host_p2','测试车库',31.0,121.0,'active') RETURNING id",
             uuid7(),
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,'土鸡蛋',$2,'active') RETURNING id",
+            "INSERT INTO product (id, title, slug, status) "
+            "VALUES ($1,'土鸡蛋',$2,'active') RETURNING id",
             uuid7(),
             f"p2-slug-{uuid7()}",
         )
@@ -225,7 +227,8 @@ async def test_create_crowd_intent_and_threshold(cn_pool, tmp_path):
     async with cn_pool.acquire() as conn:
         for _ in range(_REPLENISH_THRESHOLD - 2):
             await conn.execute(
-                "INSERT INTO crowd_intent (id, variant_id, customer_id, prepaid_amount_cents, status) "
+                "INSERT INTO crowd_intent (id, variant_id, customer_id, "
+                "prepaid_amount_cents, status) "
                 "VALUES ($1,$2,$3,$4,'pending')",
                 uuid7(),
                 var_id,
@@ -326,7 +329,11 @@ async def test_batch_settlement(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_confirm_batch_pick_finalizes_stock_and_records_wage(cn_pool, tmp_path, test_redis_url):
+async def test_confirm_batch_pick_finalizes_stock_and_records_wage(
+    cn_pool,
+    tmp_path,
+    test_redis_url,
+):
     from app.ext.omodul.confirm_batch_pick import (
         ConfirmBatchPickConfig,
         ConfirmBatchPickInput,
@@ -501,7 +508,8 @@ async def test_dispatch_labor_payment_aggregates_pending(cn_pool, tmp_path):
     async with cn_pool.acquire() as conn:
         for amount in (500, 1500, 1000):
             await conn.execute(
-                "INSERT INTO labor_ledger (id, worker_id, wage_amount, status) VALUES ($1,$2,$3,'pending')",
+                "INSERT INTO labor_ledger (id, worker_id, wage_amount, status) "
+                "VALUES ($1,$2,$3,'pending')",
                 generate_id_v7("labor"),
                 worker_id,
                 amount,
@@ -653,7 +661,8 @@ async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(
 
     async with cn_pool.acquire() as conn:
         far_loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
+            "INSERT INTO stock_location (id, name, region_code, host_id, address, "
+            "lat, lng, status) "
             "VALUES ($1,'p2_far','cn-east','host_far','远处车库',40.0,121.0,'active') RETURNING id",
             uuid7(),
         )

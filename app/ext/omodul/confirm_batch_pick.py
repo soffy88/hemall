@@ -112,7 +112,8 @@ async def confirm_batch_pick(
         ledger_id = generate_id_v7("labor")
         async with pool.acquire() as conn:
             await conn.execute(
-                'INSERT INTO "labor_ledger" (id, worker_id, order_line_item_id, wage_amount, status) '
+                'INSERT INTO "labor_ledger" '
+                "(id, worker_id, order_line_item_id, wage_amount, status) "
                 "VALUES ($1, $2, $3, $4, 'pending')",
                 ledger_id,
                 input_data.worker_id,

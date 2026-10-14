@@ -175,7 +175,8 @@ _COMMAND_KINDS: list[tuple[list[str], str]] = [
 
 #: 每种命令对应的落库工具 (供 Hermes/Cindy 直接 function-calling 时参考)
 _KIND_TOOL: dict[str, str] = {
-    "list_product": "supply-chain/create_inventory_batch",  # 编排器内部走 create_product → variant → batch
+    # 编排器内部走 create_product → variant → batch
+    "list_product": "supply-chain/create_inventory_batch",
     "restock": "inventory/adjust_inventory_level",
     "adjust_price": "catalog/update_product_variant",  # 编排器内部直改批次零售价
     "dispose": "supply-chain/mark_batch_for_disposal",
@@ -200,7 +201,9 @@ _TITLE_NOISE = [
     "件", "个", "斤", "箱", "包", "份", "袋", "瓶", "盒", "公斤", "千克", "克", "元",
 ]
 
-_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+)
 
 
 def _extract_money(text: str) -> int | None:
@@ -276,7 +279,14 @@ def route_command(text: str) -> dict[str, Any]:
                     "confidence": 0.8,
                     "matched_keyword": kw,
                 }
-    return {"kind": None, "tool": None, "engine": _COMMAND_ENGINE, "entities": {}, "confidence": 0.0, "matched_keyword": None}
+    return {
+        "kind": None,
+        "tool": None,
+        "engine": _COMMAND_ENGINE,
+        "entities": {},
+        "confidence": 0.0,
+        "matched_keyword": None,
+    }
 
 
 # ── 编排器: 实体 → 真实 omodul 参数 (缺 ID 从库解析) ─────────────────
@@ -326,7 +336,11 @@ async def _resolve_batch_by_title(
             )
     if not row:
         return None
-    return {"batch_id": str(row["batch_id"]), "variant_id": str(row["variant_id"]), "location_id": str(row["location_id"])}
+    return {
+        "batch_id": str(row["batch_id"]),
+        "variant_id": str(row["variant_id"]),
+        "location_id": str(row["location_id"]),
+    }
 
 
 async def _resolve_order(pool: Any, order_id: str | None) -> str | None:
@@ -337,7 +351,9 @@ async def _resolve_order(pool: Any, order_id: str | None) -> str | None:
         if order_id:
             row = await conn.fetchval('SELECT id FROM "customer_order" WHERE id = $1', order_id)
         else:
-            row = await conn.fetchval('SELECT id FROM "customer_order" ORDER BY created_at DESC LIMIT 1')
+            row = await conn.fetchval(
+                'SELECT id FROM "customer_order" ORDER BY created_at DESC LIMIT 1',
+            )
         return str(row) if row else None
 
 
@@ -426,7 +442,13 @@ async def execute_command(
             principal=principal,
         )
         if step1.get("status") != "completed":
-            return {"status": "failed", "text": text, "matched_keyword": matched, "kind": kind, "error": step1}
+            return {
+                "status": "failed",
+                "text": text,
+                "matched_keyword": matched,
+                "kind": kind,
+                "error": step1,
+            }
         product_id = step1["product_id"]
         # 上架即发布 (共享 create_product 默认 draft, 商城只展示 published)
         pub = await execute_tool(
@@ -437,7 +459,13 @@ async def execute_command(
             principal=principal,
         )
         if pub.get("status") != "completed":
-            return {"status": "failed", "text": text, "matched_keyword": matched, "kind": kind, "error": pub}
+            return {
+                "status": "failed",
+                "text": text,
+                "matched_keyword": matched,
+                "kind": kind,
+                "error": pub,
+            }
         step2 = await execute_tool(
             "catalog/create_product_variant",
             {
@@ -451,7 +479,13 @@ async def execute_command(
             principal=principal,
         )
         if step2.get("status") != "completed":
-            return {"status": "failed", "text": text, "matched_keyword": matched, "kind": kind, "error": step2}
+            return {
+                "status": "failed",
+                "text": text,
+                "matched_keyword": matched,
+                "kind": kind,
+                "error": step2,
+            }
         variant_id = step2["variant_id"]
         location_id = await _resolve_default_location(pool)
         if not location_id:
@@ -477,7 +511,13 @@ async def execute_command(
             principal=principal,
         )
         if step3.get("status") != "completed":
-            return {"status": "failed", "text": text, "matched_keyword": matched, "kind": kind, "error": step3}
+            return {
+                "status": "failed",
+                "text": text,
+                "matched_keyword": matched,
+                "kind": kind,
+                "error": step3,
+            }
         return {
             "status": "executed",
             "text": text,
@@ -496,10 +536,20 @@ async def execute_command(
     # ── 调价: 按商品名找批次, 直接改批次零售价 (同步参考价) ──
     if kind == "adjust_price":
         if money is None:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "请给出新价格, 如: 丹东草莓降价到 9.9"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "请给出新价格, 如: 丹东草莓降价到 9.9",
+            }
         batch = await _resolve_batch_by_title(pool, title)
         if not batch:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "没有找到可调价的 active 批次 (先上架或传货)"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "没有找到可调价的 active 批次 (先上架或传货)",
+            }
         async with pool.acquire() as conn:
             await conn.execute(
                 'UPDATE "inventory_batch" SET retail_price_cents = $1 WHERE id = $2',
@@ -530,7 +580,12 @@ async def execute_command(
         delta = max(qty or 1, 1)
         batch = await _resolve_batch_by_title(pool, title)
         if not batch:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "没有找到可补货的 active 批次 (先上架或传货)"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "没有找到可补货的 active 批次 (先上架或传货)",
+            }
         result = await execute_tool(
             "inventory/adjust_inventory_level",
             {"batch_id": batch["batch_id"], "delta": delta, "reason": "手机补货指令"},
@@ -538,13 +593,24 @@ async def execute_command(
             out_root=out_root,
             principal=principal,
         )
-        return {"status": "executed" if result.get("status") == "completed" else "failed", "text": text, "matched_keyword": matched, "kind": kind, "result": {**result, "batch_id": batch["batch_id"], "delta": delta}}
+        return {
+            "status": "executed" if result.get("status") == "completed" else "failed",
+            "text": text,
+            "matched_keyword": matched,
+            "kind": kind,
+            "result": {**result, "batch_id": batch["batch_id"], "delta": delta},
+        }
 
     # ── 下架/报废: mark_batch_for_disposal ──
     if kind == "dispose":
         batch = await _resolve_batch_by_title(pool, title)
         if not batch:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "没有找到可下架的 active 批次"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "没有找到可下架的 active 批次",
+            }
         result = await execute_tool(
             "supply-chain/mark_batch_for_disposal",
             {"batch_id": batch["batch_id"], "reason": "手机下架指令"},
@@ -552,13 +618,24 @@ async def execute_command(
             out_root=out_root,
             principal=principal,
         )
-        return {"status": "executed" if result.get("status") == "completed" else "failed", "text": text, "matched_keyword": matched, "kind": kind, "result": {**result, "batch_id": batch["batch_id"]}}
+        return {
+            "status": "executed" if result.get("status") == "completed" else "failed",
+            "text": text,
+            "matched_keyword": matched,
+            "kind": kind,
+            "result": {**result, "batch_id": batch["batch_id"]},
+        }
 
     # ── 结算: batch_settlement (缺批次用最新 active) ──
     if kind == "settle":
         batch = await _resolve_batch_by_title(pool, title, default_to_latest=True)
         if not batch:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "没有可结算的批次"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "没有可结算的批次",
+            }
         result = await execute_tool(
             "supply-chain/batch_settlement",
             {"batch_id": batch["batch_id"], "supplier_account": "supplier@hemall.local"},
@@ -566,15 +643,31 @@ async def execute_command(
             out_root=out_root,
             principal=principal,
         )
-        return {"status": "executed" if result.get("status") == "completed" else "failed", "text": text, "matched_keyword": matched, "kind": kind, "result": {**result, "batch_id": batch["batch_id"]}}
+        return {
+            "status": "executed" if result.get("status") == "completed" else "failed",
+            "text": text,
+            "matched_keyword": matched,
+            "kind": kind,
+            "result": {**result, "batch_id": batch["batch_id"]},
+        }
 
     # ── 退款: refund_payment (order_id + amount_cents) ──
     if kind == "refund":
         if money is None:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "请给出退款金额, 如: 订单 <id> 退款 50 元"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "请给出退款金额, 如: 订单 <id> 退款 50 元",
+            }
         order_id = await _resolve_order(pool, ent.get("order_id"))
         if not order_id:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "没有找到可退款的订单"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "没有找到可退款的订单",
+            }
         result = await execute_tool(
             "aftersales/refund_payment",
             {"order_id": order_id, "amount_cents": money},
@@ -582,13 +675,24 @@ async def execute_command(
             out_root=out_root,
             principal=principal,
         )
-        return {"status": "executed" if result.get("status") == "completed" else "failed", "text": text, "matched_keyword": matched, "kind": kind, "result": {**result, "order_id": order_id, "amount_cents": money}}
+        return {
+            "status": "executed" if result.get("status") == "completed" else "failed",
+            "text": text,
+            "matched_keyword": matched,
+            "kind": kind,
+            "result": {**result, "order_id": order_id, "amount_cents": money},
+        }
 
     # ── 广播: execute_channel_broadcast_workflow ──
     if kind == "broadcast":
         batch = await _resolve_batch_by_title(pool, title)
         if not batch:
-            return {"status": "needs_input", "text": text, "matched_keyword": matched, "hint": "没有找到可推广的批次"}
+            return {
+                "status": "needs_input",
+                "text": text,
+                "matched_keyword": matched,
+                "hint": "没有找到可推广的批次",
+            }
         result = await execute_tool(
             "marketing/execute_channel_broadcast_workflow",
             {
@@ -601,7 +705,13 @@ async def execute_command(
             out_root=out_root,
             principal=principal,
         )
-        return {"status": "executed" if result.get("status") == "completed" else "failed", "text": text, "matched_keyword": matched, "kind": kind, "result": {**result, "batch_id": batch["batch_id"]}}
+        return {
+            "status": "executed" if result.get("status") == "completed" else "failed",
+            "text": text,
+            "matched_keyword": matched,
+            "kind": kind,
+            "result": {**result, "batch_id": batch["batch_id"]},
+        }
 
     # ── 需要实体 ID 但规则引擎无法可靠提取的 (留给 Hermes/Cindy LLM 编排) ──
     return {
@@ -689,6 +799,7 @@ async def ingest_media(
       4. 返回商品 ID + 草稿信息
 
     幂等: 文件名重复会 SKU 冲突, 自动加时间戳后缀避免。
+    整个过程在一个事务中执行；没有可用库位时返回 400 并给出明确提示。
     """
     if not file.filename:
         raise HTTPException(400, "empty upload")
@@ -710,65 +821,80 @@ async def ingest_media(
         raise HTTPException(413, "file too large (max 50MB)")
     dest.write_bytes(content)
 
-    # 2. 商品名 + SKU
+    # 2. 商品名 + SKU (加随机后缀防止同秒同名文件冲突)
     title = _clean_filename(safe_name)
-    sku = f"AGT-{abs(hash(dest.name)) % 900000 + 100000}"
+    import uuid
+    sku = f"AGT-{uuid.uuid4().hex[:12]}"
 
-    # 3. 上架 (直插 SQL — 与 seed_grocery_catalog 同一套装配)
+    # 3. 上架 (整个过程放在一个事务里)
     is_video = (file.content_type or "").startswith("video/")
     media_url = f"/media/agent_ingest/{user_ref}/{dest.name}"
     cost = int((retail_price_cents or 1000) * 0.6)
     retail = retail_price_cents or 1299
 
     async with pool.acquire() as conn:
-        cat_id = await conn.fetchval(
-            'SELECT id FROM "product_category" WHERE slug = $1 AND deleted_at IS NULL',
-            category_slug,
-        )
-        # 分类缺失时归入日用百货
-        if cat_id is None:
+        async with conn.transaction():
             cat_id = await conn.fetchval(
-                'SELECT id FROM "product_category" ORDER BY created_at LIMIT 1'
+                'SELECT id FROM "product_category" WHERE slug = $1 AND deleted_at IS NULL',
+                category_slug,
             )
+            # 分类缺失时归入日用百货
+            if cat_id is None:
+                cat_id = await conn.fetchval(
+                    'SELECT id FROM "product_category" ORDER BY created_at LIMIT 1'
+                )
 
-        pid = await conn.fetchval(
-            'INSERT INTO "product" (id, title, slug, description, category_id, status) '
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'published') RETURNING id",
-            title,
-            f"{title}-{ts[-6:]}",
-            f"手机实景传货 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')} 上传, 实拍直供。",
-            cat_id,
-        )
-        vid = await conn.fetchval(
-            'INSERT INTO "product_variant" (id, product_id, sku_code, option_values, '
-            "reference_price_cents, status) "
-            "VALUES (gen_random_uuid(), $1, $2, $3::jsonb, $4, 'active') RETURNING id",
-            pid,
-            sku,
-            '{"来源": "手机实拍"}',
-            int(retail * 1.2),
-        )
-        # 找 location (指定或最近 active)
-        if not location_id:
-            location_id = await conn.fetchval(
-                'SELECT id FROM "stock_location" WHERE status = $1 ORDER BY created_at LIMIT 1',
-                "active",
+            # 验证 location_id 存在且为 active
+            if not location_id:
+                location_id = await conn.fetchval(
+                    'SELECT id FROM "stock_location" WHERE status = $1 ORDER BY created_at LIMIT 1',
+                    "active",
+                )
+            if not location_id:
+                raise HTTPException(
+                    400,
+                    "系统没有可用仓位 (stock_location)，请先创建仓位再上架",
+                )
+
+            # 生成唯一 slug (防止同秒同名文件冲突)
+            unique_slug = f"{title}-{ts[-6:]}-{uuid.uuid4().hex[:6]}"
+
+            pid = await conn.fetchval(
+                'INSERT INTO "product" (id, title, slug, description, category_id, status) '
+                "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'published') RETURNING id",
+                title,
+                unique_slug,
+                f"手机实景传货 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')} 上传, 实拍直供。",
+                cat_id,
             )
-        await conn.fetchval(
-            'INSERT INTO "inventory_batch" (id, variant_id, location_id, batch_no, video_url, '
-            "cost_price_cents, retail_price_cents, stock_qty, currency, media_assets, "
-            "shelf_image_url, status) "
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'CNY', $8::jsonb, $8::jsonb, 'active') "
-            "RETURNING id",
-            vid,
-            location_id,
-            f"AGT-{ts}",
-            media_url if is_video else "",
-            cost,
-            retail,
-            stock_qty,
-            f'["{media_url}"]',
-        )
+            vid = await conn.fetchval(
+                'INSERT INTO "product_variant" (id, product_id, sku_code, option_values, '
+                "reference_price_cents, status) "
+                "VALUES (gen_random_uuid(), $1, $2, $3::jsonb, $4, 'active') RETURNING id",
+                pid,
+                sku,
+                '{"来源": "手机实拍"}',
+                int(retail * 1.2),
+            )
+            await conn.fetchval(
+                (
+                    'INSERT INTO "inventory_batch" '
+                    "(id, variant_id, location_id, batch_no, video_url, "
+                    "cost_price_cents, retail_price_cents, stock_qty, currency, media_assets, "
+                    "shelf_image_url, status) "
+                    "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'CNY', "
+                    "$8::jsonb, $8::jsonb, 'active') "
+                    "RETURNING id"
+                ),
+                vid,
+                location_id,
+                f"AGT-{ts}",
+                media_url if is_video else "",
+                cost,
+                retail,
+                stock_qty,
+                f'["{media_url}"]',
+            )
 
     return {
         "status": "created",

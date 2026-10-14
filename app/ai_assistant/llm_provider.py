@@ -138,7 +138,10 @@ class OpenAIProvider(LLMProvider):
 
     def __repr__(self) -> str:
         # 凭据不进 repr: provider 会被 logger / 调试器打印。
-        return f"{type(self).__name__}(model_name={self._model_name!r}, api_base={self._api_base!r})"
+        return (
+            f"{type(self).__name__}(model_name={self._model_name!r}, "
+            f"api_base={self._api_base!r})"
+        )
 
     async def _ensure_client(self) -> None:
         """延迟初始化 OpenAI 客户端。"""

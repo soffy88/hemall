@@ -59,7 +59,8 @@ async def dispatch_labor_payment(
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, wage_amount FROM \"labor_ledger\" WHERE worker_id = $1 AND status = 'pending'",
+                'SELECT id, wage_amount FROM "labor_ledger" '
+                "WHERE worker_id = $1 AND status = 'pending'",
                 input_data.worker_id,
             )
         if not rows:
@@ -87,7 +88,8 @@ async def dispatch_labor_payment(
 
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE \"labor_ledger\" SET status = 'paid', payout_transfer_id = $1 WHERE id = ANY($2)",
+                "UPDATE \"labor_ledger\" SET status = 'paid', "
+                "payout_transfer_id = $1 WHERE id = ANY($2)",
                 transfer_result["transfer_id"],
                 entry_ids,
             )

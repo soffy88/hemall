@@ -6,7 +6,8 @@
 
 配置:
     环境变量 ENCRYPTION_KEY (Fernet key, 32 字节 base64)
-    自动生成: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    自动生成:
+        python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 用法:
     from app.security.crypto import encrypt_field, decrypt_field

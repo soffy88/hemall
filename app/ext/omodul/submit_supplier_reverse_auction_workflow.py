@@ -72,7 +72,8 @@ async def submit_supplier_reverse_auction_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — submit_supplier_reverse_auction_workflow always touches persisted stock"
+                "pool is required — submit_supplier_reverse_auction_workflow "
+                "always touches persisted stock"
             )
         if input_data.supplier_bid_price_per_gram < 0:
             raise ValueError("supplier_bid_price_per_gram must be non-negative")

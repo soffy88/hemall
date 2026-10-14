@@ -243,7 +243,11 @@ class TokenBucketRateLimitMiddleware:
         # ASGI 对端。切勿在无可信反代时开启——XFF 客户端可伪造。
         self.trusted_proxy_hops = trusted_proxy_hops
 
-    async def _allow(self, key: str, budget_keys: tuple[str, ...] = ()) -> tuple[bool | None, float]:
+    async def _allow(
+        self,
+        key: str,
+        budget_keys: tuple[str, ...] = (),
+    ) -> tuple[bool | None, float]:
         """取令牌。`budget_keys` 是需要**全部**满足的附加维度键 (见 `key_for`)。
 
         判定顺序很关键：**先扣更细的设备桶，再扣 IP 桶**。

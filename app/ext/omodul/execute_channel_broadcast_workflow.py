@@ -76,7 +76,8 @@ async def execute_channel_broadcast_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — execute_channel_broadcast_workflow always touches persisted stock"
+                "pool is required — execute_channel_broadcast_workflow "
+                "always touches persisted stock"
             )
         if input_data.broadcast_type not in ("fresh_arrival", "clearance"):
             raise ValueError(

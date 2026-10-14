@@ -99,7 +99,8 @@ async def dispatch_host_dividend(
         async with pool.acquire() as conn:
             await conn.execute(
                 'INSERT INTO "host_dividend_ledger" '
-                "(id, host_id, location_id, tote_count, amount_cents, payout_transfer_id, period_date) "
+                "(id, host_id, location_id, tote_count, amount_cents, "
+                "payout_transfer_id, period_date) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 ledger_id,
                 input_data.host_id,

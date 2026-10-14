@@ -1,0 +1,368 @@
+"""agent_gateway.ingest_media 集成测试 — 需真实 Postgres (TEST_PG_DSN)。
+
+覆盖：
+- 正常上传 (有库位) → 事务内创建 product + variant + inventory_batch，返回 200
+- 无库位时 → 返回 400，且不产生孤儿 product/variant
+- 同秒同名文件上传 → slug 唯一化，不冲突
+- 经 BFF 代理的同源请求 → CSRF 通过
+- 跨站请求 → CSRF 返回 403
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi import UploadFile
+from fastapi.testclient import TestClient
+
+TEST_DSN = os.environ.get("TEST_PG_DSN")
+
+pytestmark = pytest.mark.skipif(
+    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
+)
+
+
+@pytest.fixture
+async def cn_pool():
+    from obase.notification_providers import LogNotificationProvider
+    from obase.payment_providers import ManualPaymentProvider
+    from obase.persistence.pool import PgPool
+    from obase.provider_registry import ProviderRegistry
+
+    from app.ext.payout_provider import ManualPayoutProvider
+    from app.ext.schema import ensure_ext_schema
+
+    reg = ProviderRegistry.get()
+    reg.register_generic("payment", "manual", ManualPaymentProvider(), replace=True)
+    reg.register_generic("payout", "manual", ManualPayoutProvider(), replace=True)
+    log_notify = LogNotificationProvider()
+    reg.register_generic("notification", "log", log_notify, replace=True)
+
+    pool = await PgPool.create(
+        name="hemall_agent_gateway_test", dsn=TEST_DSN, min_size=1, max_size=5
+    )
+    await ensure_ext_schema(pool)
+    pool._test_log_notify = log_notify  # type: ignore[attr-defined]
+    yield pool
+    await pool.close()
+
+
+@pytest.fixture
+def mock_upload_file():
+    """创建一个模拟的 UploadFile 对象。"""
+    file = MagicMock(spec=UploadFile)
+    file.filename = "丹东草莓实拍.mp4"
+    file.content_type = "video/mp4"
+    file.read = AsyncMock(return_value=b"fake video content")
+    return file
+
+
+@pytest.fixture
+def principal():
+    return {"user_id": "test-user-123"}
+
+
+@pytest.fixture
+def out_root(tmp_path: Path) -> Path:
+    return tmp_path / "output"
+
+
+class TestIngestMedia:
+    """ingest_media 核心逻辑测试。"""
+
+    @pytest.mark.asyncio
+    async def test_ingest_media_success(self, cn_pool, mock_upload_file, principal, out_root):
+        """有可用库位时，完整事务创建 product + variant + batch，返回 200。"""
+        # 确保有库位
+        from obase.uuid7 import uuid7
+
+        from app.ext.agent_gateway import ingest_media
+        async with cn_pool.acquire() as conn:
+            loc_id = await conn.fetchval(
+                (
+                    "INSERT INTO stock_location (id, name, region_code, host_id, address, "
+                    "lat, lng, status) "
+                    "VALUES ($1,'test_loc','cn-east','host_test','测试仓库',31.0,121.0,'active') "
+                    "RETURNING id"
+                ),
+                uuid7(),
+            )
+        location_id = str(loc_id)
+
+        result = await ingest_media(
+            mock_upload_file,
+            location_id=location_id,
+            pool=cn_pool,
+            out_root=out_root,
+            principal=principal,
+            retail_price_cents=1999,
+            stock_qty=50,
+        )
+
+        assert result["status"] == "created"
+        assert result["title"] == "丹东草莓"
+        assert result["retail_price_cents"] == 1999
+        assert result["stock_qty"] == 50
+        assert "product_id" in result
+        assert "variant_id" in result
+        assert "location_id" in result
+
+        # 验证数据库里真实写入了三张表，且在同一事务中
+        async with cn_pool.acquire() as conn:
+            product = await conn.fetchrow(
+                'SELECT id, title, slug, status FROM "product" WHERE id = $1', result["product_id"]
+            )
+            variant = await conn.fetchrow(
+                'SELECT id, product_id, sku_code, status FROM "product_variant" WHERE id = $1',
+                result["variant_id"],
+            )
+            batch = await conn.fetchrow(
+                (
+                    'SELECT id, variant_id, location_id, stock_qty, status FROM "inventory_batch" '
+                    "WHERE id = $1"
+                ),
+                result.get("batch_id") or await conn.fetchval(
+                    (
+                        'SELECT id FROM "inventory_batch" WHERE variant_id = $1 '
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    result["variant_id"],
+                ),
+            )
+        assert product is not None
+        assert product["title"] == "丹东草莓"
+        assert product["status"] == "published"
+        assert variant is not None
+        assert variant["product_id"] == result["product_id"]
+        assert variant["status"] == "active"
+        assert batch is not None
+        assert batch["variant_id"] == result["variant_id"]
+        assert batch["location_id"] == location_id
+        assert batch["stock_qty"] == 50
+        assert batch["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_ingest_media_no_location_returns_400_no_orphans(
+        self, cn_pool, mock_upload_file, principal, out_root
+    ):
+        """无可用库位时返回 400，且不留下孤儿 product/variant。"""
+        from fastapi import HTTPException
+
+        from app.ext.agent_gateway import ingest_media
+
+        # 传空 location_id，且数据库里没有任何 active stock_location
+        async with cn_pool.acquire() as conn:
+            await conn.execute('DELETE FROM "stock_location" WHERE status = $1', "active")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await ingest_media(
+                mock_upload_file,
+                location_id="",
+                pool=cn_pool,
+                out_root=out_root,
+                principal=principal,
+            )
+        assert exc_info.value.status_code == 400
+        assert "仓位" in exc_info.value.detail or "stock_location" in exc_info.value.detail
+
+        # 验证没有产生孤儿 product/variant
+        async with cn_pool.acquire() as conn:
+            product_count = await conn.fetchval(
+                'SELECT COUNT(*) FROM "product" WHERE title = $1', "丹东草莓"
+            )
+            variant_count = await conn.fetchval(
+                'SELECT COUNT(*) FROM "product_variant" WHERE sku_code LIKE $1', "AGT-%"
+            )
+            batch_count = await conn.fetchval(
+                'SELECT COUNT(*) FROM "inventory_batch" WHERE batch_no LIKE $1', "AGT-%"
+            )
+        assert product_count == 0, f"Expected 0 products, got {product_count}"
+        assert variant_count == 0, f"Expected 0 variants, got {variant_count}"
+        assert batch_count == 0, f"Expected 0 batches, got {batch_count}"
+
+    @pytest.mark.asyncio
+    async def test_ingest_media_same_second_same_name_unique_slug(
+        self, cn_pool, mock_upload_file, principal, out_root
+    ):
+        """同秒上传同名文件，slug 唯一化，不冲突。"""
+        from obase.uuid7 import uuid7
+
+        from app.ext.agent_gateway import ingest_media
+
+        async with cn_pool.acquire() as conn:
+            loc_id = await conn.fetchval(
+                (
+                    "INSERT INTO stock_location (id, name, region_code, host_id, address, "
+                    "lat, lng, status) "
+                    "VALUES ($1,'test_loc2','cn-east','host_test','测试仓库2',31.0,121.0,'active') "
+                    "RETURNING id"
+                ),
+                uuid7(),
+            )
+        location_id = str(loc_id)
+
+        # 第一次上传
+        result1 = await ingest_media(
+            mock_upload_file,
+            location_id=location_id,
+            pool=cn_pool,
+            out_root=out_root,
+            principal=principal,
+        )
+        assert result1["status"] == "created"
+
+        # 第二次上传 (同名文件，模拟同秒)
+        file2 = MagicMock(spec=UploadFile)
+        file2.filename = "丹东草莓实拍.mp4"
+        file2.content_type = "video/mp4"
+        file2.read = AsyncMock(return_value=b"fake video content 2")
+
+        result2 = await ingest_media(
+            file2,
+            location_id=location_id,
+            pool=cn_pool,
+            out_root=out_root,
+            principal=principal,
+        )
+        assert result2["status"] == "created"
+        assert result2["product_id"] != result1["product_id"]
+
+        # 验证两个 product 的 slug 都不重复
+        async with cn_pool.acquire() as conn:
+            slugs = await conn.fetch(
+                'SELECT slug FROM "product" WHERE title = $1 ORDER BY created_at', "丹东草莓"
+            )
+        assert len(slugs) == 2
+        assert slugs[0]["slug"] != slugs[1]["slug"]
+
+
+class TestCSRFWithBFF:
+    """CSRF + BFF 代理集成测试。
+
+    模拟 Next.js BFF 转发请求到后端的场景：
+    - 合法同源请求：BFF 转发 Origin、Sec-Fetch-Site、X-Forwarded-Host → 后端校验通过
+    - 跨站请求：Origin 为恶意域名 → 后端返回 403
+    """
+
+    @pytest.fixture
+    def app_with_csrf(self):
+        """创建带 CSRF 中间件的测试应用。"""
+        from fastapi import FastAPI
+
+        from app.config import Settings
+        from app.security.csrf import CSRFMiddleware
+
+        app = FastAPI()
+
+        # 使用 development 环境 (CSRF 放宽但仍做 Origin 校验)
+        settings = Settings(
+            environment="development",
+            cors_origins=["https://mall.example.com", "https://admin.example.com"],
+        )
+        app.add_middleware(CSRFMiddleware, settings=settings)
+
+        @app.post("/api/agent/ingest")
+        async def ingest_endpoint():
+            return {"status": "ok"}
+
+        return app
+
+    def test_bff_same_origin_request_passes(self, app_with_csrf):
+        """BFF 转发合法同源请求 (Origin 在 cors_origins 中) → 200。"""
+        client = TestClient(app_with_csrf)
+        response = client.post(
+            "/api/agent/ingest",
+            headers={
+                "Origin": "https://mall.example.com",
+                "Sec-Fetch-Site": "same-origin",
+                "X-Forwarded-Host": "mall.example.com",
+            },
+        )
+        assert response.status_code == 200, response.json()
+
+    def test_bff_cross_origin_request_blocked(self, app_with_csrf):
+        """BFF 转发跨站请求 (Origin 为恶意域名) → 403。"""
+        client = TestClient(app_with_csrf)
+        response = client.post(
+            "/api/agent/ingest",
+            headers={
+                "Origin": "https://evil.example",
+                "Sec-Fetch-Site": "cross-site",
+                "X-Forwarded-Host": "mall.example.com",
+            },
+        )
+        assert response.status_code == 403
+        assert "CSRF" in response.json().get("detail", "")
+
+    def test_bff_missing_origin_blocked(self, app_with_csrf):
+        """无 Origin 头的状态改变请求 → 403。"""
+        client = TestClient(app_with_csrf)
+        response = client.post("/api/agent/ingest", headers={})
+        assert response.status_code == 403
+        assert "CSRF" in response.json().get("detail", "")
+
+
+class TestCSRFStagingProduction:
+    """staging/production 环境下的 CSRF 强制模式测试。"""
+
+    @pytest.fixture
+    def app_staging(self):
+        from fastapi import FastAPI
+
+        from app.config import Settings
+        from app.security.csrf import CSRFMiddleware
+
+        app = FastAPI()
+        settings = Settings(
+            environment="staging",
+            cors_origins=["https://staging.mall.example.com"],
+        )
+        app.add_middleware(CSRFMiddleware, settings=settings)
+
+        @app.post("/api/test")
+        async def dummy_endpoint():
+            return {"status": "ok"}
+
+        return app
+
+    def test_staging_requires_csrf_token(self, app_staging):
+        """staging 环境强制要求 CSRF token (双重提交)。"""
+        client = TestClient(app_staging)
+        # 无 cookie、无 header → 403
+        response = client.post(
+            "/api/test",
+            headers={"Origin": "https://staging.mall.example.com"},
+        )
+        assert response.status_code == 403
+        assert "CSRF: missing token" in response.json().get("detail", "")
+
+    def test_staging_with_valid_csrf_passes(self, app_staging):
+        """staging 环境带有效 CSRF token + 同源 Origin → 200。"""
+        client = TestClient(app_staging)
+        csrf_token = "test-csrf-token-123"
+        response = client.post(
+            "/api/test",
+            headers={
+                "Origin": "https://staging.mall.example.com",
+                "X-CSRF-Token": csrf_token,
+            },
+            cookies={"hemall_csrf_token": csrf_token},
+        )
+        assert response.status_code == 200, response.json()
+
+    def test_staging_csrf_token_mismatch_blocked(self, app_staging):
+        """staging 环境 CSRF token 不匹配 → 403。"""
+        client = TestClient(app_staging)
+        response = client.post(
+            "/api/test",
+            headers={
+                "Origin": "https://staging.mall.example.com",
+                "X-CSRF-Token": "token-from-header",
+            },
+            cookies={"hemall_csrf_token": "token-from-cookie"},
+        )
+        assert response.status_code == 403
+        assert "CSRF: token mismatch" in response.json().get("detail", "")

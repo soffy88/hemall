@@ -493,7 +493,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。Cookie 认证需 allow_credentials=True。
+    # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。
+    # Cookie 认证需 allow_credentials=True。
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,

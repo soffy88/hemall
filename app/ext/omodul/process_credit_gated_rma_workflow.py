@@ -74,7 +74,8 @@ async def process_credit_gated_rma_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — process_credit_gated_rma_workflow always touches persisted stock"
+                "pool is required — process_credit_gated_rma_workflow "
+                "always touches persisted stock"
             )
 
         credibility_decision = evaluate_claim_credibility(
@@ -92,7 +93,8 @@ async def process_credit_gated_rma_workflow(
 
             async with pool.acquire() as conn:
                 order = await conn.fetchrow(
-                    'SELECT payment_provider_name, payment_intent_id FROM "customer_order" WHERE id = $1',
+                    'SELECT payment_provider_name, payment_intent_id '
+                    'FROM "customer_order" WHERE id = $1',
                     input_data.order_id,
                 )
                 if order is None:

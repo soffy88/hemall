@@ -149,7 +149,10 @@ class RAGEngine:
 
             documents = []
             for row in rows:
-                documents.append(f"[商品: {row['product_id']}] (相似度: {row['similarity']:.2f})\n{row['text_content']}")
+                documents.append(
+                    f"[商品: {row['product_id']}] (相似度: {row['similarity']:.2f})\n"
+                    f"{row['text_content']}"
+                )
 
             logger.info("Retrieved %d documents for query: %s", len(documents), query[:50])
             return documents
@@ -182,7 +185,11 @@ Always respond in the same language as the user's question.
 Available product information:
 {context}"""
 
-        context_text = "\n\n---\n\n".join(context_documents) if context_documents else "No relevant product information found."
+        context_text = (
+            "\n\n---\n\n".join(context_documents)
+            if context_documents
+            else "No relevant product information found."
+        )
 
         messages = [
             LLMMessage(role="system", content=system_prompt.format(context=context_text)),
@@ -200,7 +207,11 @@ Available product information:
         response = await self._llm.chat(messages, temperature=0.7, max_tokens=1000)
         return response
 
-    async def query(self, user_question: str, chat_history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    async def query(
+        self,
+        user_question: str,
+        chat_history: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         """完整的 RAG 查询流程。
 
         Args:

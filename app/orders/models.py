@@ -231,11 +231,16 @@ CREATE TABLE IF NOT EXISTS order_status_history (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_order_history_order ON order_status_history(order_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_order_history_status ON order_status_history(to_status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_order
+    ON order_status_history(order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_status
+    ON order_status_history(to_status, created_at DESC);
 
 -- 给 customer_order 加 status 索引 (如果还没有)
-CREATE INDEX IF NOT EXISTS idx_customer_order_status ON customer_order(status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_customer_order_customer ON customer_order(customer_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_customer_order_created ON customer_order(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_order_status
+    ON customer_order(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_order_customer
+    ON customer_order(customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_order_created
+    ON customer_order(created_at DESC);
 """

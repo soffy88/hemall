@@ -89,7 +89,8 @@ async def record_douyin_conversion_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — record_douyin_conversion_workflow always touches persisted stock"
+                "pool is required — record_douyin_conversion_workflow "
+                "always touches persisted stock"
             )
 
         from obase.uuid7 import uuid7
@@ -183,7 +184,8 @@ async def record_douyin_conversion_workflow(
                 async with pool.acquire() as conn:
                     contract_id = await conn.fetchval(
                         'INSERT INTO "affiliate_contract" '
-                        "(id, douyin_uid, contract_type, bound_entity_id, commission_logic, status) "
+                        "(id, douyin_uid, contract_type, bound_entity_id, "
+                        "commission_logic, status) "
                         "VALUES ($1, $2, 'mercenary', $3, $4, 'active') "
                         "ON CONFLICT (douyin_uid, bound_entity_id, contract_type) "
                         "DO UPDATE SET commission_logic = EXCLUDED.commission_logic "

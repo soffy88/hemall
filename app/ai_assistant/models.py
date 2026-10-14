@@ -73,7 +73,12 @@ class Conversation:
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def add_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> Message:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Message:
         """添加消息到会话。"""
         msg = Message(role=role, content=content, metadata=metadata or {})
         self.messages.append(msg)

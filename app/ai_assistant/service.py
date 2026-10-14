@@ -296,7 +296,9 @@ class AIAssistantService:
 
     # ── 商品描述生成 ────────────────────────────────────────────
 
-    async def generate_product_description(self, request: ProductDescriptionRequest) -> dict[str, Any]:
+    async def generate_product_description(
+        self, request: ProductDescriptionRequest
+    ) -> dict[str, Any]:
         """AI 生成商品描述 (SEO 优化)。"""
         if not self._initialized:
             await self.initialize()
@@ -321,7 +323,10 @@ Generate:
 3. Key features (bullet points, 3-5 items)
 4. SEO meta description (150-160 characters)
 Return in JSON format."""),
-            LLMMessage(role="user", content=f"Product ID: {request.product_id}\nGenerate a product description."),
+            LLMMessage(
+                role="user",
+                content=f"Product ID: {request.product_id}\nGenerate a product description.",
+            ),
         ]
 
         response = await self._llm.chat(messages, temperature=0.8, max_tokens=1000)
@@ -382,13 +387,19 @@ Return JSON with:
             keywords=keywords,
         )
 
-    async def analyze_review(self, product_id: str, review_id: str, review_text: str) -> ReviewAnalysis:
+    async def analyze_review(
+        self, product_id: str, review_id: str, review_text: str
+    ) -> ReviewAnalysis:
         """分析商品评论。"""
         sentiment = await self.analyze_sentiment(review_text)
 
         # 生成摘要
         messages = [
-            LLMMessage(role="system", content="Summarize this product review in 1-2 sentences. Highlight key points and any issues."),
+            LLMMessage(
+                role="system",
+                content="Summarize this product review in 1-2 sentences. "
+                "Highlight key points and any issues.",
+            ),
             LLMMessage(role="user", content=review_text),
         ]
 
@@ -432,7 +443,10 @@ Return JSON with:
             return UserIntent.REFUND_REQUEST, 0.9
         if any(word in message_lower for word in ["投诉", "complaint", "problem", "issue"]):
             return UserIntent.COMPLAINT, 0.85
-        if any(word in message_lower for word in ["物流", "快递", "shipping", "delivery", "tracking"]):
+        if any(
+            word in message_lower
+            for word in ["物流", "快递", "shipping", "delivery", "tracking"]
+        ):
             return UserIntent.SHIPPING_INQUIRY, 0.9
         if any(word in message_lower for word in ["推荐", "recommend", "suggest", "which"]):
             return UserIntent.RECOMMENDATION, 0.8
@@ -471,7 +485,17 @@ Return only the intent name and confidence (0.0-1.0), separated by comma."""),
     def _extract_highlights(self, text: str) -> list[str]:
         """提取评论亮点。"""
         highlights = []
-        positive_keywords = ["good", "great", "excellent", "love", "amazing", "perfect", "好", "优秀", "完美"]
+        positive_keywords = [
+            "good",
+            "great",
+            "excellent",
+            "love",
+            "amazing",
+            "perfect",
+            "好",
+            "优秀",
+            "完美",
+        ]
         for keyword in positive_keywords:
             if keyword in text.lower():
                 # 提取包含关键词的句子
@@ -485,7 +509,17 @@ Return only the intent name and confidence (0.0-1.0), separated by comma."""),
     def _extract_issues(self, text: str) -> list[str]:
         """提取评论问题。"""
         issues = []
-        negative_keywords = ["bad", "terrible", "awful", "problem", "issue", "broken", "差", "问题", "坏"]
+        negative_keywords = [
+            "bad",
+            "terrible",
+            "awful",
+            "problem",
+            "issue",
+            "broken",
+            "差",
+            "问题",
+            "坏",
+        ]
         for keyword in negative_keywords:
             if keyword in text.lower():
                 sentences = text.split(".")

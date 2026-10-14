@@ -89,7 +89,8 @@ async def execute_liability_routing_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — execute_liability_routing_workflow always touches persisted stock"
+                "pool is required — execute_liability_routing_workflow "
+                "always touches persisted stock"
             )
         if input_data.credibility_decision not in ("instant", "honeypot"):
             raise ValueError(
@@ -127,7 +128,8 @@ async def execute_liability_routing_workflow(
 
             async with pool.acquire() as conn:
                 order = await conn.fetchrow(
-                    'SELECT payment_provider_name, payment_intent_id FROM "customer_order" WHERE id = $1',
+                    'SELECT payment_provider_name, payment_intent_id '
+                    'FROM "customer_order" WHERE id = $1',
                     input_data.order_id,
                 )
                 if order is None:

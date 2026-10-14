@@ -232,7 +232,12 @@ async def test_cancel_order_releases_inventory():
     )
     conn.on(
         r"SELECT\s+id,\s*product_id,\s*variant_id,\s*location_id,\s*batch_id,\s*quantity,\s*consumed_qty,\s*released_qty\s+FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "product_id": "p-1", "variant_id": None, "location_id": "loc-1", "batch_id": "batch-1", "quantity": 5, "consumed_qty": 0, "released_qty": 0})],
+        [
+            Recording({
+                "id": "res-1", "product_id": "p-1", "variant_id": None, "location_id": "loc-1",
+                "batch_id": "batch-1", "quantity": 5, "consumed_qty": 0, "released_qty": 0,
+            })
+        ],
     )
     conn.on(
         r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1",
@@ -284,7 +289,13 @@ async def test_ship_order_deducts_inventory():
     )
     conn.on(
         r"SELECT\s+id,\s*order_line_item_id,\s*product_id,\s*variant_id,\s*location_id,\s*batch_id,\s*quantity,\s*consumed_qty,\s*released_qty\s+FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "order_line_item_id": "line-1", "product_id": "p-1", "variant_id": None, "location_id": "loc-1", "batch_id": "batch-1", "quantity": 5, "consumed_qty": 0, "released_qty": 0})],
+        [
+            Recording({
+                "id": "res-1", "order_line_item_id": "line-1", "product_id": "p-1",
+                "variant_id": None, "location_id": "loc-1", "batch_id": "batch-1",
+                "quantity": 5, "consumed_qty": 0, "released_qty": 0,
+            })
+        ],
     )
     conn.on(
         r"SELECT\s+COUNT\(\*\)\s+FROM\s+order_line_item\s+WHERE\s+order_id\s*=\s*\$1",

@@ -304,7 +304,11 @@ class ElasticsearchClient:
             return {
                 "hits": response["hits"]["hits"],
                 "total": response["hits"]["total"]["value"],
-                "max_score": response["hits"]["hits"][0]["_score"] if response["hits"]["hits"] else 0,
+                "max_score": (
+                    response["hits"]["hits"][0]["_score"]
+                    if response["hits"]["hits"]
+                    else 0
+                ),
                 "aggregations": response.get("aggregations", {}),
                 "took": took_ms,
             }

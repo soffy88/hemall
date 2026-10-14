@@ -58,8 +58,16 @@ TOOLS: list[ToolDefinition] = [
                 },
                 "time_range": {
                     "type": "string",
-                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "custom"],
-                    "description": "时间范围。如 custom 需在 extra_params 中传入 start_date/end_date。",
+                    "enum": [
+                        "today",
+                        "yesterday",
+                        "last_7_days",
+                        "last_30_days",
+                        "custom",
+                    ],
+                    "description": (
+                        "时间范围。如 custom 需在 extra_params 中传入 start_date/end_date。"
+                    ),
                 },
             },
             "required": ["time_range"],
@@ -376,7 +384,11 @@ async def admin_agent_chat(
     llm = ai_service._llm
     from app.ai_assistant.llm_provider import LLMMessage
 
-    compensation_amount = settings.sla_compensation_cents if hasattr(settings, 'sla_compensation_cents') else 400
+    compensation_amount = (
+        settings.sla_compensation_cents
+        if hasattr(settings, 'sla_compensation_cents')
+        else 400
+    )
 
     async def execute_tool(tool_name: str, args: dict[str, Any]) -> str:
         """根据工具名执行对应的 SQL 查询，返回 JSON 字符串。"""
@@ -449,7 +461,11 @@ async def admin_agent_chat(
             arguments=json.loads(tc["function"].get("arguments", "{}")),
         )
         raw_result = await execute_tool(tool_result.tool_name, tool_result.arguments)
-        tool_result.result = json.loads(raw_result) if raw_result.strip().startswith("{") else {"raw_text": raw_result}
+        tool_result.result = (
+            json.loads(raw_result)
+            if raw_result.strip().startswith("{")
+            else {"raw_text": raw_result}
+        )
         tool_results.append(tool_result)
 
     # Step 4: 组装第二轮对话 —— 把工具结果喂给 LLM
@@ -597,7 +613,8 @@ async def _execute_query_system_liabilities(
 
         # 待结分润
         row = await conn.fetchval(
-            'SELECT SUM(dividend_amount_cents) FROM "douyin_conversion_log" WHERE settlement_status = $1',
+            'SELECT SUM(dividend_amount_cents) '
+            'FROM "douyin_conversion_log" WHERE settlement_status = $1',
             "pending",
         )
         liability_data["affiliate_payouts_pending_cents"] = int(row or 0)

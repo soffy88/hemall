@@ -133,8 +133,10 @@ async def ignite_ghost_node(
             bounty_text = (
                 f"📍 此处急需车库宿主，认领即享 50% 物理分润\n"
                 f"坐标: [{input_data.center_lat:.6f}, {input_data.center_lon:.6f}]\n"
-                f"集单数量: {input_data.count} 单 | 意向金总额: ¥{input_data.total_prepaid_cents / 100:.2f}\n"
-                f"幽灵节点位置: 距您最近 active 仓库约 {get_approx_distance(input_data.center_lat, input_data.center_lon)} km"
+                f"集单数量: {input_data.count} 单 | "
+                f"意向金总额: ¥{input_data.total_prepaid_cents / 100:.2f}\n"
+                f"幽灵节点位置: 距您最近 active 仓库约 "
+                f"{get_approx_distance(input_data.center_lat, input_data.center_lon)} km"
             )
 
             assignee_filter = input_data.assigned_lord_id or "nearest_active"

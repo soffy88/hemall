@@ -365,8 +365,10 @@ def build_delivery_wave_engine(pool: Any) -> CronSchedulerEngine:
         order_ids = list(order_location.keys())
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE \"customer_order\" SET dispatch_status = 'dispatched', dispatched_at = NOW() "
-                "WHERE id = ANY($1)",
+                (
+                    "UPDATE \"customer_order\" SET dispatch_status = 'dispatched', "
+                    "dispatched_at = NOW() WHERE id = ANY($1)"
+                ),
                 order_ids,
             )
 

@@ -91,7 +91,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ── provider 装配 (obase.ProviderRegistry generic category) ────────
-    # 规范名须与 bootstrap 注册名一致: payment/fulfillment="manual", search/notification="log", tax="flat"
+    # 规范名须与 bootstrap 注册名一致:
+    # payment/fulfillment="manual", search/notification="log", tax="flat"
     default_payment_provider: str = "manual"
     default_fulfillment_provider: str = "manual"
     default_search_provider: str = "log"
@@ -193,7 +194,9 @@ class Settings(BaseSettings):
             )
 
         if not self.privileged_staff_ids.strip():
-            problems.append("HEMALL_PRIVILEGED_STAFF_IDS must list at least one privileged app_user ID")
+            problems.append(
+                "HEMALL_PRIVILEGED_STAFF_IDS must list at least one privileged app_user ID"
+            )
 
         provider = self.payment_gateway_provider.strip().lower()
         if provider not in {"wechat", "stripe"}:

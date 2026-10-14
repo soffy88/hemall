@@ -70,7 +70,8 @@ async def bind_digital_lord_contract_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — bind_digital_lord_contract_workflow always touches persisted stock"
+                "pool is required — bind_digital_lord_contract_workflow "
+                "always touches persisted stock"
             )
 
         async with pool.acquire() as conn:

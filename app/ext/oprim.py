@@ -95,7 +95,10 @@ async def db_lock_batch_inventory(
             "status": "failed",
             "error": {
                 "type": "InsufficientStock",
-                "message": f"batch {batch_id!r} not found, inactive, or insufficient stock for qty={lock_qty}",
+                "message": (
+                    f"batch {batch_id!r} not found, inactive, or insufficient "
+                    f"stock for qty={lock_qty}"
+                ),
             },
         }
 
@@ -172,7 +175,10 @@ async def db_confirm_batch_pick(
             "status": "failed",
             "error": {
                 "type": "InvalidPickState",
-                "message": f"batch {batch_id!r} not found or reserved_qty < qty={qty} (nothing to confirm)",
+                "message": (
+                    f"batch {batch_id!r} not found or reserved_qty < qty={qty} "
+                    "(nothing to confirm)"
+                ),
             },
         }
 
@@ -379,7 +385,21 @@ _BATTLE_REPORT_SYSTEM_PROMPT = """
 #: 规则兜底解析用的正/负向情感与新鲜度线索词。跟 ManualLLMProvider 的
 #: 占位文案配合：mock 生成不了 JSON 时，靠这些词从原文里榨出可解释的量化值。
 _POSITIVE_CUES = ("好吃", "新鲜", "甜", "脆", "嫩", "香", "满意", "不错", "回购", "大", "赞", "好")
-_NEGATIVE_CUES = ("烂", "坏", "酸", "苦", "变质", "发霉", "不新鲜", "差", "难吃", "失望", "臭", "焉", "蔫")
+_NEGATIVE_CUES = (
+    "烂",
+    "坏",
+    "酸",
+    "苦",
+    "变质",
+    "发霉",
+    "不新鲜",
+    "差",
+    "难吃",
+    "失望",
+    "臭",
+    "焉",
+    "蔫",
+)
 _FRESH_CUES = ("新鲜", "刚摘", "水灵", "脆", "嫩", "多汁", "现摘")
 _STALE_CUES = ("烂", "坏", "变质", "发霉", "不新鲜", "软趴", "出水", "异味")
 

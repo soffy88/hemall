@@ -92,7 +92,13 @@ def _staff_role_for_user(user_id: str, settings: Settings) -> str:
     return "staff"
 
 
-def _set_auth_cookies(response: Response, access_token: str, refresh_token: str, csrf_token: str, settings: Settings) -> None:
+def _set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    csrf_token: str,
+    settings: Settings,
+) -> None:
     """设置认证相关 cookies (HttpOnly, Secure, SameSite=Lax)。"""
     is_secure = settings.environment.lower() == "production"
     # access token: 短期 (15min)
@@ -199,7 +205,9 @@ async def login(
     pool: PgPool = Depends(get_pool),
     settings: Settings = Depends(get_settings),
 ) -> TokenResponse:
-    """按邮箱+密码登录 app_user，成功设置 HttpOnly Cookie 会话并返回 Bearer token (兼容 API 客户端)。"""
+    """按邮箱+密码登录 app_user，成功设置 HttpOnly Cookie 会话
+    并返回 Bearer token (兼容 API 客户端)。
+    """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             'SELECT id, email, password_hash, status FROM "app_user" '
@@ -405,7 +413,13 @@ async def _get_current_customer_from_token(token: str, settings: Settings) -> di
         return None
 
 
-def _set_customer_auth_cookies(response: Response, access_token: str, refresh_token: str, csrf_token: str, settings: Settings) -> None:
+def _set_customer_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    csrf_token: str,
+    settings: Settings,
+) -> None:
     """设置顾客认证相关 cookies (复用相同 cookie 名称，但 typ=customer)。"""
     is_secure = settings.environment.lower() == "production"
     response.set_cookie(
@@ -457,7 +471,10 @@ async def customer_login(
     if row is None:
         raise HTTPException(status_code=401, detail="invalid credentials")
     if row["status"] != "active":
-        raise HTTPException(status_code=403, detail=f"customer not active (status={row['status']!r})")
+        raise HTTPException(
+            status_code=403,
+            detail=f"customer not active (status={row['status']!r})",
+        )
 
     if not CryptoUtil.verify_password(password=body.password, hashed=row["password_hash"]):
         raise HTTPException(status_code=401, detail="invalid credentials")
@@ -482,7 +499,11 @@ async def customer_login(
 
     _set_customer_auth_cookies(response, access_token, refresh_token, csrf_token, settings)
 
-    return CustomerTokenResponse(access_token=access_token, customer_id=customer_id, email=row["email"])
+    return CustomerTokenResponse(
+        access_token=access_token,
+        customer_id=customer_id,
+        email=row["email"],
+    )
 
 
 @router.post("/customer/register", response_model=CustomerTokenResponse)
@@ -533,7 +554,11 @@ async def customer_register(
 
     _set_customer_auth_cookies(response, access_token, refresh_token, csrf_token, settings)
 
-    return CustomerTokenResponse(access_token=access_token, customer_id=customer_id, email=row["email"])
+    return CustomerTokenResponse(
+        access_token=access_token,
+        customer_id=customer_id,
+        email=row["email"],
+    )
 
 
 @router.post("/customer/logout")

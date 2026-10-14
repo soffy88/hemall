@@ -244,9 +244,21 @@ class AnalyticsService:
             if row is None or int(row["total_users"] or 0) == 0:
                 return []
             total = int(row["total_users"])
-            d1 = round(int(row["d1_users"] or 0) / total, 4) if available_days >= 1 and lookback_days >= 1 else None
-            d7 = round(int(row["d7_users"] or 0) / total, 4) if available_days >= 7 and lookback_days >= 7 else None
-            d30 = round(int(row["d30_users"] or 0) / total, 4) if available_days >= 30 and lookback_days >= 30 else None
+            d1 = (
+                round(int(row["d1_users"] or 0) / total, 4)
+                if available_days >= 1 and lookback_days >= 1
+                else None
+            )
+            d7 = (
+                round(int(row["d7_users"] or 0) / total, 4)
+                if available_days >= 7 and lookback_days >= 7
+                else None
+            )
+            d30 = (
+                round(int(row["d30_users"] or 0) / total, 4)
+                if available_days >= 30 and lookback_days >= 30
+                else None
+            )
             return [
                 UserRetention(
                     cohort_date=cohort_day.isoformat(),

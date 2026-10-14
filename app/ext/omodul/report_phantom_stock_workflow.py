@@ -78,7 +78,8 @@ async def report_phantom_stock_workflow(
             if batch is None:
                 raise ValueError(f"batch {oli['batch_id']!r} not found")
             order = await conn.fetchrow(
-                'SELECT payment_provider_name, payment_intent_id FROM "customer_order" WHERE id = $1',
+                'SELECT payment_provider_name, payment_intent_id '
+                'FROM "customer_order" WHERE id = $1',
                 oli["order_id"],
             )
             if order is None:

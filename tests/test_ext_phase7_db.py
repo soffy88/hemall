@@ -64,7 +64,8 @@ async def _make_variant(
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
+            "INSERT INTO stock_location (id, name, region_code, host_id, address, "
+            "lat, lng, status) "
             "VALUES ($1,'phase7_loc','cn-east','host_phase7','测试车库',$2,$3,'active') RETURNING id",
             uuid7(),
             lat,
@@ -93,7 +94,8 @@ async def _make_variant(
             "INSERT INTO inventory_batch (id, variant_id, location_id, supplier_id, "
             "batch_no, video_url, cost_price_cents, stock_qty, reserved_qty, "
             "retail_price_cents, expiration_time, status) "
-            "VALUES ($1,$2,$3,NULL,$4,'https://video.example/b.mp4',$5,$6,0,$7,$8,'active') RETURNING id",
+            "VALUES ($1,$2,$3,NULL,$4,'https://video.example/b.mp4',$5,$6,0,$7,$8,'active') "
+            "RETURNING id",
             uuid7(),
             variant_id,
             loc_id,
@@ -168,7 +170,8 @@ async def test_affinity_feed_boosts_related_product(cn_pool):
     # 设备购买轨迹: 这台设备买过牛肉
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO device_purchase_log (id, device_id, order_id, batch_id, product_id, variant_id) "
+            "INSERT INTO device_purchase_log (id, device_id, order_id, batch_id, "
+            "product_id, variant_id) "
             "VALUES (gen_random_uuid(), 'dev-phase7-test', $1, $2, $3, $4)",
             await _insert_order(pool, [beef_prod]),
             beef_batch,
@@ -304,7 +307,8 @@ async def test_device_purchase_log_dedup_index(cn_pool):
     order_id = await _insert_order(pool, [prod])
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO device_purchase_log (id, device_id, order_id, batch_id, product_id, variant_id) "
+            "INSERT INTO device_purchase_log (id, device_id, order_id, batch_id, "
+            "product_id, variant_id) "
             "VALUES (gen_random_uuid(), 'dev-dedup-test', $1, $2, $3, $4)",
             order_id,
             batch,

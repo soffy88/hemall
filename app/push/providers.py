@@ -90,7 +90,9 @@ class FCMClient:
     async def send_to_device(self, notification: PushNotification) -> PushResult:
         """向单个设备发送推送通知。"""
         if not self._initialized:
-            return self._mock_result(notification.target_device_ids[0] if notification.target_device_ids else "")
+            return self._mock_result(
+                notification.target_device_ids[0] if notification.target_device_ids else ""
+            )
 
         device_token = notification.target_device_ids[0] if notification.target_device_ids else ""
 
@@ -199,7 +201,9 @@ class FCMClient:
                     },
                 },
                 "apns": {
-                    "headers": {"apns-priority": "10" if notification.priority == PushPriority.HIGH else "5"},
+                    "headers": {
+                        "apns-priority": "10" if notification.priority == PushPriority.HIGH else "5"
+                    },
                     "payload": {
                         "aps": {
                             "alert": {
@@ -266,7 +270,9 @@ class APNSClient:
                 if key_id and team_id and cert_base64:
                     import base64
                     
-                    credentials = Credentials(key_id, team_id, cert_data=base64.b64decode(cert_base64))
+                    credentials = Credentials(
+                    key_id, team_id, cert_data=base64.b64decode(cert_base64)
+                )
                     sandbox = self._settings.apns_sandbox == "1"
                     host = "api.sandbox.push.apple.com" if sandbox else "api.push.apple.com"
                     
@@ -324,7 +330,8 @@ class APNSClient:
             #       apns_client.NotificationRequest(
             #           identifier=str(uuid.uuid4()),
             #           topic=self._settings.apns_bundle_id,
-            #           expiration=datetime.now(timezone.utc) + timedelta(seconds=notification.ttl_seconds),
+            #           expiration=datetime.now(timezone.utc)
+#           + timedelta(seconds=notification.ttl_seconds),
             #           priority=10 if notification.priority == PushPriority.HIGH else 5,
             #           payload=payload,
             #           target_device_token=bytes.fromhex(clean_token),
@@ -332,7 +339,9 @@ class APNSClient:
             #   )
 
             logger.debug(
-                "[APNS SANDBOX] Would POST to %s: %s", clean_token, payload,
+                "[APNS SANDBOX] Would POST to %s: %s",
+                clean_token,
+                payload,
             )
 
             return PushResult(device_token=device_token, success=True)

@@ -79,7 +79,8 @@ async def reward_crowdsourced_benchmark_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — reward_crowdsourced_benchmark_workflow always touches persisted stock"
+                "pool is required — reward_crowdsourced_benchmark_workflow "
+                "always touches persisted stock"
             )
 
         items = await cv_parse_retail_receipt(

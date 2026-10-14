@@ -69,7 +69,11 @@ def _run_deploy(tmp_path: Path, cluster_image: str, *args: str) -> tuple[int, st
         cwd=REPO_ROOT,
         timeout=180,
     )
-    calls = (tmp_path / "args.log").read_text(encoding="utf-8") if (tmp_path / "args.log").exists() else ""
+    calls = (
+        (tmp_path / "args.log").read_text(encoding="utf-8")
+        if (tmp_path / "args.log").exists()
+        else ""
+    )
     return proc.returncode, proc.stdout + proc.stderr, calls
 
 
@@ -142,7 +146,9 @@ def test_deploy_script_requires_the_external_secret():
 @pytest.mark.skipif(shutil.which("bash") is None, reason="需要 bash")
 def test_correct_tag_passes_and_reaches_the_deployment(tmp_path):
     """请求的 tag 与集群里实际运行的镜像一致 → 成功，且 helm 收到正确的键。"""
-    rc, out, calls = _run_deploy(tmp_path, "registry.example.com/hemall/backend:v1.2.3", "production", "v1.2.3")
+    rc, out, calls = _run_deploy(
+        tmp_path, "registry.example.com/hemall/backend:v1.2.3", "production", "v1.2.3"
+    )
 
     assert "--set api.image.tag=v1.2.3" in calls, f"helm 收到的参数不对: {calls}"
     assert "--set image.tag=" not in calls

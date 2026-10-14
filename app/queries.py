@@ -602,7 +602,8 @@ async def get_dashboard_kpis(pool: Any) -> dict:
             """
             SELECT COUNT(*)::int AS total_orders,
                    COALESCE(SUM(grand_total_cents), 0)::int AS total_revenue_cents,
-                   COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)::int AS pending_orders,
+                   COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)::int
+                       AS pending_orders,
                    COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days'
                       THEN grand_total_cents ELSE 0 END), 0)::int AS revenue_30d_cents
             FROM customer_order
@@ -643,7 +644,8 @@ async def list_discounts(pool: Any) -> list[dict]:
                     'id', dr.id, 'rule_type', dr.rule_type, 'amount_cents', dr.amount_cents,
                     'percent', dr.percent, 'min_subtotal_cents', dr.min_subtotal_cents,
                     'region_codes', dr.region_codes, 'valid_from', dr.valid_from,
-                    'valid_until', dr.valid_until, 'max_uses', dr.max_uses, 'uses_count', dr.uses_count
+                    'valid_until', dr.valid_until, 'max_uses', dr.max_uses,
+                    'uses_count', dr.uses_count
                 ) AS rule
                 FROM discount_rule dr WHERE dr.discount_id = d.id
             ) rule ON true
@@ -1071,8 +1073,12 @@ async def get_batch_battle_report_summary(pool: Any, batch_id: str) -> dict | No
 
     # 新鲜度拟合：平均新鲜度指数 (0-1) → 0-100 百分比。全空返回 None 语义 (前端显
     # 示"暂无战报"，不假装有个 0 分拟合)。
-    freshness_values = [float(r["freshness_index"]) for r in rows if r["freshness_index"] is not None]
-    freshness_fit_pct = round(sum(freshness_values) / len(freshness_values) * 100) if freshness_values else None
+    freshness_values = [
+        float(r["freshness_index"]) for r in rows if r["freshness_index"] is not None
+    ]
+    freshness_fit_pct = (
+        round(sum(freshness_values) / len(freshness_values) * 100) if freshness_values else None
+    )
 
     # 动态评分：按时间正序逐条贝叶斯平滑 (rows 是 DESC，反着折叠)。
     rating, count = 0.0, 0

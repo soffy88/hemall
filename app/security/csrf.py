@@ -95,9 +95,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # 仅对状态改变方法且非豁免路径进行 CSRF 校验
         if self._is_state_changing(request.method) and not self._is_exempt(request.url.path):
-            # 开发环境可选择性放行 (配合环境变量)
-            if self.settings.environment.lower() != "production":
-                # 开发环境仍做 Origin 校验，但不强制 CSRF token
+            env = self.settings.environment.lower()
+            # fail-closed: 只有 development/test 明确放宽，其他环境 (含 staging) 都强制
+            if env in {"development", "test"}:
+                # 开发/测试环境仍做 Origin 校验，但不强制 CSRF token
                 origin = self._get_origin(request)
                 if origin and not self._is_same_origin(request, origin):
                     return JSONResponse(
@@ -110,7 +111,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                         status_code=403,
                     )
             else:
-                # 生产环境：强制双重提交 token + Origin + Sec-Fetch-Site
+                # staging/production/其他：强制双重提交 token + Origin + Sec-Fetch-Site
                 csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
                 csrf_header = request.headers.get(CSRF_HEADER_NAME)
 

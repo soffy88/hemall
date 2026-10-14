@@ -162,7 +162,9 @@ def require_staff_role(*allowed_roles: str):
     """Require a staff token carrying one of the explicitly allowed role claims."""
     allowed = frozenset(allowed_roles)
 
-    async def _require_role(principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    async def _require_role(
+        principal: dict[str, Any] = Depends(get_current_user),
+    ) -> dict[str, Any]:
         return assert_staff_role(principal, allowed)
 
     return _require_role

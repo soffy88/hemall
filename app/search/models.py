@@ -87,11 +87,17 @@ class SearchQueryParams(BaseModel):
     price_max_cents: int | None = Field(None, ge=0, description="最高价格 (分)")
     min_rating: float | None = Field(None, ge=0, le=5, description="最低评分")
     in_stock_only: bool = Field(default=False, description="仅显示有货商品")
-    sort_by: str = Field(default="relevance", description="排序字段 (relevance/price_newest/sold_desc/rating)")
+    sort_by: str = Field(
+        default="relevance",
+        description="排序字段 (relevance/price_newest/sold_desc/rating)",
+    )
     sort_order: str = Field(default="desc", description="排序方向 (asc/desc)")
     page: int = Field(default=1, ge=1, description="页码")
     size: int = Field(default=20, ge=1, le=100, description="每页条数")
-    highlight_fields: list[str] = Field(default_factory=lambda: ["name", "subtitle"], description="高亮字段")
+    highlight_fields: list[str] = Field(
+        default_factory=lambda: ["name", "subtitle"],
+        description="高亮字段",
+    )
     facets: list[str] = Field(
         default_factory=lambda: ["category", "brand", "price_range"],
         description="需要返回的聚合维度",
@@ -152,7 +158,9 @@ class SearchResponse(BaseModel):
 
     products: list[HitProduct] = Field(default_factory=list)
     aggregation: AggregationResult | None = Field(None, description="聚合分析结果")
-    pagination: PaginationInfo = Field(default_factory=lambda: PaginationInfo(page=1, size=20, total=0, pages=0))
+    pagination: PaginationInfo = Field(
+        default_factory=lambda: PaginationInfo(page=1, size=20, total=0, pages=0)
+    )
 
 
 class PaginationInfo(BaseModel):

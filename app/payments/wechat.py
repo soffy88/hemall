@@ -260,6 +260,7 @@ class WeChatPayProvider:
         此遗留方法永不返回 True，避免误接生产。
         """
         logger.warning(
-            "legacy wechat _verify_notify_signature called — fail-closed (use WechatPayNativeGateway)"
+            "legacy wechat _verify_notify_signature called — "
+            "fail-closed (use WechatPayNativeGateway)"
         )
         return False

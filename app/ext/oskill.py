@@ -745,7 +745,8 @@ def construct_fomo_user_prompt(batch_info: dict[str, Any], *, market_price: int)
         f"批次号: {batch_info['id']}\n"
         f"商品: {batch_info['variant_desc']}\n"
         f"源头直拍: {batch_info['supplier_polygon_name']}\n"
-        f"hemall 底价: {retail_price_yuan}元 (传统超市均价 {market_price_yuan}元，暴降 {discount_pct}%)\n"
+        f"hemall 底价: {retail_price_yuan}元 "
+        f"(传统超市均价 {market_price_yuan}元，暴降 {discount_pct}%)\n"
         f"全城仅剩物理库存: {batch_info['stock_qty']} 箱\n"
         f"当前状态: {batch_info['broadcast_type']} (上新或清仓)"
     )
