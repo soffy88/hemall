@@ -87,7 +87,9 @@ def register_providers(settings: Settings) -> None:
     )
 
 
-async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
+async def init_db(
+    settings: Settings, *, apply_runtime_role: bool | None = None
+) -> tuple[PgPool, asyncio.Task]:
     """创建命名连接池并幂等建齐商务表。DB 不可达时向上抛, 由调用方决定降级。
 
     返回 (pool, metrics_task) —— 后台指标更新任务的引用交回调用方, 使其能在
@@ -100,9 +102,13 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
     故用 advisory lock 将 schema 初始化串行化——先到者建表, 后到者等锁释放后
     跳过已存在的表。
 
-    生产环境下，连接池创建后会自动 SET ROLE hemall_runtime，
-    限制运行时权限为 DML (SELECT/INSERT/UPDATE/DELETE)，无 DDL 权限。
+    权限分离: DDL (迁移) 一律以连接用户 (owner) 身份执行; 全部 schema 就绪后,
+    生产环境再把连接池切到 hemall_runtime (仅 DML, 无 DDL)。迁移容器
+    (python -m app.cli migrate) 传 apply_runtime_role=False 显式跳过切换。
     """
+    if apply_runtime_role is None:
+        apply_runtime_role = settings.environment.lower() == "production"
+
     # 生产环境使用 effective_pg_dsn (含 sslmode)，迁移时由 CLI 显式传 pg_dsn
     dsn = settings.effective_pg_dsn if settings.environment.lower() == "production" else settings.pg_dsn
 
@@ -112,34 +118,6 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
         min_size=settings.pg_pool_min,
         max_size=settings.pg_pool_max,
     )
-
-    # 生产环境：为连接池配置连接初始化钩子，自动 SET ROLE runtime
-    if settings.environment.lower() == "production":
-        async def _init_runtime_role(conn) -> None:
-            try:
-                await conn.execute("SET ROLE hemall_runtime")
-            except Exception as e:
-                # 角色不存在或无权限时记录警告但不阻塞启动 (迁移容器不需要)
-                import logging
-                logging.getLogger("hemall.bootstrap").warning(
-                    "Failed to SET ROLE hemall_runtime: %s. "
-                    "Run 'python -m app.cli grant-runtime' as owner.",
-                    e,
-                )
-
-        # 为现有连接设置角色
-        async with pool.acquire() as conn:
-            await _init_runtime_role(conn)
-
-        # 猴子补丁 acquire 以便新连接自动 SET ROLE
-        original_acquire = pool.acquire
-
-        async def acquire_with_role(*args, **kwargs):
-            conn = await original_acquire(*args, **kwargs)
-            await _init_runtime_role(conn)
-            return conn
-
-        pool.acquire = acquire_with_role  # type: ignore[method-assign]
 
     # 固定锁 ID (hemall_prod 库私有, 无跨项目冲突)
     SCHEMA_LOCK_ID = 824701
@@ -188,6 +166,11 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
         finally:
             await lock_conn.execute("SELECT pg_advisory_unlock($1)", SCHEMA_LOCK_ID)
 
+    # 生产环境：schema 全部就绪后，把连接池切到 hemall_runtime (仅 DML)。
+    # 必须在 DDL 之后——运行时角色没有 CREATE 权限，提前切换会让迁移本身失败。
+    if apply_runtime_role:
+        _switch_pool_to_runtime_role(pool)
+
     # Phase 0: 更新 DB 连接池指标
     async def update_metrics():
         while True:
@@ -212,6 +195,37 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
         settings.pg_pool_name,
     )
     return pool, metrics_task
+
+
+def _switch_pool_to_runtime_role(pool: PgPool) -> None:
+    """把连接池的所有 (含未来) 连接切到 hemall_runtime 角色 (仅 DML, 无 DDL)。
+
+    SET ROLE 失败 (角色不存在/未授权) 只记 warning 不阻塞启动——由运维补跑
+    `python -m app.cli grant-runtime`。acquire 包装必须返回异步上下文管理器
+    (与 asyncpg Pool.acquire 契约一致)，直接返回协程会让调用方
+    `async with pool.acquire()` 全部崩溃。
+    """
+    import contextlib
+
+    async def _init_runtime_role(conn) -> None:
+        try:
+            await conn.execute("SET ROLE hemall_runtime")
+        except Exception as e:
+            logger.warning(
+                "Failed to SET ROLE hemall_runtime: %s. "
+                "Run 'python -m app.cli grant-runtime' as owner.",
+                e,
+            )
+
+    original_acquire = pool.acquire
+
+    @contextlib.asynccontextmanager
+    async def acquire_with_role(*args, **kwargs):
+        async with original_acquire(*args, **kwargs) as conn:
+            await _init_runtime_role(conn)
+            yield conn
+
+    pool.acquire = acquire_with_role  # type: ignore[method-assign]
 
 
 async def _ensure_hemall_local_schema(pool: PgPool) -> None:

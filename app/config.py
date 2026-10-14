@@ -35,6 +35,31 @@ _SECRET_FILE_MAP: dict[str, str] = {
 }
 
 
+#: 常见内部/本地 PG 主机名 (本机或容器内网, 不强制 TLS)
+_INTERNAL_PG_HOSTS = frozenset(
+    {"localhost", "127.0.0.1", "::1", "postgres", "db", "database", "postgresql"}
+)
+
+
+def _is_internal_pg_host(dsn: str) -> bool:
+    """判断 PG DSN 是否指向本机/容器内网 (无需强制 sslmode=require)。
+
+    docker compose 服务名通常不含点号 (db/postgres), 或以 .local/.internal/
+    .svc.cluster.local 结尾; 其余 (含公网 IP/域名) 视为外部连接。
+    """
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(dsn).hostname or "").lower()
+    except Exception:
+        return True  # 解析失败不阻塞, 由连接时报错
+    if not host:
+        return True
+    if host in _INTERNAL_PG_HOSTS:
+        return True
+    return "." not in host or host.endswith((".local", ".internal", ".svc.cluster.local"))
+
+
 def _read_secret_file(file_path: str) -> str:
     """读取密钥文件内容，去除首尾空白。"""
     path = Path(file_path)
@@ -165,7 +190,8 @@ class Settings(BaseSettings):
         """返回带 sslmode 的有效 DSN。
 
         - 如果 pg_dsn 已包含 sslmode 参数，直接返回。
-        - 否则根据 pg_sslmode 追加 sslmode 参数。
+        - 连接非本机/非容器内网的 PG 时，默认 sslmode=require (防明文传输)；
+          已显式设置 HEMALL_PG_SSLMODE 时尊重显式值 (可显式关闭)。
         - pg_password 如果设置，会替换 DSN 中的密码部分。
         """
         dsn = self.pg_dsn
@@ -186,8 +212,16 @@ class Settings(BaseSettings):
 
         # 添加 sslmode (如果 DSN 中没有)
         if "sslmode=" not in dsn:
+            sslmode = self.pg_sslmode
+            if (
+                sslmode == "prefer"
+                and "pg_sslmode" not in self.model_fields_set
+                and not _is_internal_pg_host(self.pg_dsn)
+            ):
+                # 外部数据库且未显式配置 sslmode: 默认升级为 require
+                sslmode = "require"
             separator = "&" if "?" in dsn else "?"
-            dsn = f"{dsn}{separator}sslmode={self.pg_sslmode}"
+            dsn = f"{dsn}{separator}sslmode={sslmode}"
 
         return dsn
 
@@ -298,50 +332,21 @@ class Settings(BaseSettings):
             problems.append("HEMALL_PG_DSN 仍是开发默认凭据 (postgres:test)")
 
         # 生产环境连接非本机/非容器内网 PG 时，默认要求 sslmode=require
-        # 判断：如果 host 不是 localhost/127.0.0.1/::1 且不是 docker 内部网络 (db/redis 等服务名)
-        # 且 sslmode 不是 require/verify-ca/verify-full，则报错
-        from urllib.parse import urlparse
+        # (可显式关闭: HEMALL_PG_SSLMODE=disable 或 DSN 内显式 sslmode=)
+        if not _is_internal_pg_host(self.pg_dsn):
+            effective_sslmode = self.pg_sslmode
+            # 检查 DSN 中是否已显式设置 sslmode
+            if "sslmode=" in self.pg_dsn:
+                import re
 
-        try:
-            parsed = urlparse(self.pg_dsn)
-            host = parsed.hostname or ""
-            # 常见的内部/本地主机名模式
-            internal_host_patterns = (
-                "localhost",
-                "127.0.0.1",
-                "::1",
-                "postgres",
-                "db",
-                "database",
-                "postgresql",
-            )
-            is_local = host in internal_host_patterns
-            # Docker Compose 服务名通常不含点号，或以 .local/.internal 结尾
-            is_docker_internal = (
-                "." not in host
-                or host.endswith(".local")
-                or host.endswith(".internal")
-                or host.endswith(".svc.cluster.local")
-            )
-            is_internal = is_local or is_docker_internal
-
-            if not is_internal:
-                effective_sslmode = self.pg_sslmode
-                # 检查 DSN 中是否已显式设置 sslmode
-                if "sslmode=" in self.pg_dsn:
-                    import re
-
-                    m = re.search(r"sslmode=([^&]+)", self.pg_dsn)
-                    if m:
-                        effective_sslmode = m.group(1)
-                if effective_sslmode not in ("require", "verify-ca", "verify-full"):
-                    problems.append(
-                        f"HEMALL_PG_SSLMODE 必须为 require/verify-ca/verify-full "
-                        f"当连接外部数据库 (host={host})，当前值: {effective_sslmode}"
-                    )
-        except Exception:
-            # 解析失败时不阻塞，由 asyncpg 连接时报错
-            pass
+                m = re.search(r"sslmode=([^&]+)", self.pg_dsn)
+                if m:
+                    effective_sslmode = m.group(1)
+            if effective_sslmode not in ("require", "verify-ca", "verify-full"):
+                problems.append(
+                    f"HEMALL_PG_SSLMODE 必须为 require/verify-ca/verify-full "
+                    f"当连接外部数据库 (host={self.pg_dsn})，当前值: {effective_sslmode}"
+                )
 
         if "*" in self.cors_origins:
             problems.append(

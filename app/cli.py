@@ -52,15 +52,28 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO {RUNTIME_ROLE};
 
--- 将运行时角色授予 owner 角色 (以便 SET ROLE)
-GRANT {RUNTIME_ROLE} TO {OWNER_ROLE};
+-- 将运行时角色授予 owner 角色 (以便 SET ROLE); owner 角色不存在时跳过
+-- (常见连接用户是 postgres 超级用户, 无需显式 GRANT 即可 SET ROLE)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{OWNER_ROLE}') THEN
+        GRANT {RUNTIME_ROLE} TO {OWNER_ROLE};
+    END IF;
+END
+$$;
 """
 
 # 撤销运行时角色的 DDL 权限 (显式确保无 CREATE/DROP/ALTER)
 REVOKE_DDL_SQL = f"""
 -- 显式撤销 schema 级 DDL 权限 (防止通过 public schema 默认权限获得)
 REVOKE CREATE ON SCHEMA public FROM {RUNTIME_ROLE};
-REVOKE CREATE ON DATABASE current_database() FROM {RUNTIME_ROLE};
+
+-- 撤销库级 CREATE 权限 (REVOKE 不接受函数调用, 用 DO 块动态拼接库名)
+DO $$
+BEGIN
+    EXECUTE 'REVOKE CREATE ON DATABASE ' || quote_ident(current_database()) || ' FROM {RUNTIME_ROLE}';
+END
+$$;
 
 -- 确保运行时角色无法执行 DDL
 -- 注意: 无法直接 REVOKE ALTER/DROP/TRUNCATE ON ALL TABLES，需在对象级控制
@@ -105,11 +118,13 @@ async def _run_migrate(dsn: str) -> None:
     pool = await _get_pool(dsn)
     try:
         async with pool.acquire() as conn:
-            # 执行 bootstrap 中的 schema 初始化逻辑
+            # 执行 bootstrap 中的 schema 初始化逻辑。
+            # apply_runtime_role=False: 迁移进程连接的是 owner, DDL 之后不切换
+            # 运行时角色 (切换是 API 容器启动时做的事)。
             from app.bootstrap import init_db
 
             settings = Settings(pg_dsn=dsn)
-            await init_db(settings)
+            await init_db(settings, apply_runtime_role=False)
         click.echo("✅ Migration completed successfully")
     finally:
         await pool.close()
