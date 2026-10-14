@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 import type { Customer, CustomerGroup, CustomerAddress } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function fmt(cents: number): string {
   return `¥${(cents / 100).toFixed(2)}`;
@@ -44,8 +45,8 @@ export default function CustomersPage() {
       const [c, g] = await Promise.all([api.adminListCustomers(), api.adminListCustomerGroups()]);
       setCustomers(c);
       setGroups(g);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -70,15 +71,15 @@ export default function CustomersPage() {
     try {
       if (editingId) {
         const res = await api.updateCustomer({ customer_id: editingId, email, phone, name, status: custStatus });
-        if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+        if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       } else {
         const res = await api.createCustomer({ email, phone, name });
-        if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+        if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       }
       setShowForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -86,12 +87,12 @@ export default function CustomersPage() {
     e.preventDefault();
     try {
       const res = await api.createCustomerGroup({ name: groupName });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setGroupName('');
       setShowGroupForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -99,10 +100,10 @@ export default function CustomersPage() {
     if (!groupId) return;
     try {
       const res = await api.assignCustomerToGroup({ customer_id: customerId, group_id: groupId });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '分组失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '分组失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -116,8 +117,8 @@ export default function CustomersPage() {
     try {
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -133,24 +134,24 @@ export default function CustomersPage() {
         region_code: addrRegion,
         postal_code: addrPostal,
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '添加地址失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '添加地址失败');
       setAddrRecipient(''); setAddrPhone(''); setAddrLine1(''); setAddrCity(''); setAddrRegion(''); setAddrPostal('');
       setShowAddrForm(false);
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleSetDefaultAddress(customerId: string, addressId: string) {
     try {
       const res = await api.updateCustomerAddress({ address_id: addressId, is_default: true });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '设置失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '设置失败');
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -158,11 +159,11 @@ export default function CustomersPage() {
     if (!confirm('确认删除此地址？')) return;
     try {
       const res = await api.deleteCustomerAddress({ address_id: addressId });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -335,7 +336,7 @@ export default function CustomersPage() {
               { key: 'duration_days', label: 'duration_days (默认 365)', type: 'number' },
             ]}
             defaults={opsCtx}
-            onSubmit={(v) => api.hemallProcessSubscription(v as any)}
+            onSubmit={(v) => api.hemallProcessSubscription(v as Parameters<typeof api.hemallProcessSubscription>[0])}
           />
         </OpsSection>
       </div>

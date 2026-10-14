@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { login } from '@/lib/auth-store';
+import { errMessage } from '@/lib/errors';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -18,8 +19,8 @@ export default function LoginPage() {
     try {
       await login(email, password);
       router.push('/admin');
-    } catch (err: any) {
-      setError(err.message || '登录失败');
+    } catch (err) {
+      setError(errMessage(err) || '登录失败');
     } finally {
       setLoading(false);
     }

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { customerLogin } from '@/lib/customer-auth-store';
+import { errMessage } from '@/lib/errors';
 
 export default function CustomerLoginPage() {
   const router = useRouter();
@@ -19,8 +20,8 @@ export default function CustomerLoginPage() {
     try {
       await customerLogin(email, password);
       router.push('/shop/account');
-    } catch (err: any) {
-      setError(err.message || '登录失败');
+    } catch (err) {
+      setError(errMessage(err) || '登录失败');
     } finally {
       setLoading(false);
     }

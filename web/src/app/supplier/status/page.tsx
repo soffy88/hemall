@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { SupplierStatus } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function statusCopy(status: string): { label: string; className: string } {
   if (status === 'sandbox') return { label: '沙盒观察期', className: 'bg-amber-100 text-amber-700' };
@@ -27,8 +28,8 @@ export default function SupplierStatusPage() {
     try {
       const res = await api.supplierLookup(walletAccount.trim());
       setSupplier(res);
-    } catch (e: any) {
-      setError(e.message === 'supplier not found' ? '未找到该钱包账号对应的供应商，请确认输入是否正确。' : (e.message || '查询失败'));
+    } catch (e) {
+      setError(errMessage(e) === 'supplier not found' ? '未找到该钱包账号对应的供应商，请确认输入是否正确。' : (errMessage(e) || '查询失败'));
     } finally {
       setLoading(false);
     }

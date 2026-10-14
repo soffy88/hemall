@@ -6,6 +6,7 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { StripePaymentElement } from '@/components/stripe-payment-element';
 import type { Order, PaymentIntentResponse, PaymentStatusResponse } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 export default function SuccessPage() {
   const [order, setOrder] = useState<Order | null>(null);
@@ -48,8 +49,8 @@ export default function SuccessPage() {
               setPaymentError(`支付未完成（${status.status}）`);
               return;
             }
-          } catch (e: any) {
-            if (!stopped) setPaymentError(e.message || '支付状态查询失败');
+          } catch (e) {
+            if (!stopped) setPaymentError(errMessage(e) || '支付状态查询失败');
             return;
           }
           await new Promise((resolve) => setTimeout(resolve, 2000));

@@ -19,6 +19,7 @@ import { useOptimisticCart, haptic } from '@/lib/cart-store';
 import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { StripePaymentElement } from '@/components/stripe-payment-element';
 import type { PaymentIntentResponse, PickupTicket } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 interface CheckoutContext {
   nodeName: string;
@@ -131,9 +132,9 @@ export default function ExpressCheckoutPage() {
         return;
       }
       await finishPaidPayment(currentOrderId, currentPayment);
-    } catch (e: any) {
+    } catch (e) {
       haptic('fail');
-      setError(e.message || '支付失败，请重试');
+      setError(errMessage(e) || '支付失败，请重试');
     } finally {
       setPaying(false);
     }
@@ -145,9 +146,9 @@ export default function ExpressCheckoutPage() {
     setError('');
     try {
       await finishPaidPayment(orderId, payment);
-    } catch (e: any) {
+    } catch (e) {
       haptic('fail');
-      setError(e.message || '支付失败，请重试');
+      setError(errMessage(e) || '支付失败，请重试');
     } finally {
       setPaying(false);
     }

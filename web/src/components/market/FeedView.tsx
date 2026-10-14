@@ -16,6 +16,7 @@ import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import type { FeedItem, NearbyFeedResponse } from '@/types/api';
 import MarketMakerHeroCard from './MarketMakerHeroCard';
 import StandardGridItem from './StandardGridItem';
+import { errMessage } from '@/lib/errors';
 
 export default function FeedView() {
   const router = useRouter();
@@ -48,8 +49,8 @@ export default function FeedView() {
       const cust = getCustomerAuth();
       const data = await api.getNearbyFeed(lat, lon, { limit: 40, customerId: cust?.customerId });
       setFeed(data);
-    } catch (e: any) {
-      setError(e.message || 'Feed 加载失败');
+    } catch (e) {
+      setError(errMessage(e) || 'Feed 加载失败');
     } finally {
       setLoading(false);
     }
@@ -65,9 +66,9 @@ export default function FeedView() {
       await cart.lockItem(item);
       setToast(`✅ 已锁单: ${item.sku_name}`);
       setTimeout(() => setToast(''), 2200);
-    } catch (e: any) {
+    } catch (e) {
       haptic('fail');
-      setToast(`❌ ${e.message}`);
+      setToast(`❌ ${errMessage(e)}`);
       setTimeout(() => setToast(''), 3200);
     }
   }

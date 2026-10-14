@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { OmodulResult } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 /**
  * 裸操作卡片 —— 表单填参数 → 拍执行 → 摊 JSON 结果，配 decision_trail/
@@ -71,8 +72,8 @@ export function ActionCard({ title, badge, desc, fields, defaults, onSubmit, onR
       const res = await onSubmit(payload);
       setResult({ ok: res.status !== 'failed', body: res });
       if (res.status !== 'failed') onResult?.(res);
-    } catch (e: any) {
-      setResult({ ok: false, body: { error: { message: e.message } } });
+    } catch (e) {
+      setResult({ ok: false, body: { error: { message: errMessage(e) } } });
     } finally {
       setBusy(false);
     }

@@ -5,6 +5,7 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 import type { Discount, GiftCard } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function fmt(cents: number | null, currency?: string): string {
   return formatMoney(cents, currency);
@@ -257,8 +258,8 @@ export default function MarketingPage() {
       const [d, g] = await Promise.all([api.adminListDiscounts(), api.adminListGiftCards()]);
       setDiscounts(d);
       setGiftCards(g);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -270,12 +271,12 @@ export default function MarketingPage() {
     e.preventDefault();
     try {
       const res = await api.createDiscount({ code: discountCode });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setDiscountCode('');
       setShowDiscountForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -283,10 +284,10 @@ export default function MarketingPage() {
     try {
       const newStatus = d.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateDiscount({ discount_id: d.id, status: newStatus });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -294,10 +295,10 @@ export default function MarketingPage() {
     if (!confirm('确认删除此折扣？')) return;
     try {
       const res = await api.deleteDiscount({ discount_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -319,10 +320,10 @@ export default function MarketingPage() {
       const res = d.rule
         ? await api.updateDiscountRule({ rule_id: d.rule.id, amount_cents, percent })
         : await api.createDiscountRule({ discount_id: d.id, rule_type: ruleType, amount_cents, percent });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '设置规则失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '设置规则失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -335,10 +336,10 @@ export default function MarketingPage() {
     }
     try {
       const res = await api.createDiscountCondition({ discount_id: d.id, condition_type: conditionType, target_id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '添加条件失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '添加条件失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -346,10 +347,10 @@ export default function MarketingPage() {
     if (!confirm('删除此限制条件？')) return;
     try {
       const res = await api.deleteDiscountCondition({ condition_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -362,12 +363,12 @@ export default function MarketingPage() {
         currency: gcCurrency,
         expires_at: gcExpires || undefined,
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setGcCode('');
       setShowGiftForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -375,10 +376,10 @@ export default function MarketingPage() {
     try {
       const newStatus = g.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateGiftCard({ gift_card_id: g.id, status: newStatus });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -386,10 +387,10 @@ export default function MarketingPage() {
     if (!confirm('确认删除此礼品卡？')) return;
     try {
       const res = await api.deleteGiftCard({ gift_card_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -573,7 +574,7 @@ export default function MarketingPage() {
             },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallGenerateCrushingOffer(v as any)}
+          onSubmit={(v) => api.hemallGenerateCrushingOffer(v as Parameters<typeof api.hemallGenerateCrushingOffer>[0])}
         />
         <ActionCard
           title="发版 execute_channel_broadcast_workflow"
@@ -586,7 +587,7 @@ export default function MarketingPage() {
             { key: 'access_token', label: 'access_token (微信视频号，演示用任意字符串)' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallExecuteChannelBroadcast(v as any)}
+          onSubmit={(v) => api.hemallExecuteChannelBroadcast(v as Parameters<typeof api.hemallExecuteChannelBroadcast>[0])}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -598,9 +599,9 @@ export default function MarketingPage() {
             { key: 'receipt_image_text', label: 'receipt_image_text (小票内容，纯文本占位)' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallRewardCrowdsourcedBenchmark(v as any)}
+          onSubmit={(v) => api.hemallRewardCrowdsourcedBenchmark(v as Parameters<typeof api.hemallRewardCrowdsourcedBenchmark>[0])}
           onResult={(r) => {
-            mergeOpsCtx(r as any);
+            mergeOpsCtx(r);
             setOpsListRefreshKey((k) => k + 1);
           }}
         />

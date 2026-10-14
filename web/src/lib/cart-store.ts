@@ -138,7 +138,7 @@ export function useOptimisticCart() {
             : '物理冲突！该商品库存不足',
         );
       }
-    } catch (e: any) {
+    } catch (e) {
       // 网络失败: 保留乐观锁但标记 failed? SPEC 规定失败即剔除。
       haptic('fail');
       setItems((prev) => {

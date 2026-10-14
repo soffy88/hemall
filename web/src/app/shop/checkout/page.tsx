@@ -6,6 +6,7 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import type { Cart, Address } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 const emptyAddress: Address = {
   recipient_name: '',
@@ -67,8 +68,8 @@ export default function CheckoutPage() {
           return;
         }
         setCart(data);
-      } catch (e: any) {
-        setError(e.message);
+      } catch (e) {
+        setError(errMessage(e));
       } finally {
         setLoading(false);
       }
@@ -99,8 +100,8 @@ export default function CheckoutPage() {
       sessionStorage.setItem('hemall_payment', JSON.stringify(result.payment));
       sessionStorage.removeItem('hemall_cart_id');
       router.push('/shop/success');
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setSubmitting(false);
     }

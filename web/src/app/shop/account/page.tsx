@@ -7,6 +7,7 @@ import { formatMoney } from '@/lib/format';
 import { getCustomerAuth, initCustomerAuth, customerLogout } from '@/lib/customer-auth-store';
 import { useToast } from '@/components/Toast';
 import type { Customer, CustomerAddress, Order, RmaClaim, SubmitClaimResult } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function claimDecisionCopy(decision: RmaClaim['decision']): { label: string; className: string; detail: string } {
   if (decision === 'instant_refund') {
@@ -70,8 +71,8 @@ export default function AccountPage() {
       setAddresses(a);
       setOrders(o);
       setClaims(c);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -90,8 +91,8 @@ export default function AccountPage() {
       await api.customerUpdateMe({ name, phone });
       setEditingProfile(false);
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -109,8 +110,8 @@ export default function AccountPage() {
       setAddrRecipient(''); setAddrPhone(''); setAddrLine1(''); setAddrCity(''); setAddrRegion(''); setAddrPostal('');
       setShowAddrForm(false);
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -118,8 +119,8 @@ export default function AccountPage() {
     try {
       await api.customerUpdateAddress(addressId, { is_default: true });
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -128,8 +129,8 @@ export default function AccountPage() {
     try {
       await api.customerDeleteAddress(addressId);
       load();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -151,8 +152,8 @@ export default function AccountPage() {
       setClaimingLineItemId(null);
       const c = await api.customerMyClaims();
       setClaims(c);
-    } catch (e: any) {
-      setClaimResults((prev) => ({ ...prev, [lineItemId]: { error: e.message } }));
+    } catch (e) {
+      setClaimResults((prev) => ({ ...prev, [lineItemId]: { error: errMessage(e) } }));
     } finally {
       setSubmittingClaim(false);
     }

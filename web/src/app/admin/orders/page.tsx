@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { Order, Fulfillment } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function fmt(cents: number, currency?: string): string {
   return formatMoney(cents, currency);
@@ -26,8 +27,8 @@ export default function OrdersPage() {
     try {
       const data = await api.adminListOrders({ status: statusFilter || undefined });
       setOrders(data);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -43,8 +44,8 @@ export default function OrdersPage() {
       ]);
       setSelected(order);
       setFulfillments(fulfillmentList);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -59,10 +60,10 @@ export default function OrdersPage() {
     if (!s) return;
     try {
       const res = await api.updateOrder({ order_id: selected.id, status: s });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       refreshSelected();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -70,10 +71,10 @@ export default function OrdersPage() {
     if (!selected || !confirm('确认取消此订单？将释放库存并按需退款。')) return;
     try {
       const res = await api.cancelOrder({ order_id: selected.id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
       refreshSelected();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -81,10 +82,10 @@ export default function OrdersPage() {
     if (!selected || !confirm('确认归档此订单？')) return;
     try {
       const res = await api.archiveOrder({ order_id: selected.id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '归档失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '归档失败');
       refreshSelected();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -92,10 +93,10 @@ export default function OrdersPage() {
     if (!selected) return;
     try {
       const res = await api.capturePayment({ order_id: selected.id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '捕获支付失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '捕获支付失败');
       alert('支付已捕获');
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -110,10 +111,10 @@ export default function OrdersPage() {
     }
     try {
       const res = await api.refundPayment({ order_id: selected.id, amount_cents: amount });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '退款失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '退款失败');
       alert('退款成功');
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -126,10 +127,10 @@ export default function OrdersPage() {
     }
     try {
       const res = await api.createFulfillment({ order_id: selected.id, items });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建履约失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建履约失败');
       loadDetail(selected.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -143,10 +144,10 @@ export default function OrdersPage() {
         provider_name: provider,
         shipment_info: { tracking_no: trackingNo },
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发货失败');
       if (selected) loadDetail(selected.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -154,10 +155,10 @@ export default function OrdersPage() {
     if (!confirm('确认取消此履约单？')) return;
     try {
       const res = await api.cancelFulfillment({ fulfillment_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消履约失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消履约失败');
       if (selected) loadDetail(selected.id);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 

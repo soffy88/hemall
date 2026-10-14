@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import type { AppUser } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 export default function UsersPage() {
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -21,8 +22,8 @@ export default function UsersPage() {
     try {
       const data = await api.adminListUsers();
       setUsers(data);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -53,15 +54,15 @@ export default function UsersPage() {
           status: userStatus,
           password: password || undefined,
         });
-        if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+        if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       } else {
         const res = await api.createUser({ email, password, name });
-        if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+        if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       }
       setShowForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -69,10 +70,10 @@ export default function UsersPage() {
     if (!confirm(`向 ${u.email} 发送密码重置通知？`)) return;
     try {
       const res = await api.resetUserPassword({ user_id: u.id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '重置失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '重置失败');
       alert('重置通知已发出');
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -80,10 +81,10 @@ export default function UsersPage() {
     try {
       const newStatus = u.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateUser({ user_id: u.id, status: newStatus });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 

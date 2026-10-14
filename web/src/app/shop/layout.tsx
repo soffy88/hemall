@@ -8,6 +8,7 @@ import { getSelectedRegion, setSelectedRegion } from '@/lib/region-store';
 import { getCustomerAuth, initCustomerAuth, subscribeCustomerAuth } from '@/lib/customer-auth-store';
 import { ToastProvider, useToast } from '@/components/Toast';
 import type { Region } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function ShopChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -51,8 +52,8 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
     if (cartId) {
       try {
         await api.storeSetCartRegion(cartId, region.code, region.currency);
-      } catch (e: any) {
-        showToast(`切换区域失败: ${e.message}`, 'error');
+      } catch (e) {
+        showToast(`切换区域失败: ${errMessage(e)}`, 'error');
         return;
       }
     }

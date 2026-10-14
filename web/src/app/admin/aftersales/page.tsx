@@ -5,6 +5,7 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 import type { Order, ReturnRequest, Swap, Claim } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 /** 客诉仲裁记录 —— VLM 判损 + 裁决结果，运营核查用，带手动刷新。 */
 function RmaClaimsTable({ refreshKey }: { refreshKey: number }) {
@@ -107,7 +108,7 @@ export default function AftersalesPage() {
   const [claimNewItems, setClaimNewItems] = useState('');
 
   useEffect(() => {
-    api.adminListOrders({ limit: 100 }).then(setOrders).catch((e: any) => setError(e.message));
+    api.adminListOrders({ limit: 100 }).then(setOrders).catch((e) => setError(errMessage(e)));
   }, []);
 
   async function loadOrder() {
@@ -127,8 +128,8 @@ export default function AftersalesPage() {
       setReturnQty({});
       setSwapReturnQty({});
       setClaimQty({});
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -140,20 +141,20 @@ export default function AftersalesPage() {
     if (items.length === 0) { alert('请至少选择一项商品数量'); return; }
     try {
       const res = await api.createReturnRequest({ order_id: order.id, items });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发起退货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发起退货失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleReceiveReturn(id: string) {
     try {
       const res = await api.receiveReturn({ return_request_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '收货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '收货失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -161,10 +162,10 @@ export default function AftersalesPage() {
     if (!confirm('确认取消此退货申请？')) return;
     try {
       const res = await api.cancelReturn({ return_request_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -175,11 +176,11 @@ export default function AftersalesPage() {
     if (return_items.length === 0 || new_items.length === 0) { alert('请选择退回商品并填写换入商品 (batch_id:数量)'); return; }
     try {
       const res = await api.createSwap({ order_id: order.id, return_items, new_items });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发起换货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发起换货失败');
       setSwapNewItems('');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -187,30 +188,30 @@ export default function AftersalesPage() {
     if (!confirm('确认取消此换货？')) return;
     try {
       const res = await api.cancelSwap({ swap_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleFulfillSwap(id: string) {
     try {
       const res = await api.fulfillSwap({ swap_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '执行换货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '执行换货失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleProcessSwapPayment(id: string) {
     try {
       const res = await api.processSwapPayment({ swap_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '处理差价失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '处理差价失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -221,11 +222,11 @@ export default function AftersalesPage() {
     const new_items = claimType === 'replace' ? parseNewItems(claimNewItems) : undefined;
     try {
       const res = await api.createClaim({ order_id: order.id, claim_type: claimType, items, new_items });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发起客诉失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发起客诉失败');
       setClaimNewItems('');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -233,20 +234,20 @@ export default function AftersalesPage() {
     if (!confirm('确认取消此客诉？')) return;
     try {
       const res = await api.cancelClaim({ claim_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleFulfillClaim(id: string) {
     try {
       const res = await api.fulfillClaim({ claim_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '处理客诉失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '处理客诉失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -471,7 +472,7 @@ export default function AftersalesPage() {
             { key: 'action', label: 'action', placeholder: 'charge | refund' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallToteDepositAndRefund(v as any)}
+          onSubmit={(v) => api.hemallToteDepositAndRefund(v as Parameters<typeof api.hemallToteDepositAndRefund>[0])}
         />
         <ActionCard
           title="回收桶退货 process_drop_return"
@@ -482,7 +483,7 @@ export default function AftersalesPage() {
             { key: 'reason', label: 'reason (默认 quality)' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallProcessDropReturn(v as any)}
+          onSubmit={(v) => api.hemallProcessDropReturn(v as Parameters<typeof api.hemallProcessDropReturn>[0])}
         />
         <ActionCard
           title="🔥 一键提交客诉 submit_rma_claim (全自动仲裁, ~2 秒)"
@@ -497,7 +498,7 @@ export default function AftersalesPage() {
             { key: 'route_risk', label: 'route_risk (0-1, 默认 0)', type: 'number' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallSubmitRmaClaim(v as any)}
+          onSubmit={(v) => api.hemallSubmitRmaClaim(v as Parameters<typeof api.hemallSubmitRmaClaim>[0])}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -513,7 +514,7 @@ export default function AftersalesPage() {
             { key: 'route_risk', label: 'route_risk (0-1, 默认 0)', type: 'number' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallProcessCreditGatedRma(v as any)}
+          onSubmit={(v) => api.hemallProcessCreditGatedRma(v as Parameters<typeof api.hemallProcessCreditGatedRma>[0])}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -531,7 +532,7 @@ export default function AftersalesPage() {
             { key: 'credibility_decision', label: 'credibility_decision', placeholder: 'instant | honeypot' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallExecuteLiabilityRouting(v as any)}
+          onSubmit={(v) => api.hemallExecuteLiabilityRouting(v as Parameters<typeof api.hemallExecuteLiabilityRouting>[0])}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
       </OpsSection>

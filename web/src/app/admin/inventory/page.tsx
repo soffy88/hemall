@@ -5,6 +5,7 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 import type { StockLocation, SalesChannel, PriceList } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 export default function InventorySettingsPage() {
   // hemall 扩展运维（原独立运维页面搬迁过来的裸操作卡片）用的独立 ctx——
@@ -47,8 +48,8 @@ export default function InventorySettingsPage() {
       setLocations(l);
       setChannels(c);
       setPriceLists(p);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -66,11 +67,11 @@ export default function InventorySettingsPage() {
         region_code: locRegion,
         channel_tags: locChannelTags ? locChannelTags.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setLocName(''); setLocRegion(''); setLocChannelTags(''); setShowLocForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -78,10 +79,10 @@ export default function InventorySettingsPage() {
     try {
       const newStatus = l.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateStockLocation({ location_id: l.id, status: newStatus });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -93,10 +94,10 @@ export default function InventorySettingsPage() {
         location_id: l.id,
         channel_tags: text.split(',').map((s) => s.trim()).filter(Boolean),
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -104,10 +105,10 @@ export default function InventorySettingsPage() {
     if (!confirm('确认删除此仓位？')) return;
     try {
       const res = await api.deleteStockLocation({ location_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -117,11 +118,11 @@ export default function InventorySettingsPage() {
     e.preventDefault();
     try {
       const res = await api.createSalesChannel({ name: channelName });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setChannelName(''); setShowChannelForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -129,10 +130,10 @@ export default function InventorySettingsPage() {
     try {
       const newStatus = c.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateSalesChannel({ channel_id: c.id, status: newStatus });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -140,10 +141,10 @@ export default function InventorySettingsPage() {
     if (!confirm('确认删除此销售渠道？')) return;
     try {
       const res = await api.deleteSalesChannel({ channel_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -153,10 +154,10 @@ export default function InventorySettingsPage() {
     const product_ids = idsText.split(',').map((s) => s.trim()).filter(Boolean);
     try {
       const res = await api.publishProductsToChannel({ channel_id: c.id, product_ids });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发布失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发布失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -166,10 +167,10 @@ export default function InventorySettingsPage() {
     const product_ids = idsText.split(',').map((s) => s.trim()).filter(Boolean);
     try {
       const res = await api.unpublishProductsFromChannel({ channel_id: c.id, product_ids });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '下架失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '下架失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -179,11 +180,11 @@ export default function InventorySettingsPage() {
     e.preventDefault();
     try {
       const res = await api.createPriceList({ name: plName, currency: plCurrency });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setPlName(''); setShowPlForm(false);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -191,10 +192,10 @@ export default function InventorySettingsPage() {
     try {
       const newStatus = pl.status === 'active' ? 'inactive' : 'active';
       const res = await api.updatePriceList({ price_list_id: pl.id, status: newStatus });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -202,10 +203,10 @@ export default function InventorySettingsPage() {
     if (!confirm('确认删除此价格表？')) return;
     try {
       const res = await api.deletePriceList({ price_list_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -219,20 +220,20 @@ export default function InventorySettingsPage() {
         price_list_id: pl.id,
         items: [{ variant_id: variantId, price_cents: Number(priceStr) }],
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '添加失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '添加失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleRemovePrice(pl: PriceList, variantId: string) {
     try {
       const res = await api.removePricesFromList({ price_list_id: pl.id, variant_ids: [variantId] });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '移除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '移除失败');
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -434,8 +435,8 @@ export default function InventorySettingsPage() {
               { key: 'lon', label: 'lon', type: 'number' },
             ]}
             defaults={opsCtx}
-            onSubmit={(v) => api.hemallCommissionNewLocation(v as any)}
-            onResult={(r) => mergeOpsCtx({ location_id: (r as any).location_id })}
+            onSubmit={(v) => api.hemallCommissionNewLocation(v as Parameters<typeof api.hemallCommissionNewLocation>[0])}
+            onResult={(r) => mergeOpsCtx({ location_id: r.location_id })}
           />
           <ActionCard
             title="自动补货 execute_ambient_replenishment"
@@ -456,7 +457,7 @@ export default function InventorySettingsPage() {
               { key: 'customer_lon', label: 'customer_lon', type: 'number' },
             ]}
             defaults={opsCtx}
-            onSubmit={(v) => api.hemallExecuteAmbientReplenishment(v as any)}
+            onSubmit={(v) => api.hemallExecuteAmbientReplenishment(v as Parameters<typeof api.hemallExecuteAmbientReplenishment>[0])}
           />
         </OpsSection>
       </div>

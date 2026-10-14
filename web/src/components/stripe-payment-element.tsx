@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { errMessage } from '@/lib/errors';
 
 type StripePaymentElement = {
   mount: (element: HTMLElement) => void;
@@ -114,8 +115,8 @@ export function StripePaymentElement({ clientSecret, onConfirmed }: StripePaymen
       const result = await stripe.confirmPayment({ elements, redirect: 'if_required' });
       if (result.error) throw new Error(result.error.message || 'Stripe 支付未完成');
       await onConfirmed();
-    } catch (reason: any) {
-      setError(reason?.message || 'Stripe 支付未完成');
+    } catch (reason) {
+      setError(errMessage(reason) || 'Stripe 支付未完成');
     } finally {
       setBusy(false);
     }

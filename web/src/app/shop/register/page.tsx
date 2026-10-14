@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { customerRegister } from '@/lib/customer-auth-store';
+import { errMessage } from '@/lib/errors';
 
 export default function CustomerRegisterPage() {
   const router = useRouter();
@@ -26,8 +27,8 @@ export default function CustomerRegisterPage() {
     try {
       await customerRegister({ email, password, name, phone });
       router.push('/shop/account');
-    } catch (err: any) {
-      setError(err.message || '注册失败');
+    } catch (err) {
+      setError(errMessage(err) || '注册失败');
     } finally {
       setLoading(false);
     }

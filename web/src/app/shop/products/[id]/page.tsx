@@ -10,6 +10,7 @@ import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { StorefrontProduct, ProductVariant, InventoryBatch } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 export default function ProductDetailPage() {
   const params = useParams();
@@ -86,8 +87,8 @@ export default function ProductDetailPage() {
       }
       await api.addLineItem(cartId, selectedBatch.id, quantity);
       router.push('/shop/cart');
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     } finally {
       setAdding(false);
     }
