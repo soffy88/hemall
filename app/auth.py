@@ -17,6 +17,7 @@ import secrets
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from obase.crypto.util import CryptoUtil
@@ -271,8 +272,11 @@ async def refresh(
 
     decoded = _decode_session_token(refresh_token, settings)
     if not decoded:
-        _clear_auth_cookies(response, settings)
-        raise HTTPException(status_code=401, detail="invalid or expired refresh token")
+        # 注意: raise HTTPException 会走异常处理器、丢弃注入 response 上的
+        # Set-Cookie——清会话必须直接返回 JSONResponse 才生效。
+        resp = JSONResponse(status_code=401, content={"detail": "invalid or expired refresh token"})
+        _clear_auth_cookies(resp, settings)
+        return resp
 
     typ, payload = decoded
     if typ == TOKEN_TYPE_STAFF:
