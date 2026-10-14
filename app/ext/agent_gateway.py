@@ -945,6 +945,7 @@ async def ingest_media(
                 '{"来源": "手机实拍"}',
                 int(retail * 1.2),
             )
+            batch_no = f"AGT-{ts}-{uuid.uuid4().hex[:8]}"
             await conn.fetchval(
                 (
                     'INSERT INTO "inventory_batch" '
@@ -957,7 +958,7 @@ async def ingest_media(
                 ),
                 vid,
                 location_id,
-                f"AGT-{ts}",
+                batch_no,
                 media_url if is_video else "",
                 cost,
                 retail,
