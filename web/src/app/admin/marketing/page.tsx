@@ -24,20 +24,17 @@ function BroadcastLogsTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallBroadcastLogs>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallBroadcastLogs());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallBroadcastLogs()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -102,20 +99,17 @@ function PriceBenchmarksTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallPriceBenchmarks>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallPriceBenchmarks());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallPriceBenchmarks()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -164,20 +158,17 @@ function ProbeLogsTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallProbeLogs>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallProbeLogs());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallProbeLogs()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -252,17 +243,14 @@ export default function MarketingPage() {
   const [gcCurrency, setGcCurrency] = useState('CNY');
   const [gcExpires, setGcExpires] = useState('');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const [d, g] = await Promise.all([api.adminListDiscounts(), api.adminListGiftCards()]);
-      setDiscounts(d);
-      setGiftCards(g);
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    Promise.all([api.adminListDiscounts(), api.adminListGiftCards()])
+      .then(([d, g]) => {
+        setDiscounts(d);
+        setGiftCards(g);
+      })
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
