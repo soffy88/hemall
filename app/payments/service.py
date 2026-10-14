@@ -563,7 +563,7 @@ class PaymentService:
                     )
                     if updated is None:
                         raise PaymentServiceError(
-                            f"payment_intent not found when updating refund status"
+                            "payment_intent not found when updating refund status"
                         )
                     updated = await conn.fetchrow(
                         "UPDATE payment_outbox SET status = 'completed', locked_at = NULL, "

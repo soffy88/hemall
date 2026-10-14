@@ -42,7 +42,6 @@ from handlers import (  # noqa: E402
     parse_edge_topic,
 )
 
-
 # ── oskill: 物理→商业算子 ─────────────────────────────────────────────────
 
 
@@ -298,7 +297,6 @@ async def _seed_batch(pool) -> tuple[str, str]:
 @pytest.fixture
 async def cn_pool():
     from db_test_utils import cleanup_db_test_rows
-
     from obase.persistence.pool import PgPool
 
     from app.ext.schema import ensure_ext_schema
@@ -602,7 +600,6 @@ def test_http_roundtrip_pick_and_gate():
 
     async def _seed() -> tuple[str, str]:
         from db_test_utils import cleanup_db_test_rows
-
         from obase.persistence.pool import PgPool
 
         from app.ext.schema import ensure_ext_schema

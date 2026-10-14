@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel
 
 # ── 用户行为类型枚举 ────────────────────────────────────────────
 
@@ -42,7 +40,7 @@ class UserBehaviorEvent:
     user_id: str
     product_id: str
     behavior_type: UserBehaviorType
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     context: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

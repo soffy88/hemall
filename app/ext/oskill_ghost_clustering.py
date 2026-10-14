@@ -7,7 +7,6 @@ Phase 8 Task 1: C2B 幽灵节点点火闭环的空间维度。
 from __future__ import annotations
 
 import math
-from collections import defaultdict
 from typing import Any
 
 

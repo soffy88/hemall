@@ -22,12 +22,11 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ── 支付状态枚举 ─────────────────────────────────────────────────────
 
@@ -113,15 +112,15 @@ class PaymentSession(BaseModel):
     payer_info: str | None = Field(None, description="付款人信息 (加密存储)")
     refund_amount: Decimal | None = Field(None, description="退款金额")
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = Field(None, description="支付过期时间")
 
     def transition_to(self, new_status: PaymentStatus) -> None:
         """执行状态转换。"""
         validate_transition(self.status, new_status)
         self.status = new_status
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def is_terminal(self) -> bool:
         """是否终态。"""

@@ -14,11 +14,11 @@ from __future__ import annotations
 import pytest
 
 from app.ext.agent_gateway import (
+    _COMMAND_ENGINE,
     _clean_filename,
     _extract_int,
     _extract_money,
     _extract_title,
-    _COMMAND_ENGINE,
     discover_tools,
     find_tool,
     route_command,
@@ -141,6 +141,7 @@ class TestExecuteCommand:
         import asyncio
         import tempfile
         from pathlib import Path
+
         from app.ext.agent_gateway import execute_command
 
         async def run():
@@ -162,6 +163,7 @@ class TestExecuteCommand:
         import asyncio
         import tempfile
         from pathlib import Path
+
         from app.ext.agent_gateway import execute_command
 
         async def run():
@@ -180,6 +182,7 @@ class TestExecuteCommand:
         import asyncio
         import tempfile
         from pathlib import Path
+
         from app.ext.agent_gateway import execute_command
 
         async def run():
@@ -199,6 +202,7 @@ class TestExecuteCommand:
         import asyncio
         import tempfile
         from pathlib import Path
+
         from app.ext.agent_gateway import execute_command
 
         async def run():
@@ -235,6 +239,7 @@ class TestCommandLeastPrivilege:
         import asyncio
         import tempfile
         from pathlib import Path
+
         from fastapi import HTTPException
 
         from app.ext.agent_gateway import execute_command
@@ -256,6 +261,7 @@ class TestCommandLeastPrivilege:
         import asyncio
         import tempfile
         from pathlib import Path
+
         from fastapi import HTTPException
 
         from app.ext.agent_gateway import execute_command

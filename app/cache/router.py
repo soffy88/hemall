@@ -106,7 +106,7 @@ async def get_cached_inventory(
         1. 尝试从 Redis 获取缓存
         2. 缓存未命中 → 返回空响应 (实际应从 DB 查询并回填缓存)
     """
-    from .models import CacheKey, CacheRegion
+    from .models import CacheKey
 
     key = CacheKey.inventory_stock(warehouse_code, product_code)
     cached = await mgr.get(key)

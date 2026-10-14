@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
-
-import pytest
-
 from app.inventory.models import (
     StockAlert,
     StockMovement,
     StockMovementType,
     StockSnapshot,
 )
-
 
 # ── 库存变动类型测试 ────────────────────────────────────────────────
 

@@ -24,9 +24,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import asyncpg
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_vlm_parse_battle_report
 from ..oskill import calculate_battle_report_reward

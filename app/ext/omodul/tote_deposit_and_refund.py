@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 _DEPOSIT_AMOUNT_CENTS = 1000  # 10 元押金 (SPEC 明确写死的金额)
 

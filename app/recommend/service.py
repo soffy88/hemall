@@ -4,22 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .engine import (
-    CollaborativeFilteringEngine,
-    ContentBasedEngine,
     HybridRecommender,
-    TrendingEngine,
 )
 from .models import (
     ProductFeatures,
+    RecommendationResult,
     RecommendConfig,
     RecommendedProduct,
-    RecommendationResult,
     UserBehaviorEvent,
-    UserBehaviorType,
     UserProfile,
 )
 
@@ -165,7 +161,7 @@ class RecommendationService:
             algorithm=algorithm,
             total=len(products),
             personalized=True,
-            refresh_time=datetime.now(timezone.utc),
+            refresh_time=datetime.now(UTC),
         )
 
     async def find_similar_products(
@@ -193,7 +189,7 @@ class RecommendationService:
             algorithm="content_based",
             total=len(products),
             personalized=False,
-            refresh_time=datetime.now(timezone.utc),
+            refresh_time=datetime.now(UTC),
         )
 
     async def get_trending(self, top_k: int = 20) -> RecommendationResult:
@@ -219,7 +215,7 @@ class RecommendationService:
             algorithm="trending",
             total=len(products),
             personalized=False,
-            refresh_time=datetime.now(timezone.utc),
+            refresh_time=datetime.now(UTC),
         )
 
     # ── 数据管理 ────────────────────────────────────────────────

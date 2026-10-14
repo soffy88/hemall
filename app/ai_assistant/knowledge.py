@@ -12,14 +12,13 @@ Phase 4+ Priority 2: 构建可维护的知识库，提升 AI 助手的回答质�
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 logger = logging.getLogger("hemall.ai.knowledge")
 
@@ -183,7 +182,7 @@ class KnowledgeBase:
         if title:
             item.title = title
 
-        item.updated_at = datetime.now(timezone.utc)
+        item.updated_at = datetime.now(UTC)
 
         # 同步到数据库
         if self._pool:

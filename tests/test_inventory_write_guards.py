@@ -476,7 +476,6 @@ async def test_check_safety_stock_returns_none_when_above_threshold():
 
 
 async def test_check_safety_stock_critical_when_zero():
-    from app.inventory.models import StockAlert
 
     conn = FakeConn()
     conn.on(

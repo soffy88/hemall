@@ -1,17 +1,14 @@
 """Phase 4+ AI 助手模块测试 — LLM Provider、RAG 引擎、AI 服务。"""
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.ai_assistant.llm_provider import (
-    LLMMessage,
-    LLMProvider,
-    LLMResponse,
-    OpenAIProvider,
     AnthropicProvider,
+    LLMMessage,
+    LLMResponse,
     LocalLLMProvider,
+    OpenAIProvider,
     create_llm_provider,
 )
 from app.ai_assistant.models import (
@@ -19,16 +16,12 @@ from app.ai_assistant.models import (
     AIResponse,
     ChatRequest,
     Conversation,
-    Message,
     ProductDescriptionRequest,
-    ProductQuestion,
-    SentimentResult,
     SentimentType,
     UserIntent,
 )
 from app.ai_assistant.rag_engine import RAGEngine
 from app.ai_assistant.service import AIAssistantService
-
 
 # ── LLM Provider 测试 ─────────────────────────────────────────────
 

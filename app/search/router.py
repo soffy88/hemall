@@ -19,7 +19,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..config import Settings
 from ..deps import get_current_user, get_settings
-from .client import ElasticsearchClient
 from .models import SearchQueryParams
 from .service import SearchService
 

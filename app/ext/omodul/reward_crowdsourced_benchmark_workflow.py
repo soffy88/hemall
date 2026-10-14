@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel, ConfigDict
 
 from ..oprim import cv_parse_retail_receipt
 from ..oskill import normalize_sku_price

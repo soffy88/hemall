@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -153,8 +152,9 @@ class TestRealtimeRoutes:
 
     def test_websocket_route_exists(self):
         """验证 WebSocket 路由已注册。"""
-        from app.realtime.hub import router as realtime_router
         from fastapi.routing import APIWebSocketRoute
+
+        from app.realtime.hub import router as realtime_router
 
         ws_routes = [r for r in realtime_router.routes if isinstance(r, APIWebSocketRoute)]
         assert len(ws_routes) > 0
@@ -245,8 +245,9 @@ class TestRealtimeIntegration:
 
     def test_app_starts_realtime(self):
         """验证应用启动时 realtime hub 已配置。"""
-        from app.realtime.hub import router as realtime_router
         from fastapi.routing import APIWebSocketRoute
+
+        from app.realtime.hub import router as realtime_router
 
         ws_routes = [r for r in realtime_router.routes if isinstance(r, APIWebSocketRoute)]
         assert len(ws_routes) > 0
@@ -320,7 +321,6 @@ class TestRealtimeIntegration:
     def test_websocket_rejects_untyped_token(self):
         """没有 typ 的裸令牌一律拒绝（黑名单的老形状）。"""
         from fastapi import WebSocketDisconnect
-
         from obase.crypto.util import CryptoUtil
 
         from app.deps import get_settings

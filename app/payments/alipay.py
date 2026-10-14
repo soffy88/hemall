@@ -16,13 +16,10 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
-import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger("hemall.payments.alipay")
@@ -193,7 +190,7 @@ class AlipayProvider:
             "subject": request.subject,
             "total_amount": request.total_amount,
             "trade_status": "WAIT_BUYER_PAY",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         qr_code = f"https://qr.alipay.com/{trade_no}"
         return AlipayOrderResponse(qr_code=qr_code)
@@ -205,7 +202,7 @@ class AlipayProvider:
             if order is None:
                 return None
             order["trade_status"] = "TRADE_SUCCESS"
-            order["gmt_payment"] = datetime.now(timezone.utc).isoformat()
+            order["gmt_payment"] = datetime.now(UTC).isoformat()
             return AlipayNotify(
                 out_trade_no=out_trade_no,
                 trade_no=order["trade_no"],

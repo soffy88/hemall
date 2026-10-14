@@ -7,14 +7,13 @@ from decimal import Decimal
 import pytest
 
 from app.orders.models import (
+    TERMINAL_STATUSES,
+    VALID_ORDER_TRANSITIONS,
     InvalidOrderTransitionError,
     OrderSnapshot,
     OrderStatus,
-    TERMINAL_STATUSES,
-    VALID_ORDER_TRANSITIONS,
     validate_order_transition,
 )
-
 
 # ── 状态机测试 ──────────────────────────────────────────────────────
 

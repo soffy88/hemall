@@ -16,7 +16,7 @@ from typing import Any
 import redis.asyncio as redis
 
 from ..config import Settings
-from .models import CacheConfig, CacheKey, CacheRegion, CACHE_TTL_MAP
+from .models import CACHE_TTL_MAP, CacheKey, CacheRegion
 
 logger = logging.getLogger("hemall.cache")
 

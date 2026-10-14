@@ -12,11 +12,10 @@ from __future__ import annotations
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
+from starlette.responses import JSONResponse
 
 from app.config import Settings
 from app.deps import get_settings
-
 
 CSRF_COOKIE_NAME = "hemall_csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"

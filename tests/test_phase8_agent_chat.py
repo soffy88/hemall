@@ -10,18 +10,17 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.ext.admin_agent_chat import (
-    router,
-    TOOLS,
     SQL_QUERIES,
-    _execute_query_node_revenue,
+    TOOLS,
     _execute_query_batch_status,
-    _execute_query_system_liabilities,
     _execute_query_intent_summary,
+    _execute_query_node_revenue,
+    _execute_query_system_liabilities,
 )
 
 
@@ -30,7 +29,7 @@ class TestToolDefinitions:
 
     def test_all_tools_have_required_fields(self):
         for tool in TOOLS:
-            assert tool.name, f"Tool name is empty"
+            assert tool.name, "Tool name is empty"
             assert tool.description, f"Tool {tool.name} has no description"
             assert tool.parameters, f"Tool {tool.name} has no parameters"
             assert isinstance(tool.parameters, dict), (

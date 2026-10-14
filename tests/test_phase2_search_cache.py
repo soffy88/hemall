@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from app.cache.models import CacheKey, CacheRegion
@@ -88,7 +86,6 @@ class TestCacheRouterIntegration:
             assert route in paths or any(route.replace("{prefix}", "*") in p for p in paths)
 
     def test_search_routes_exist(self):
-        from app.main import app
 
         # 检查 search 路由是否已注册到 router 列表中
         from app.search.router import router as search_router
@@ -101,8 +98,9 @@ class TestSearchClient:
     @pytest.mark.asyncio
     async def test_es_client_init_fails_gracefully(self):
         """验证 ES 不可用时不会崩溃。"""
-        from app.search.client import ElasticsearchClient
         from pydantic_settings import BaseSettings
+
+        from app.search.client import ElasticsearchClient
 
         class MockSettings(BaseSettings):
             elasticsearch_url: str = "http://invalid-host:9999"
@@ -124,7 +122,6 @@ class TestCacheService:
     async def test_cache_manager_init_without_redis(self):
         """验证 Redis 不可用时不会崩溃。"""
         from app.cache.service import CacheManager
-        from app.config import Settings
 
         class MockSettings:
             redis_url = "redis://invalid-host:9999/0"

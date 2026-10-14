@@ -131,7 +131,7 @@ def test_api_port_is_not_published_so_health_check_must_not_use_it():
     ]
     assert not host_probes, (
         "脚本在**宿主机**上探 localhost:8000 —— prod compose 不发布 api 端口，"
-        f"该检查必然失败（audit P1-4）:\n" + "\n".join(host_probes)
+        "该检查必然失败（audit P1-4）:\n" + "\n".join(host_probes)
     )
 
 

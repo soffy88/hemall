@@ -48,10 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
-
 from ..config import Settings
-from .spider_targets import extract_unit_from_text
 from .omodul.commission_new_location import (
     CommissionNewLocationConfig,
     CommissionNewLocationInput,
@@ -92,9 +89,10 @@ from .oprim import (
     spider_fetch_competitor_prices,
     vlm_assess_damage,
 )
+from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
 from .oskill import (
-    WAVE_SHIPPING_PRICE_CENTS,
     SLA_COMPENSATION_CENTS,
+    WAVE_SHIPPING_PRICE_CENTS,
     adjust_demand_curve_by_weather,
     calculate_broadcast_priority,
     calculate_decay_price,
@@ -106,6 +104,7 @@ from .oskill import (
     evaluate_claim_credibility,
     normalize_sku_price,
 )
+from .spider_targets import extract_unit_from_text
 
 logger = logging.getLogger("hemall.ext.oservi")
 

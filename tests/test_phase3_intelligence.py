@@ -11,7 +11,6 @@ from app.recommend.models import (
     RecommendConfig,
     UserBehaviorEvent,
     UserBehaviorType,
-    UserProfile,
 )
 from app.recommend.service import RecommendationService
 from app.risk.engine import RiskEngine, RiskEvent, RiskRule, RiskRuleCategory

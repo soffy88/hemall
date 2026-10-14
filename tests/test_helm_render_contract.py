@@ -68,7 +68,7 @@ def _helm_binary() -> tuple[list[str], str] | None:
 _HELM = _helm_binary()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def helm_template(release: str, values_file: str | None = None) -> list[dict]:
     """渲染 chart 并返回 List[dict]。values_file 为 chart 目录下的文件名。"""
     if _HELM is None:
@@ -82,7 +82,7 @@ def helm_template(release: str, values_file: str | None = None) -> list[dict]:
     return [d for d in yaml.safe_load_all(proc.stdout) if d]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _rendered(values_file: str) -> dict:
     """把所有 values 变体渲染一次, 按 kind+name 索引, 供参数化断言复用。"""
     docs = helm_template("hemall", values_file)

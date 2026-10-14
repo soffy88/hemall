@@ -29,8 +29,6 @@ DDL 代码本身放在 hemall 项目自己这一层。
 
 from __future__ import annotations
 
-from typing import Any
-
 from obase.persistence.ddl import ensure_column, ensure_index, ensure_table
 from obase.persistence.pool import PgPool
 

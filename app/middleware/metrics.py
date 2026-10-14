@@ -6,7 +6,7 @@ Phase 0 交付：/metrics 端点暴露 QPS/延迟/错误率等核心指标。
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from prometheus_client import Counter, Gauge, Histogram

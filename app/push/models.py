@@ -9,13 +9,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class PushPlatform(Enum):
@@ -82,7 +80,7 @@ class DeviceToken:
     platform: PushPlatform
     app_version: str | None = None
     model: str | None = None
-    registered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    registered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class PushResult(BaseModel):

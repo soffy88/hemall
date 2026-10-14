@@ -9,9 +9,10 @@ omodul_endpoint 工厂; 本文件只做"登记 + 个别端点的旁路接线"。
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
@@ -27,19 +28,19 @@ from .deps import (
     require_staff_role,
 )
 from .events import fire_event
-from .ext.registry import all_endpoint_specs as ext_endpoint_specs
-from .ext.feed_quant import build_feed_item, normalize_velocity
 from .ext.agent_gateway import (
     discover_tools,
     execute_tool,
     ingest_media,
 )
+from .ext.feed_quant import build_feed_item, normalize_velocity
 from .ext.hardware_webhook import router as hardware_webhook_router
 from .ext.oskill import (
     compute_batch_affinity_scores,
     find_nearest_location,
     rerank_feed_by_affinity,
 )
+from .ext.registry import all_endpoint_specs as ext_endpoint_specs
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .security.tokens import TOKEN_TYPE_PICKUP, sign_token

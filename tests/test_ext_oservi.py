@@ -178,8 +178,8 @@ async def test_weather_arbitrage_engine_calm_weather_no_change(cn_pool):
 async def test_inventory_reaper_engine_disposes_expired_and_marks_down_near_expiry(
     cn_pool,
 ):
-    from app.ext.oservi import build_inventory_reaper_engine
     from app.config import Settings
+    from app.ext.oservi import build_inventory_reaper_engine
 
     loc_id, var_id = await _make_variant(cn_pool)
     now = datetime.now(UTC)
@@ -302,9 +302,9 @@ async def test_delivery_wave_engine_dispatches_wave_orders_once(cn_pool):
 
 @pytest.mark.asyncio
 async def test_node_host_settlement_engine_settles_pending_labor(cn_pool):
+    from app.config import Settings
     from app.ext.oprim import generate_id_v7
     from app.ext.oservi import build_node_host_settlement_engine
-    from app.config import Settings
 
     worker_id = generate_id_v7("worker")
     async with cn_pool.acquire() as conn:

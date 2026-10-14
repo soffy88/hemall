@@ -154,7 +154,7 @@ class WebhookSignatureMiddleware:
                 from redis.asyncio import from_url
 
                 self._redis = from_url(self.redis_url, decode_responses=True)
-            digest = hashlib.sha256(f"{path}:{nonce}".encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(f"{path}:{nonce}".encode()).hexdigest()
             claimed = await self._redis.set(
                 f"hemall:webhook:nonce:{digest}",
                 "1",

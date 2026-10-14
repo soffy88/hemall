@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import pytest
-
+from app.eventsourcing.models import (
+    AggregateRoot,
+    DomainEvent,
+    EventType,
+    Snapshot,
+)
 from app.push.models import (
     DeviceToken,
     PushNotification,
     PushPlatform,
     PushPriority,
-    PushResult,
-)
-from app.eventsourcing.models import (
-    AggregateRoot,
-    DomainEvent,
-    EventType,
-    Projection,
-    Snapshot,
 )
 
 
@@ -101,7 +97,6 @@ class TestAggregateRoot:
 
     def test_aggregate_base(self):
         """验证 AggregateRoot 可以实例化。"""
-        from app.eventsourcing.models import AggregateRoot
 
         class MockAggregate(AggregateRoot):
             def __init__(self):
@@ -134,7 +129,6 @@ class TestCQRSService:
     """CQRS 服务层集成测试。"""
 
     def test_eventbus_health(self):
-        from app.main import app
 
         # 检查 eventsourcing 路由是否已注册
         from app.eventsourcing.router import router as es_router

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.config import Settings
 from app.events import build_event_dispatcher, fire_event, logging_subscriber
 from app.middleware.metrics import EVENT_DISPATCH_FAILURES_TOTAL

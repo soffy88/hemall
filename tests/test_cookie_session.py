@@ -10,12 +10,11 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta
 
 import pytest
 from fastapi import FastAPI, Response
-from fastapi.testclient import TestClient
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.config import Settings

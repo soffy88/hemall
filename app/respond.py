@@ -11,13 +11,14 @@
 """
 
 import inspect
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse
-
 from obase.persistence.pool import PgPool
 
+from .config import Settings
 from .deps import (
     ANONYMOUS_PRINCIPAL,
     build_output_dir,
@@ -26,7 +27,6 @@ from .deps import (
     get_settings,
 )
 from .security.op_roles import assert_op_role
-from .config import Settings
 
 # omodul 状态 → HTTP 状态码
 _STATUS_CODES = {"completed": None, "failed": 422, "cancelled": 409}  # completed 由 success_status 定

@@ -13,7 +13,8 @@ import logging
 import time
 from typing import Any
 
-from elasticsearch import AsyncElasticsearch, exceptions as es_exceptions
+from elasticsearch import AsyncElasticsearch
+from elasticsearch import exceptions as es_exceptions
 
 from ..config import Settings
 from .models import ProductDocument

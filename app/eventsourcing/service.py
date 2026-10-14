@@ -18,10 +18,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from ..config import Settings
-from .models import AggregateRoot, DomainEvent, EventType, Projection, Snapshot
+from .models import DomainEvent, EventType, Projection, Snapshot
 
 logger = logging.getLogger("hemall.eventsourcing.service")
 

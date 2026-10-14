@@ -16,15 +16,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 import os
-import time
 import uuid
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger("hemall.payments.wechat")
@@ -219,7 +215,7 @@ class WeChatPayProvider:
             "total_amount": request.total_amount,
             "prepay_id": prepay_id,
             "trade_state": "NOTPAY",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         code_url = f"weixin://wxpay/bizpayurl?pr={prepay_id}"
         return WeChatPayOrderResponse(prepay_id=prepay_id, code_url=code_url)

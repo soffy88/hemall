@@ -10,12 +10,11 @@
 
 from __future__ import annotations
 
-import hmac
+import asyncio
 import hashlib
+import hmac
 import time
 from datetime import UTC, datetime, timedelta
-
-import asyncio
 
 import pytest
 
@@ -25,7 +24,6 @@ from app.ext.registry import ADMIN_OPS, DOMAINS, all_endpoint_specs
 from app.middleware.ratelimit import TokenBucket, TokenBucketRateLimiter
 from app.routers import public_zero_login_paths
 from app.security.webhook import verify_hmac_sha256
-
 
 # ── Task 1.1: Webhook 验签 ──────────────────────────────────────────────
 
@@ -253,10 +251,11 @@ def test_new_omoduls_load_endpoint_specs():
 
 
 def test_probe_input_requires_positive_price():
+    from pydantic import ValidationError
+
     from app.ext.omodul.trigger_initial_probe_workflow import (
         TriggerInitialProbeWorkflowInput,
     )
-    from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         TriggerInitialProbeWorkflowInput(batch_id="b1", initial_price=0)

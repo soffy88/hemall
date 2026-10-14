@@ -10,18 +10,14 @@ Phase 3 Priority 1: 实现多种推荐算法，通过加权融合提供最佳结
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 from collections import defaultdict
-from typing import Any
 
 from .models import (
     ProductFeatures,
     RatingMatrix,
     RecommendConfig,
-    RecommendedProduct,
-    RecommendationResult,
     UserBehaviorEvent,
     UserBehaviorType,
     UserProfile,

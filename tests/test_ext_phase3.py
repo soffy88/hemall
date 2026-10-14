@@ -384,8 +384,8 @@ async def test_liability_routing_rejected_no_material_damage(cn_pool, tmp_path, 
 
 @pytest.mark.asyncio
 async def test_autonomous_triage_engine_full_chain(cn_pool, tmp_path, test_redis_url):
-    from app.ext.oservi import build_autonomous_triage_engine
     from app.config import Settings
+    from app.ext.oservi import build_autonomous_triage_engine
 
     supplier_id = await _make_supplier(cn_pool, escrow_balance=100_000)
     order_id, batch_id, video_url = await _make_order(cn_pool, supplier_id=supplier_id, test_redis_url=test_redis_url)

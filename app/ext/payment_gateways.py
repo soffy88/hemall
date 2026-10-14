@@ -84,7 +84,7 @@ class WechatCertificate:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, str]) -> "WechatCertificate":
+    def from_dict(cls, data: dict[str, str]) -> WechatCertificate:
         return cls(
             serial_no=data["serial_no"],
             effective_time=data["effective_time"],
@@ -94,7 +94,7 @@ class WechatCertificate:
 
 
 async def fetch_wechat_platform_certificates(
-    gateway: "WechatPayNativeGateway",
+    gateway: WechatPayNativeGateway,
 ) -> list[WechatCertificate]:
     """GET /v3/certificates → 解密 encrypt_certificate → 解析 PEM 平台证书。
 

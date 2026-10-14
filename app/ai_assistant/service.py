@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-from .llm_provider import LLMMessage, LLMProvider, LLMResponse, create_llm_provider
+from .knowledge import KnowledgeBase
+from .llm_provider import LLMMessage, LLMProvider, create_llm_provider
 from .models import (
     AIConfig,
     AIResponse,
@@ -22,7 +22,6 @@ from .models import (
     UserIntent,
 )
 from .rag_engine import RAGEngine
-from .knowledge import KnowledgeBase
 
 logger = logging.getLogger("hemall.ai.service")
 

@@ -6,9 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import (
     db_lock_batch_inventory,

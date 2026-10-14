@@ -11,8 +11,9 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 # ── 领域 → omodul 名清单 (URL 前缀即字典键) ─────────────────────────────
 DOMAINS: dict[str, list[str]] = {

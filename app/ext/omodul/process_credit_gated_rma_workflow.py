@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oskill import evaluate_claim_credibility
 

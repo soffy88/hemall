@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,6 @@ from app.ext.spider_targets import (  # noqa: E402
     parse_openfoodfacts,
     parse_suning_search,
 )
-
 
 # ── 任务 1: 微信证书轮换 ──────────────────────────────────────────────
 

@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 #: VLM 判定造假概率超过此阈值，直接拒赔，不管信誉分给出的裁决是什么。
 _FRAUD_REJECTION_THRESHOLD = 0.5

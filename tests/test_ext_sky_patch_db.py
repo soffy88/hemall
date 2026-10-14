@@ -138,9 +138,8 @@ async def _make_batch(
 
 async def _nearby_feed(pool, *, lat: float, lon: float, limit: int = 50) -> dict:
     """直接驱动路由处理函数 (不依赖 HTTP 层，避免 lifespan/DB 降级干扰)。"""
-    from app.routers import get_nearby_feed
 
-    from fastapi import Request
+    from app.routers import get_nearby_feed
 
     class _FakeRequest:
         def __init__(self, pool):

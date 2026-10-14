@@ -9,15 +9,14 @@
 from __future__ import annotations
 
 import math
+
 import pytest
 
 from app.ext.oskill_ghost_clustering import (
-    cluster_intentions_by_radius,
     IGNITION_THRESHOLD,
-    CLUSTER_RADIUS_KM,
     _haversine_km,
+    cluster_intentions_by_radius,
 )
-
 
 # ── Haversine 单元测试 ────────────────────────────────────────────────────────
 
@@ -60,7 +59,7 @@ class TestClusterIntentionsByRadius:
                 lon_offset = (i * spread_meters / (111320 * math.cos(math.radians(base_lat))))
                 orders.append({
                     "id": f"intent-{seed_base + i}",
-                    "variant_id": f"variant-abc",
+                    "variant_id": "variant-abc",
                     "customer_id": f"customer-{seed_base + i}",
                     "lat": round(base_lat + lat_offset, 6),
                     "lon": round(base_lon + lon_offset, 6),
@@ -221,7 +220,7 @@ async def test_ignite_ghost_node_integration():
     for i in range(120):
         orders.append({
             "id": f"intent-{i}",
-            "variant_id": f"variant-guava",
+            "variant_id": "variant-guava",
             "customer_id": f"cust-{i}",
             "lat": 39.9042 + i * 0.000001,  # 极小偏移，全部在 1km 内
             "lon": 116.4074 + i * 0.000001,

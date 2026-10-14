@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
 from decimal import Decimal
 
-# ── 支付状态机测试 ────────────────────────────────────────────────────
+import pytest
 
+# ── 支付状态机测试 ────────────────────────────────────────────────────
 from app.payments.models import (
+    InvalidTransitionError,
+    PaymentProvider,
     PaymentSession,
     PaymentStatus,
-    PaymentProvider,
-    InvalidTransitionError,
-    validate_transition,
 )
 
 
@@ -98,10 +97,10 @@ class TestPaymentStateMachine:
 # ── 加密工具测试 ──────────────────────────────────────────────────────
 
 from app.security.crypto import (
-    encrypt_field,
     decrypt_field,
-    mask_phone,
+    encrypt_field,
     mask_id_card,
+    mask_phone,
 )
 
 
@@ -141,7 +140,7 @@ class TestCrypto:
 
 # ── 微信支付沙箱测试 ─────────────────────────────────────────────────
 
-from app.payments.wechat import WeChatPayProvider, WeChatPayOrderRequest
+from app.payments.wechat import WeChatPayOrderRequest, WeChatPayProvider
 
 
 class TestWeChatPaySandbox:
@@ -195,7 +194,7 @@ class TestWeChatPaySandbox:
 
 # ── 支付宝沙箱测试 ────────────────────────────────────────────────────
 
-from app.payments.alipay import AlipayProvider, AlipayOrderRequest
+from app.payments.alipay import AlipayOrderRequest, AlipayProvider
 
 
 class TestAlipaySandbox:

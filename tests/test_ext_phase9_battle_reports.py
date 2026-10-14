@@ -493,9 +493,9 @@ class TestSubmitBattleReportWorkflow:
 class TestBattleReportReadSide:
     async def test_summary_aggregation(self, cn_pool, tmp_path):
         """多份战报 → 24h 计数 / 新鲜度拟合 / 关键词共现 / 最近实拍聚合正确。"""
-        from app.queries import get_batch_battle_report_summary
-
         from obase.uuid7 import uuid7
+
+        from app.queries import get_batch_battle_report_summary
 
         # 第一个订单自带批次 (batch_id = batch_ids[0])
         s = await _seed_order(cn_pool)
@@ -552,9 +552,9 @@ class TestBattleReportReadSide:
         assert len(summary["top_keywords"]) >= 1
 
     async def test_summary_unknown_batch_returns_none(self, cn_pool):
-        from app.queries import get_batch_battle_report_summary
-
         from obase.uuid7 import uuid7
+
+        from app.queries import get_batch_battle_report_summary
 
         assert await get_batch_battle_report_summary(cn_pool, str(uuid7())) is None
 

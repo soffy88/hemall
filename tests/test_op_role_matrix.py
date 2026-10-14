@@ -180,8 +180,8 @@ def test_bare_name_helper():
 
 
 def test_self_service_set_covers_the_public_registry_entries():
-    from app.registry import all_endpoint_specs as std_specs
     from app.ext.registry import all_endpoint_specs as ext_specs
+    from app.registry import all_endpoint_specs as std_specs
 
     public = {
         f"{s.domain}/{s.name}" for s in list(std_specs()) + list(ext_specs())
@@ -314,8 +314,8 @@ def test_execute_tool_and_http_endpoint_resolve_the_same_roles():
     两处（execute_tool 与 respond.omodul_endpoint）都只调 :func:`required_roles_for_op`
     这一张表，本测试把"只有一张表"这个事实钉死。
     """
-    from app.registry import all_endpoint_specs as std_specs
     from app.ext.registry import all_endpoint_specs as ext_specs
+    from app.registry import all_endpoint_specs as std_specs
 
     http_ops = {
         f"{s.domain}/{s.name}"

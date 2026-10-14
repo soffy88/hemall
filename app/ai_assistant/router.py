@@ -23,8 +23,8 @@ from fastapi.responses import StreamingResponse
 
 from ..config import Settings
 from ..deps import get_current_user, get_settings
-from .knowledge import FAQItem, KnowledgeBase, KnowledgeCategory
-from .models import AIResponse, ChatRequest, ProductDescriptionRequest, ProductQuestion
+from .knowledge import FAQItem, KnowledgeBase
+from .models import ChatRequest, ProductDescriptionRequest, ProductQuestion
 from .quota import enforce_message_budget, get_quota_guard
 from .service import AIAssistantService
 

@@ -7,9 +7,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import asyncpg
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_llm_generate_text, ext_wechat_channel_publish
 from ..oskill import build_fomo_system_prompt, construct_fomo_user_prompt

@@ -14,9 +14,10 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-from obase.crypto.util import CryptoUtil
 from obase.persistence.pool import PgPool
+
+# Phase 0: 导入 Redis 指标辅助函数
+from app.middleware.metrics import update_redis_connected
 
 from .config import Settings
 from .security.tokens import (
@@ -25,9 +26,6 @@ from .security.tokens import (
     TOKEN_TYPE_STAFF,
     decode_token,
 )
-
-# Phase 0: 导入 Redis 指标辅助函数
-from app.middleware.metrics import update_redis_connected
 
 # ── 配置单例 ────────────────────────────────────────────────────────────
 
@@ -67,7 +65,7 @@ async def ensure_redis_connected(redis_url: str) -> None:
         await client.close()
         _redis_connected = True
         update_redis_connected(True)
-    except Exception as e:
+    except Exception:
         _redis_connected = False
         update_redis_connected(False)
 

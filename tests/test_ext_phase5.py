@@ -292,8 +292,8 @@ async def test_broadcast_workflow_marks_log_failed_on_wechat_rejection(
 async def test_social_broadcast_engine_publishes_fresh_and_clearance_with_priority(
     cn_pool, tmp_path
 ):
-    from app.ext.oservi import build_social_broadcast_engine
     from app.config import Settings
+    from app.ext.oservi import build_social_broadcast_engine
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     now = datetime.now(UTC)
@@ -359,8 +359,8 @@ async def test_social_broadcast_engine_publishes_fresh_and_clearance_with_priori
 async def test_social_broadcast_engine_ignores_low_stock_and_old_batches(
     cn_pool, tmp_path
 ):
-    from app.ext.oservi import build_social_broadcast_engine
     from app.config import Settings
+    from app.ext.oservi import build_social_broadcast_engine
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     now = datetime.now(UTC)

@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..config import Settings
 from ..deps import get_current_user, get_settings
-from .models import PushNotification, PushPlatform, PushPriority
+from .models import PushPlatform
 from .service import PushManager
 
 # 后台/内部推送管理 API：注册设备、群发推送 (可烧钱/刷屏) 一律要求员工 JWT。

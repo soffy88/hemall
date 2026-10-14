@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 TOKEN_TYPE_STAFF = "staff"
 TOKEN_TYPE_CUSTOMER = "customer"

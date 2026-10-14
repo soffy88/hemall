@@ -12,12 +12,9 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Generic, TypeVar
-
-from pydantic import BaseModel, Field
-
 
 # ── 事件类型枚举 ────────────────────────────────────────────────
 
@@ -75,7 +72,7 @@ class DomainEvent:
     event_type: EventType | None = None
     aggregate_id: str = ""
     aggregate_type: str = ""
-    occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: int = 1
     data: dict[str, Any] = field(default_factory=dict)
 
@@ -229,7 +226,7 @@ class Snapshot:
     aggregate_type: str
     version: int
     state: dict[str, Any]
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -25,11 +25,9 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
-from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 

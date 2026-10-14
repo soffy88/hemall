@@ -19,6 +19,9 @@ from obase.provider_registry import ProviderRegistry
 from obase.search_providers import LogSearchProvider
 from obase.tax_providers import FlatRateTaxProvider
 
+# Phase 0: 导入指标辅助函数
+from app.middleware.metrics import update_db_pool_metrics
+
 from .config import Settings
 from .ext.cv_provider import ManualCVProvider
 from .ext.douyin_provider import ManualDouyinProvider
@@ -31,9 +34,6 @@ from .ext.spider_targets import LayeredSpiderProvider
 from .ext.vlm_provider import ManualVLMProvider
 from .ext.weather_provider import ManualWeatherProvider
 from .ext.wechat_provider import ManualWeChatChannelProvider
-
-# Phase 0: 导入指标辅助函数
-from app.middleware.metrics import update_db_pool_metrics
 
 logger = logging.getLogger("hemall.bootstrap")
 
@@ -117,8 +117,8 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
             await ensure_ext_schema(pool)
 
             # Phase 0 Week 2: 安全 + 支付表结构
-            from .security.audit import AUDIT_LOG_DDL
             from .payments.models import PAYMENT_SESSION_DDL
+            from .security.audit import AUDIT_LOG_DDL
 
             await _ensure_security_payment_schema(
                 pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL

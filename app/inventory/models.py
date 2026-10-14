@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ── 库存变动类型 ─────────────────────────────────────────────────────
 
@@ -80,7 +78,7 @@ class StockMovement(BaseModel):
     reference_id: str | None = Field(None, description="关联单据 ID")
     reason: str | None = Field(None, description="变动原因/备注")
     operator_id: str | None = Field(None, description="操作人 ID")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def net_quantity(self) -> int:

@@ -24,7 +24,6 @@ import pytest
 
 from app.config import Settings
 
-
 # ── 1. 启动期 fail-fast：选到生产模式就必须拒绝构造 ───────────────────────
 
 

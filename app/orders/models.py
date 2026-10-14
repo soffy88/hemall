@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ── 订单状态枚举 ─────────────────────────────────────────────────────
 
@@ -213,7 +212,7 @@ class StatusHistoryEntry(BaseModel):
     reason: str | None = None
     operator_id: str | None = None
     metadata: dict[str, Any] | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 # ── DDL ──────────────────────────────────────────────────────────────

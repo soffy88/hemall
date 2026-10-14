@@ -31,7 +31,6 @@ from app.middleware.ratelimit import (
     _real_client_ip,
 )
 
-
 # ── ASGI 驱动小工具 ─────────────────────────────────────────────────────────
 
 
@@ -239,7 +238,6 @@ def test_empty_device_id_falls_back_to_ip_only_key():
 
 
 def _compose_env_text() -> str:
-    from pathlib import Path
 
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
     return "\n".join(

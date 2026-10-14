@@ -9,12 +9,9 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
-
 from obase.crypto.util import CryptoUtil
 
 from app.deps import get_settings
-from app.main import app
 
 # (method, path, json_body) — 每个受保护路由取一个代表性端点。
 PROTECTED_ENDPOINTS = [

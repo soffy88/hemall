@@ -134,7 +134,7 @@ def _targets(cfg_path: Path) -> list[str]:
 def test_scrape_targets_are_real_services(compose: Path):
     """抓取目标写错服务名 → 该 job 恒无数据 → 相关告警永不触发。"""
     data = _compose(compose)
-    services = set((data.get("services") or {}))
+    services = set(data.get("services") or {})
     mount = _prom_config_mount(data)
     assert mount is not None
     cfg = REPO_ROOT / mount

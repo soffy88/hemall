@@ -36,7 +36,7 @@ MALL_COMPOSE = REPO_ROOT / "docker-compose.mall-sxueji.yml"
 def _composes_with_nginx() -> list[Path]:
     out = []
     for p in (PROD_COMPOSE, MALL_COMPOSE):
-        if p.is_file() and "nginx" in ((_compose(p).get("services") or {})):
+        if p.is_file() and "nginx" in (_compose(p).get("services") or {}):
             out.append(p)
     assert out, "没有任何 compose 定义 nginx 服务，P1-7 的门禁形同虚设"
     return out
@@ -130,7 +130,6 @@ def test_nginx_service_declares_tls_env_fail_closed(compose: Path):
 
 
 def json_dumps(obj) -> str:
-    import json
 
     if isinstance(obj, list):
         return "\n".join(str(x) for x in obj)

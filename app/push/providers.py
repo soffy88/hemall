@@ -20,7 +20,7 @@ import logging
 from typing import Any
 
 from ..config import Settings
-from .models import DeviceToken, PushNotification, PushPlatform, PushResult, PushPriority
+from .models import PushNotification, PushPriority, PushResult
 
 logger = logging.getLogger("hemall.push.fcm")
 

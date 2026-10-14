@@ -5,12 +5,11 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from obase.crypto.util import CryptoUtil
 from starlette.requests import Request
 
-from obase.crypto.util import CryptoUtil
-
 from app.config import Settings
-from app.deps import anon_ref, get_current_user, get_settings
+from app.deps import anon_ref, get_current_user
 
 
 def _req(cookie: str | None = None) -> Request:

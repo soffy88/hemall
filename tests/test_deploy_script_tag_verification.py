@@ -210,7 +210,7 @@ def test_script_uses_strict_shell_mode_and_quotes():
         and "$@" not in ln
         and ("$namespace" in ln or "$tag" in ln or "$values_file" in ln or "$environment" in ln)
     ]
-    assert not unquoted, f"变量引用未加引号:\n" + "\n".join(unquoted)
+    assert not unquoted, "变量引用未加引号:\n" + "\n".join(unquoted)
 
 
 def test_help_text_does_not_advertise_latest():

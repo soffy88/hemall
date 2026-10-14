@@ -21,72 +21,70 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from prometheus_client import make_asgi_app
 
-from . import __version__
+# Phase 0 Week 2: 限流
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+from . import __version__, queries
+from .ai_assistant.models import AIConfig
+from .ai_assistant.router import router as ai_router
+from .ai_assistant.service import AIAssistantService
+from .analytics.service import AnalyticsService
 from .bootstrap import init_db, register_providers
+from .cache.router import router as cache_router
+from .cache.service import CacheManager
 from .config import Settings
 from .deps import ensure_redis_connected, get_settings
 from .events import build_event_dispatcher
-from .ext.oservi_lifecycle import build_ext_oservi
-from .inventory.router import router as inventory_router
-from .middleware.logging import LoggingMiddleware, configure_structlog
-from .orders.router import router as orders_router
-from .middleware.metrics import MetricsMiddleware
-from .observability.health import check_redis_health
-from .observability.health import router as health_router
-from .observability.tracing import setup_tracing, shutdown_tracing
-from .payments.router import router as payment_router
-from .push.service import PushManager
-from .realtime.hub import manager as realtime_manager
-from .realtime.hub import router as realtime_router
-from .search.client import ElasticsearchClient
-from .search.router import router as search_router
-from .cache.service import CacheManager
-from .cache.router import router as cache_router
-from .push.router import router as push_router
 from .eventsourcing.router import router as eventsourcing_router
-from .analytics.service import AnalyticsService
-from .i18n.service import CurrencyConverter, LocalizedPaymentRouter, TranslationManager
-from .recommend.router import router as recommend_router
-from .recommend.service import RecommendationService
-from .recommend.models import ProductFeatures
-from . import queries
-from .risk.engine import RiskEngine
-from .risk.router import router as risk_router
-from .ai_assistant.router import router as ai_router
-from .ai_assistant.models import AIConfig
-from .ai_assistant.service import AIAssistantService
 
 # Phase 8 Task 2: LLM 智能体运维中枢
 from .ext.admin_agent_chat import router as agent_chat_router
-
-
-from .routers import build_router, public_zero_login_paths
-
-# 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)
-from .security.webhook import WebhookSignatureMiddleware
+from .ext.oservi_lifecycle import build_ext_oservi
+from .i18n.service import CurrencyConverter, LocalizedPaymentRouter, TranslationManager
+from .inventory.router import router as inventory_router
+from .middleware.logging import LoggingMiddleware, configure_structlog
+from .middleware.metrics import MetricsMiddleware
 
 # 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (IP + Device_ID)
 from .middleware.ratelimit import TokenBucketRateLimitMiddleware
+from .observability.health import check_redis_health
+from .observability.health import router as health_router
+from .observability.tracing import setup_tracing, shutdown_tracing
+from .orders.router import router as orders_router
+from .payments.router import router as payment_router
+from .push.router import router as push_router
+from .push.service import PushManager
+from .realtime.hub import manager as realtime_manager
+from .realtime.hub import router as realtime_router
+from .recommend.models import ProductFeatures
+from .recommend.router import router as recommend_router
+from .recommend.service import RecommendationService
+from .risk.engine import RiskEngine
+from .risk.router import router as risk_router
+from .routers import build_router, public_zero_login_paths
+from .search.client import ElasticsearchClient
+from .search.router import router as search_router
 
 # F-03: CSRF 保护中间件 (双重提交 token + Origin/Sec-Fetch-Site)
 from .security import CSRFMiddleware
 
-# Phase 0 Week 2: 限流
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from .security.rate_limit import limiter
-
 # Phase 0 Week 2: 审计日志中间件
 from .security.audit import AuditMiddleware
+from .security.rate_limit import limiter
+
+# 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)
+from .security.webhook import WebhookSignatureMiddleware
 
 # Phase 0: 配置结构化日志 (进程启动期一次)
 configure_structlog()

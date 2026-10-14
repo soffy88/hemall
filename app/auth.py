@@ -14,14 +14,12 @@ Cookie 会话设计 (F-01/F-02/F-03):
 from __future__ import annotations
 
 import secrets
-from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-
 from obase.crypto.util import CryptoUtil
 from obase.persistence.pool import PgPool
+from pydantic import BaseModel, Field
 
 from .config import Settings
 from .deps import get_pool, get_settings
@@ -30,11 +28,11 @@ from .security.tokens import (
     ACCESS_TOKEN_COOKIE,
     CSRF_TOKEN_COOKIE,
     REFRESH_TOKEN_COOKIE,
-    TOKEN_TYPE_STAFF,
     TOKEN_TYPE_CUSTOMER,
+    TOKEN_TYPE_STAFF,
+    TokenTypeError,
     decode_token,
     sign_token,
-    TokenTypeError,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -364,7 +362,6 @@ async def get_csrf_token(
 
 # ── 顾客认证端点 (Cookie 会话，复用相同的 cookie 设施) ───────────────────
 
-from .security.tokens import TOKEN_TYPE_CUSTOMER
 
 
 class CustomerLoginInput(BaseModel):

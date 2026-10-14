@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ── 意图类型 ──────────────────────────────────────────────────────
 
@@ -46,7 +44,7 @@ class Message:
 
     role: str  # user / assistant / system
     content: str
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,15 +69,15 @@ class Conversation:
     user_id: str | None
     owner_id: str | None = None
     messages: list[Message] = field(default_factory=list)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def add_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> Message:
         """添加消息到会话。"""
         msg = Message(role=role, content=content, metadata=metadata or {})
         self.messages.append(msg)
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
         return msg
 
     def get_history(self, max_turns: int = 10) -> list[dict[str, str]]:
@@ -179,7 +177,7 @@ class ProductEmbedding(BaseModel):
     embedding: list[float]  # 1536 维 (OpenAI) 或 768 维 (本地模型)
     text_content: str  # 原始文本 (用于相似度匹配后展示)
     model_name: str = "text-embedding-ada-002"
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 # ── 配置模型 ──────────────────────────────────────────────────────

@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as redis
@@ -204,7 +204,7 @@ async def publish_to_user(
     message = {
         "event": event,
         "data": data or {},
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "_target_user": user_id,
     }
     await manager._publish_redis("hemall:user", message)
@@ -215,7 +215,7 @@ async def broadcast(event: str, data: dict[str, Any] | None = None) -> None:
     message = {
         "event": event,
         "data": data or {},
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     await manager._publish_redis("hemall:broadcast", message)
 

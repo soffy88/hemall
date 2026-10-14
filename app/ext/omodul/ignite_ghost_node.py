@@ -14,8 +14,6 @@ import logging
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import (
     BaseConfig,
     Trail,
@@ -23,6 +21,7 @@ from omodul._base import (
     compute_fingerprint,
     write_report,
 )
+from pydantic import BaseModel
 
 logger = logging.getLogger("hemall.ext.omodul.ignite_ghost_node")
 
@@ -235,4 +234,3 @@ def get_approx_distance(lat: float, lon: float) -> str:
     return "计算中..."
 
 
-from app.ext.oskill_ghost_clustering import _haversine_km

@@ -9,13 +9,12 @@ These tests pin:
 
 from __future__ import annotations
 
-from decimal import Decimal
-from unittest.mock import patch, AsyncMock
 import uuid
+from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.payments.models import PaymentProvider, PaymentStatus
 from app.payments.service import (
     PaymentAmountMismatchError,
     PaymentNotFoundError,
@@ -25,6 +24,7 @@ from app.payments.service import (
     yuan_to_cents,
 )
 from tests.service_fakes import FakeConn, FakePool, Recording
+
 
 def _svc(conn: FakeConn) -> PaymentService:
     settings = type("Settings", (), {

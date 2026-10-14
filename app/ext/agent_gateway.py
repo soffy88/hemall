@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,6 @@ from fastapi import HTTPException, UploadFile
 
 from ..security.op_roles import assert_command_kind_role, assert_op_role
 from .registry import all_endpoint_specs as ext_all_endpoint_specs
-
 
 # ── 工具发现 ──────────────────────────────────────────────────────────
 
@@ -414,8 +413,8 @@ async def execute_command(
         category_id = await _resolve_default_category(pool)
         product_args: dict[str, Any] = {
             "title": title,
-            "slug": f"{title}-{datetime.now(timezone.utc).strftime('%H%M%S')}",
-            "description": f"手机命令上架 ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})。",
+            "slug": f"{title}-{datetime.now(UTC).strftime('%H%M%S')}",
+            "description": f"手机命令上架 ({datetime.now(UTC).strftime('%Y-%m-%d %H:%M')})。",
         }
         if category_id:
             product_args["category_id"] = category_id
@@ -443,7 +442,7 @@ async def execute_command(
             "catalog/create_product_variant",
             {
                 "product_id": product_id,
-                "sku_code": f"CMD-{datetime.now(timezone.utc).strftime('%H%M%S')}",
+                "sku_code": f"CMD-{datetime.now(UTC).strftime('%H%M%S')}",
                 "option_values": {"来源": "手机命令"},
                 "reference_price_cents": int(retail * 1.2),
             },
@@ -700,7 +699,7 @@ async def ingest_media(
     if not content_type.startswith(_ALLOWED_UPLOAD_CONTENT_PREFIXES):
         raise HTTPException(400, f"unsupported content type: {content_type or '(none)'}")
     user_ref = str(principal.get("user_id") or "anonymous")[:8]
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     ingest_dir = out_root / "agent_ingest" / user_ref
     ingest_dir.mkdir(parents=True, exist_ok=True)
     dest = ingest_dir / f"{ts}_{safe_name}"
@@ -737,7 +736,7 @@ async def ingest_media(
             "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'published') RETURNING id",
             title,
             f"{title}-{ts[-6:]}",
-            f"手机实景传货 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} 上传, 实拍直供。",
+            f"手机实景传货 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')} 上传, 实拍直供。",
             cat_id,
         )
         vid = await conn.fetchval(

@@ -25,14 +25,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
-
 from ..config import Settings
 from ..middleware.metrics import (
     DB_DEADLOCK_ERRORS_TOTAL,
     ENGINE_FAILURE_TOTAL,
     ENGINE_TICK_LAST_SECONDS,
 )
+from .oservi import UNCONFIGURED_TOKEN as _UNCONFIGURED_TOKEN
 from .oservi import (
     build_affiliate_settlement_engine,
     build_autonomous_triage_engine,
@@ -54,7 +53,7 @@ from .oservi import (
     build_weather_arbitrage_engine,
     build_wechat_cert_rotation_engine,
 )
-from .oservi import UNCONFIGURED_TOKEN as _UNCONFIGURED_TOKEN
+from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
 from .oservi_ghost_engine import build_ghost_ignition_engine
 
 logger = logging.getLogger("hemall.ext.oservi_lifecycle")

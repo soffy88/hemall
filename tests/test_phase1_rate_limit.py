@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from app.security.rate_limit import _resolve_storage_uri, is_redis_backend, limiter
 
 

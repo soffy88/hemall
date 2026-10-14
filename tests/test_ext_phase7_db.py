@@ -150,7 +150,6 @@ async def _insert_order(pool, product_ids: list[str]) -> str:
 async def test_affinity_feed_boosts_related_product(cn_pool):
     """买过牛肉 → Feed 里番茄/洋葱插队到最前 (空间-行为矩阵升维)。"""
     from app.ext.oskill import (
-        build_cooccurrence_matrix,
         compute_batch_affinity_scores,
         rerank_feed_by_affinity,
     )
@@ -299,7 +298,6 @@ async def test_spider_engine_layered_writes_price_benchmark(cn_pool):
 
 async def test_device_purchase_log_dedup_index(cn_pool):
     """device_purchase_log 可重复写入 (行为轨迹 append-only)，索引存在。"""
-    from obase.uuid7 import uuid7
 
     pool = cn_pool
     prod, variant, batch = await _make_variant(pool, title="土鸡蛋")

@@ -252,7 +252,7 @@ SQL_QUERIES: dict[str, tuple[str, list[str]]] = {
     ),
     "query_intent_cluster_summary": (
         # 意向金聚类统计
-        f"""
+        """
         SELECT
             COUNT(*) AS total_pending_intentions,
             COUNT(*) FILTER (WHERE id::text LIKE 'ghost_%') AS ghost_cluster_intentions,
@@ -420,7 +420,6 @@ async def admin_agent_chat(
     ]
 
     # Step 2: 第一轮 LLM 调用 —— 可能触发 tool calls
-    from app.ai_assistant.models import AIConfig
 
     model_name = body.model or ai_service._config.model_name
     temperature = body.temperature

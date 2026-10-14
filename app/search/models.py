@@ -8,14 +8,11 @@
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from ..config import Settings
-
 
 # ── 商品文档模型 ────────────────────────────────────────────────
 
@@ -133,7 +130,7 @@ class AggregationBucket(BaseModel):
 
     key: str
     doc_count: int
-    sub_buckets: list["AggregationBucket"] = Field(default_factory=list)
+    sub_buckets: list[AggregationBucket] = Field(default_factory=list)
 
 
 class AggregationResult(BaseModel):
@@ -190,7 +187,7 @@ def build_es_index_ddl(settings: Settings) -> str:
     实际 ES 索引通过 _bulk API 或 Logstash 创建，此函数提供
     MySQL 端的数据对齐参考 schema。
     """
-    return f"""
+    return """
     -- hemall ES 商品索引源表结构说明
     -- 此文件仅供开发参考, 实际 ES 索引通过 elasticsearch-dsl / kibanadb 管理
 

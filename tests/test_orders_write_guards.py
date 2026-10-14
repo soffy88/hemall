@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from app.orders.models import InvalidOrderTransitionError, OrderStatus
-from app.orders.service import OrderService, OrderNotFoundError
+from app.orders.service import OrderNotFoundError, OrderService
 from tests.service_fakes import FakeConn, FakePool, Recording
 
 pytestmark = pytest.mark.asyncio
@@ -222,7 +222,6 @@ async def test_transition_status_rejects_cancelled_order_payment_intent_write():
 
 async def test_cancel_order_releases_inventory():
     """cancel_order triggers _release_order_inventory in the same transaction."""
-    from app.orders.service import OrderInventoryConflictError
 
     conn = FakeConn()
     conn.on(
@@ -522,7 +521,6 @@ async def test_complete_order_transitions_status():
 # ── _release_order_inventory ──────────────────────────────────────
 
 async def test_release_order_inventory_releases_reservations():
-    from app.orders.service import OrderInventoryConflictError
 
     conn = FakeConn()
     conn.on(

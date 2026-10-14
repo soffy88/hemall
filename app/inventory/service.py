@@ -21,13 +21,12 @@ from typing import Any
 
 from obase.persistence.pool import PgPool
 
+from ..events import fire_event
 from .models import (
     StockAlert,
     StockMovementType,
     StockSnapshot,
 )
-
-from ..events import fire_event
 
 logger = logging.getLogger("hemall.inventory")
 

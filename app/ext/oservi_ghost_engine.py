@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Settings
-from .oskill_ghost_clustering import cluster_intentions_by_radius, IGNITION_THRESHOLD
 from .omodul.ignite_ghost_node import (
     IgniteGhostNodeConfig,
     IgniteGhostNodeInput,
@@ -26,6 +25,7 @@ from .omodul.ignite_ghost_node import (
 )
 from .oprim import db_query_many
 from .oservi_compat import CronSchedulerEngine
+from .oskill_ghost_clustering import cluster_intentions_by_radius
 
 logger = logging.getLogger("hemall.ext.oservi_ghost")
 

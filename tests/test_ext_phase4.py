@@ -725,8 +725,8 @@ async def test_tote_balancing_engine_flags_shortage_location(cn_pool, tmp_path):
 async def test_spatial_fomo_engine_promo_push_and_threshold_commission(
     cn_pool, tmp_path
 ):
-    from app.ext.oservi import build_spatial_fomo_engine
     from app.config import Settings
+    from app.ext.oservi import build_spatial_fomo_engine
 
     engine = build_spatial_fomo_engine(cn_pool, settings=Settings(output_root=tmp_path))
 
