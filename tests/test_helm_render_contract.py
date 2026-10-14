@@ -40,7 +40,12 @@ CHART_DIR = REPO_ROOT / "charts" / "hemal"
 # fail（这是刻意设计的 fail-closed，见 templates/secret.yaml）。
 _RENDER_SET = ["--set", "secrets.existingSecret=hemall-test-secret"]
 
-VALUES_FILES = ["values.yaml", "values.staging.yaml", "values.production.yaml", "values.mall-sxueji.yaml"]
+VALUES_FILES = [
+    "values.yaml",
+    "values.staging.yaml",
+    "values.production.yaml",
+    "values.mall-sxueji.yaml",
+]
 
 
 def _helm_binary() -> tuple[list[str], str] | None:
@@ -59,7 +64,16 @@ def _helm_binary() -> tuple[list[str], str] | None:
         )
         if probe.returncode == 0:
             return (
-                ["docker", "run", "--rm", "-v", f"{REPO_ROOT}:/repo", "-w", "/repo", "alpine/helm:3.16.4"],
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{REPO_ROOT}:/repo",
+                    "-w",
+                    "/repo",
+                    "alpine/helm:3.16.4",
+                ],
                 "/repo/charts/hemal",
             )
     return None
@@ -98,7 +112,9 @@ def _of(values_file: str, kind: str, name: str) -> dict:
     return index[(kind, name)]
 
 
-ALL_VALUES = pytest.mark.parametrize("values_file", VALUES_FILES, ids=lambda v: v.replace("values", ""))
+ALL_VALUES = pytest.mark.parametrize(
+    "values_file", VALUES_FILES, ids=lambda v: v.replace("values", "")
+)
 
 
 # --------------------------------------------------------------------------
@@ -113,7 +129,9 @@ def test_ingress_backend_service_exists(values_file: str):
     名字写错时 Helm 不会报错, 但 ingress-nginx 上游解析失败 → 全站 503。
     """
     ingress = _of(values_file, "Ingress", "hemall-api-ingress")
-    service_names = {d["metadata"]["name"] for d in _rendered(values_file).values() if d.get("kind") == "Service"}
+    service_names = {
+        d["metadata"]["name"] for d in _rendered(values_file).values() if d.get("kind") == "Service"
+    }
 
     referenced = {
         path["backend"]["service"]["name"]
@@ -137,7 +155,9 @@ def test_ingress_service_name_is_not_the_stale_api_service():
     """
     name_lines = [
         ln.split("#", 1)[0]
-        for ln in (CHART_DIR / "templates" / "ingress.yaml").read_text(encoding="utf-8").splitlines()
+        for ln in (CHART_DIR / "templates" / "ingress.yaml")
+        .read_text(encoding="utf-8")
+        .splitlines()
         if ln.strip().startswith("name:") and "Release.Name" in ln
     ]
     assert name_lines, "ingress.yaml 里没有带 Release.Name 的 Service 引用"
@@ -182,7 +202,9 @@ def test_pod_runs_as_the_uid_that_exists_in_the_image(values_file: str):
     )
     uid, gid = declared
 
-    pod_sc = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["securityContext"]
+    pod_sc = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"][
+        "securityContext"
+    ]
     assert pod_sc.get("runAsNonRoot") is True, "runAsNonRoot 必须为 true (安全基线)"
     assert int(pod_sc["runAsUser"]) == uid, (
         f"{values_file}: runAsUser={pod_sc['runAsUser']} 但镜像里 hemall 是 uid={uid} → "
@@ -201,7 +223,9 @@ def test_container_does_not_override_image_entrypoint(values_file: str):
     这里要求: Deployment 不覆盖 command; 若确实需要传 gunicorn 参数, 只能走
     `args:` (ENTRYPOINT 会被保留)。
     """
-    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["containers"][0]
+    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"][
+        "containers"
+    ][0]
     assert "command" not in container, (
         "Deployment 不能用 command: 覆盖镜像 ENTRYPOINT —— entrypoint.sh 要先修数据卷属主再 exec"
     )
@@ -295,7 +319,9 @@ def test_uid_alignment_is_what_makes_gunicorn_deprivilege_a_noop():
     declared = _declared_runtime_user()
     assert declared is not None
     uid, gid = declared
-    pod_sc = _of("values.yaml", "Deployment", "hemall-api")["spec"]["template"]["spec"]["securityContext"]
+    pod_sc = _of("values.yaml", "Deployment", "hemall-api")["spec"]["template"]["spec"][
+        "securityContext"
+    ]
     assert int(pod_sc["runAsUser"]) == uid and int(pod_sc["runAsGroup"]) == gid, (
         "runAsUser/runAsGroup 必须等于 hemall 的 uid/gid, 两个 setX 才会短路成 no-op"
     )
@@ -319,7 +345,9 @@ def _settings_field_names() -> set[str]:
 
 
 def _deployment_env_names(values_file: str) -> list[str]:
-    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["containers"][0]
+    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"][
+        "containers"
+    ][0]
     return [e["name"] for e in container.get("env") or []]
 
 
@@ -418,10 +446,13 @@ def test_monitoring_selectors_match_the_deployment_pod_labels(values_file: str):
     sm = index.get(("ServiceMonitor", "hemall-api"))
     if sm is None:
         pytest.skip(f"{values_file}: 未启用 ServiceMonitor")
-    pod_labels = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["metadata"]["labels"]
+    pod_labels = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["metadata"][
+        "labels"
+    ]
     for key, value in sm["spec"]["selector"]["matchLabels"].items():
         assert pod_labels.get(key) == value, (
-            f"{values_file}: ServiceMonitor selector {key}={value} 与 pod labels {pod_labels} 不匹配 → 抓不到指标"
+            f"{values_file}: ServiceMonitor selector {key}={value} "
+            f"与 pod labels {pod_labels} 不匹配 → 抓不到指标"
         )
 
 
@@ -491,7 +522,9 @@ def test_networkpolicy_egress_covers_every_runtime_dependency(values_file: str):
     `app/observability/tracing.py` 里 tracing 失败只 warning，监控就此静默缺失。
     """
     policy = _of(values_file, "NetworkPolicy", "hemall-api-network-policy")
-    assert "Egress" in policy["spec"]["policyTypes"], "policyTypes 必须包含 Egress，否则下面的端口规则没有意义"
+    assert "Egress" in policy["spec"]["policyTypes"], (
+        "policyTypes 必须包含 Egress，否则下面的端口规则没有意义"
+    )
 
     openings = _egress_openings(policy)
     missing = {p for p in REQUIRED_EGRESS_PORTS if p not in openings}
@@ -509,7 +542,9 @@ def test_networkpolicy_allows_dns_over_both_udp_and_tcp():
     """
     policy = _of("values.yaml", "NetworkPolicy", "hemall-api-network-policy")
     protocols = _egress_openings(policy).get(53, set())
-    assert {"UDP", "TCP"} <= protocols, f"DNS 只放行了 {sorted(protocols)}，缺 TCP 则大响应会解析失败"
+    assert {"UDP", "TCP"} <= protocols, (
+        f"DNS 只放行了 {sorted(protocols)}，缺 TCP 则大响应会解析失败"
+    )
 
 
 def test_networkpolicy_allows_same_namespace_egress():
@@ -538,7 +573,9 @@ def test_networkpolicy_has_no_null_namespace_selector():
         for target in rule.get("to") or []:
             ns = target.get("namespaceSelector")
             if ns is not None:
-                assert ns.get("matchLabels"), f"渲染出空的 namespaceSelector: {ns} —— apply 会被 API server 拒绝"
+                assert ns.get("matchLabels"), (
+                    f"渲染出空的 namespaceSelector: {ns} —— apply 会被 API server 拒绝"
+                )
 
 
 def test_networkpolicy_egress_destinations_are_configurable():
@@ -548,7 +585,9 @@ def test_networkpolicy_egress_destinations_are_configurable():
     标签的 namespace，DB 流量会被静默拒绝，而 chart 没有任何提示。
     """
     text = (CHART_DIR / "templates" / "networkpolicy.yaml").read_text(encoding="utf-8")
-    assert ".Values.security.networkPolicies.egress" in text, "networkpolicy 必须从 values 读 egress 目的地配置"
+    assert ".Values.security.networkPolicies.egress" in text, (
+        "networkpolicy 必须从 values 读 egress 目的地配置"
+    )
     assert "toYaml" in text
 
 
@@ -580,9 +619,11 @@ def test_egress_destination_config_exists_for_each_observed_dependency(values_fi
     文件会误判"没配"。
     """
     values = _merged_values(values_file)
-    np_values = ((values.get("security") or {}).get("networkPolicies") or {})
+    np_values = (values.get("security") or {}).get("networkPolicies") or {}
     egress = np_values.get("egress") or {}
-    assert egress, f"{values_file}: security.networkPolicies.egress 为空 —— 会渲染出没有出站规则的 policy"
+    assert egress, (
+        f"{values_file}: security.networkPolicies.egress 为空 —— 会渲染出没有出站规则的 policy"
+    )
 
     configured_ports = {int(p) for entry in egress.values() for p in (entry.get("ports") or [])}
     missing = {p for p in REQUIRED_EGRESS_PORTS if p != 53 and p not in configured_ports}
@@ -633,7 +674,9 @@ def test_pull_policy_does_not_defeat_tag_pinning(values_file: str):
 @ALL_VALUES
 def test_rendered_image_is_fully_qualified_and_immutable(values_file: str):
     """渲染出的 image 必须是 完整的 repo:固定tag，不能带浮动 tag。"""
-    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"]["containers"][0]
+    container = _of(values_file, "Deployment", "hemall-api")["spec"]["template"]["spec"][
+        "containers"
+    ][0]
     image = container["image"]
     assert ":" in image, f"{values_file}: 渲染出的 image {image!r} 没有显式 tag"
     repo, _, tag = image.rpartition(":")

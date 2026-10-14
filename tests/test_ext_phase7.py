@@ -210,7 +210,8 @@ _SUNING_FIXTURE = """
 <html><body><script>
 window.__data = [
   {"prdid":"12448577421","productName":"货出六盘 宁夏西吉县谷草饲喂养 六盘山牛肉 精品黄牛 牛腩4斤"},
-  {"prdid":"12436273128","productName":"潮汕牛肉新鲜火锅食材鲜切雪花嫩肉吊龙匙仁肥胼家庭烧烤 潮汕牛肉套餐1.5斤"}
+  {"prdid":"12436273128",
+   "productName":"潮汕牛肉新鲜火锅食材鲜切雪花嫩肉吊龙匙仁肥胼家庭烧烤 潮汕牛肉套餐1.5斤"}
 ];
 </script></body></html>
 """

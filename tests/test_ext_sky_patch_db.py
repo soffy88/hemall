@@ -17,9 +17,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -45,9 +43,7 @@ async def cn_pool():
     reg.register_generic("spider", "manual", spider, replace=True)
     reg.register_generic("spider", "layered", spider, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_skypatch_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_skypatch_test", dsn=TEST_DSN, min_size=1, max_size=5)
     from db_test_utils import cleanup_db_test_rows
 
     await cleanup_db_test_rows(pool)
@@ -80,8 +76,12 @@ async def _make_variant(
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
-            "VALUES ($1,'skypatch_loc','cn-east','host_skypatch','测试车库',$2,$3,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, lat, lng, status) "
+                "VALUES ($1,'skypatch_loc','cn-east','host_skypatch','测试车库',$2,$3,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
             lat,
             lon,
@@ -90,7 +90,10 @@ async def _make_variant(
             # 竞对爬虫引擎只扫 product.status='published' 的商品 (商城口径，见
             # oservi.build_competitor_spider_engine 的注释)——测试种数据用 active
             # 会永远扫 0 个 SKU。
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,$2,$3,'published') RETURNING id",
+            (
+                "INSERT INTO product (id, title, slug, status) "
+                "VALUES ($1,$2,$3,'published') RETURNING id"
+            ),
             uuid7(),
             title,
             f"skypatch-slug-{uuid7()}",
@@ -285,9 +288,7 @@ async def test_inventory_decay_engine_scraps_expired(cn_pool):
     assert any(b["batch_id"] == batch_id for b in result["scrapped"])
 
     async with cn_pool.acquire() as conn:
-        status = await conn.fetchval(
-            "SELECT status FROM inventory_batch WHERE id = $1", batch_id
-        )
+        status = await conn.fetchval("SELECT status FROM inventory_batch WHERE id = $1", batch_id)
     assert status == "disposed"
 
 

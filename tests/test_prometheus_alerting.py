@@ -37,7 +37,9 @@ AM_CONFIG = REPO_ROOT / "alertmanager" / "alertmanager.yml"
 AM_ENTRYPOINT = REPO_ROOT / "alertmanager" / "entrypoint.sh"
 
 COMPOSE_FILES = sorted(
-    p for p in REPO_ROOT.glob("docker-compose*.yml") if p.is_file() and p.name != "docker-compose.iot.yml"
+    p
+    for p in REPO_ROOT.glob("docker-compose*.yml")
+    if p.is_file() and p.name != "docker-compose.iot.yml"
 )
 
 
@@ -178,7 +180,12 @@ def test_prometheus_alerts_to_alertmanager(compose: Path):
     mount = _prom_config_mount(data)
     cfg = yaml.safe_load((REPO_ROOT / mount).read_text(encoding="utf-8"))
     managers = ((cfg.get("alerting") or {}).get("alertmanagers") or [])
-    targets = [t for am in managers for st in am.get("static_configs") or [] for t in st.get("targets") or []]
+    targets = [
+        t
+        for am in managers
+        for st in am.get("static_configs") or []
+        for t in st.get("targets") or []
+    ]
     assert targets, f"{mount}: 未配置 alerting.alertmanagers，告警不会被转发"
     for target in targets:
         host = str(target).split(":")[0]

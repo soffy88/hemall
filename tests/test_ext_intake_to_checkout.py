@@ -17,9 +17,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -33,9 +31,7 @@ async def cn_pool():
     ProviderRegistry.get().register_generic(
         "payment", "manual", ManualPaymentProvider(), replace=True
     )
-    pool = await PgPool.create(
-        name="hemall_e2e_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_e2e_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     yield pool
     await pool.close()
@@ -46,12 +42,19 @@ async def _make_variant(pool) -> tuple[str, str]:
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
-            "VALUES ($1,'e2e_loc','cn-east','host_e2e','测试车库',31.0,121.0,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, lat, lng, status) "
+                "VALUES ($1,'e2e_loc','cn-east','host_e2e','测试车库',31.0,121.0,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,'土鸡蛋',$2,'active') RETURNING id",
+            (
+                "INSERT INTO product (id, title, slug, status) "
+                "VALUES ($1,'土鸡蛋',$2,'active') RETURNING id"
+            ),
             uuid7(),
             f"e2e-slug-{uuid7()}",
         )
@@ -117,9 +120,7 @@ async def test_intake_to_checkout_full_chain(cn_pool, tmp_path, test_redis_url):
     )
     from omodul.create_cart import CreateCartConfig, CreateCartInput, create_cart
 
-    cart_result = await create_cart(
-        CreateCartConfig(), CreateCartInput(), tmp_path, pool=cn_pool
-    )
+    cart_result = await create_cart(CreateCartConfig(), CreateCartInput(), tmp_path, pool=cn_pool)
     assert cart_result["status"] == "completed", cart_result
     cart_id = cart_result["cart_id"]
 

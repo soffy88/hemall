@@ -17,9 +17,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -37,9 +35,7 @@ async def cn_pool():
     reg.register_generic("llm", "manual", llm, replace=True)
     reg.register_generic("wechat_channel", "manual", wx, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_phase5_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase5_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     pool._test_llm = llm  # type: ignore[attr-defined]
     pool._test_wx = wx  # type: ignore[attr-defined]
@@ -52,12 +48,19 @@ async def _make_variant(pool) -> tuple[str, str, str]:
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
-            "VALUES ($1,'p5_loc','cn-east','host_p5','测试车库',31.0,121.0,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, lat, lng, status) "
+                "VALUES ($1,'p5_loc','cn-east','host_p5','测试车库',31.0,121.0,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,'土鸡蛋p5',$2,'active') RETURNING id",
+            (
+                "INSERT INTO product (id, title, slug, status) "
+                "VALUES ($1,'土鸡蛋p5',$2,'active') RETURNING id"
+            ),
             uuid7(),
             f"p5-slug-{uuid7()}",
         )
@@ -89,10 +92,13 @@ async def _make_batch(
     batch_id = uuid7()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inventory_batch "
-            "(id, batch_no, variant_id, location_id, video_url, stock_qty, reserved_qty, "
-            "cost_price_cents, retail_price_cents, supplier_id, status, created_at, expiration_time, inspection_status) "
-            "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,COALESCE($11, NOW()),$12,'passed')",
+            (
+                "INSERT INTO inventory_batch "
+                "(id, batch_no, variant_id, location_id, video_url, stock_qty, "
+                "reserved_qty, cost_price_cents, retail_price_cents, supplier_id, "
+                "status, created_at, expiration_time, inspection_status) "
+                "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,COALESCE($11, NOW()),$12,'passed')"
+            ),
             batch_id,
             f"p5-batch-{batch_id}",
             var_id,
@@ -246,9 +252,7 @@ async def test_broadcast_workflow_rejects_when_stock_depleted(cn_pool, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_broadcast_workflow_marks_log_failed_on_wechat_rejection(
-    cn_pool, tmp_path
-):
+async def test_broadcast_workflow_marks_log_failed_on_wechat_rejection(cn_pool, tmp_path):
     from app.ext.omodul.execute_channel_broadcast_workflow import (
         ExecuteChannelBroadcastWorkflowConfig,
         ExecuteChannelBroadcastWorkflowInput,
@@ -338,13 +342,9 @@ async def test_social_broadcast_engine_publishes_fresh_and_clearance_with_priori
 
     # 优先级排序：urgent (1 小时后过期) 应该排在 relaxed (10 小时后过期) 前面
     clearance_order = [
-        p["batch_id"]
-        for p in summary["published"]
-        if p["broadcast_type"] == "clearance"
+        p["batch_id"] for p in summary["published"] if p["broadcast_type"] == "clearance"
     ]
-    assert clearance_order.index(urgent_batch_id) < clearance_order.index(
-        relaxed_batch_id
-    )
+    assert clearance_order.index(urgent_batch_id) < clearance_order.index(relaxed_batch_id)
 
     # 第二次 tick：三个批次都已经播报过，不应该再出现在 published 里
     results2 = await engine.run_once()
@@ -356,9 +356,7 @@ async def test_social_broadcast_engine_publishes_fresh_and_clearance_with_priori
 
 
 @pytest.mark.asyncio
-async def test_social_broadcast_engine_ignores_low_stock_and_old_batches(
-    cn_pool, tmp_path
-):
+async def test_social_broadcast_engine_ignores_low_stock_and_old_batches(cn_pool, tmp_path):
     from app.config import Settings
     from app.ext.oservi import build_social_broadcast_engine
 

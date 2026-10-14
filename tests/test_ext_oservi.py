@@ -18,9 +18,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -41,30 +39,33 @@ async def cn_pool():
     weather = ManualWeatherProvider()
     reg.register_generic("weather", "manual", weather, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_oservi_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_oservi_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     pool._test_weather = weather  # type: ignore[attr-defined]
     yield pool
     await pool.close()
 
 
-async def _make_variant(
-    pool, *, lat: float = 31.0, lon: float = 121.0
-) -> tuple[str, str]:
+async def _make_variant(pool, *, lat: float = 31.0, lon: float = 121.0) -> tuple[str, str]:
     from obase.uuid7 import uuid7
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
-            "VALUES ($1,'oservi_loc','cn-east','host_oservi','测试车库',$2,$3,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, lat, lng, status) "
+                "VALUES ($1,'oservi_loc','cn-east','host_oservi','测试车库',$2,$3,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
             lat,
             lon,
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,$2,$3,'active') RETURNING id",
+            (
+                "INSERT INTO product (id, title, slug, status) "
+                "VALUES ($1,$2,$3,'active') RETURNING id"
+            ),
             uuid7(),
             "土鸡蛋",
             f"oservi-slug-{uuid7()}",
@@ -132,9 +133,7 @@ async def test_weather_arbitrage_engine_reprices_on_storm(cn_pool):
     batch_id = await _make_batch(
         cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=50, retail_price=3900
     )
-    cn_pool._test_weather.set_forecast(
-        lat=lat, lon=lon, rain_probability=0.9, rain_intensity=3
-    )
+    cn_pool._test_weather.set_forecast(lat=lat, lon=lon, rain_probability=0.9, rain_intensity=3)
 
     broadcast = build_batch_broadcast_engine()
     engine = build_weather_arbitrage_engine(cn_pool, broadcast_engine=broadcast)
@@ -160,9 +159,7 @@ async def test_weather_arbitrage_engine_calm_weather_no_change(cn_pool):
     )
 
     loc_id, var_id = await _make_variant(cn_pool, lat=32.5, lon=122.5)
-    await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=50, retail_price=3900
-    )
+    await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=50, retail_price=3900)
 
     broadcast = build_batch_broadcast_engine()
     engine = build_weather_arbitrage_engine(cn_pool, broadcast_engine=broadcast)
@@ -205,9 +202,7 @@ async def test_inventory_reaper_engine_disposes_expired_and_marks_down_near_expi
         expiration_time=now + timedelta(hours=1),  # 24h 保质期，已过 23/24
     )
 
-    engine = build_inventory_reaper_engine(
-        cn_pool, settings=Settings(output_root="/tmp")
-    )
+    engine = build_inventory_reaper_engine(cn_pool, settings=Settings(output_root="/tmp"))
     results = await engine.run_once()
 
     summary = results[0]
@@ -310,15 +305,16 @@ async def test_node_host_settlement_engine_settles_pending_labor(cn_pool):
     async with cn_pool.acquire() as conn:
         for amount in (500, 700):
             await conn.execute(
-                "INSERT INTO labor_ledger (id, worker_id, wage_amount, status) VALUES ($1,$2,$3,'pending')",
+                (
+                    "INSERT INTO labor_ledger (id, worker_id, wage_amount, status) "
+                    "VALUES ($1,$2,$3,'pending')"
+                ),
                 generate_id_v7("labor"),
                 worker_id,
                 amount,
             )
 
-    engine = build_node_host_settlement_engine(
-        cn_pool, settings=Settings(output_root="/tmp")
-    )
+    engine = build_node_host_settlement_engine(cn_pool, settings=Settings(output_root="/tmp"))
     results = await engine.run_once()
     summary = results[0]
 
@@ -327,9 +323,7 @@ async def test_node_host_settlement_engine_settles_pending_labor(cn_pool):
     assert "host_dividends_skipped_reason" in summary
 
     async with cn_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT status FROM labor_ledger WHERE worker_id=$1", worker_id
-        )
+        rows = await conn.fetch("SELECT status FROM labor_ledger WHERE worker_id=$1", worker_id)
     assert all(r["status"] == "paid" for r in rows)
 
 

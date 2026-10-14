@@ -95,12 +95,24 @@ def test_dashboard_password_is_required_and_not_the_factory_default():
     # 变量名不能是占位默认值
     var = value.split(":?", 1)[1].rstrip("}")
     assert var, "fail-closed 变量名不能为空"
-    assert var not in {"public", "admin", "changeme", "change_me"}, f"dashboard 口令变量名 {var!r} 本身就是弱默认值"
+    assert var not in {"public", "admin", "changeme", "change_me"}, (
+        f"dashboard 口令变量名 {var!r} 本身就是弱默认值"
+    )
 
 
 #: 会被一眼看穿的弱口令。出现在"生效值"里就是事故；出现在 `:?` 的报错
 #: 文案里（告诉运维出厂默认是什么）则是必要的。
-WEAK_SECRETS = {"public", "admin", "changeme", "change_me", "password", "secret", "12345", "123456", "admin123"}
+WEAK_SECRETS = {
+    "public",
+    "admin",
+    "changeme",
+    "change_me",
+    "password",
+    "secret",
+    "12345",
+    "123456",
+    "admin123",
+}
 
 
 def _resolved_secret(value: str) -> str | None:
@@ -163,8 +175,11 @@ def test_mqtt_authenticator_is_configured():
     )
     assert env.get("EMQX_AUTHENTICATION__1__BACKEND") == "built_in_database"
     # 内置库明文存储不可接受
-    assert "sha256" in str(env.get("EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME", "")).lower() or (
-        "bcrypt" in str(env.get("EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME", "")).lower()
+    assert "sha256" in str(
+        env.get("EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME", "")
+    ).lower() or (
+        "bcrypt"
+        in str(env.get("EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME", "")).lower()
     ), "口令哈希算法未显式指定（默认可能是明文/弱哈希）"
 
 
@@ -175,8 +190,7 @@ def test_mqtt_authorization_denies_by_default():
     )
     # 静默丢弃会让"有人在越权"完全不可见
     assert env.get("EMQX_AUTHORIZATION__DENY_ACTION") == "disconnect", (
-        "deny_action 应为 disconnect：ignore 会把越权尝试静默丢弃，"
-        "运维完全看不到有人在试探 ACL"
+        "deny_action 应为 disconnect：ignore 会把越权尝试静默丢弃，运维完全看不到有人在试探 ACL"
     )
     # 命中缓存会让改过的 ACL 在 ttl 内不生效
     assert str(env.get("EMQX_AUTHORIZATION__CACHE__ENABLE", "")).lower() == "false", (
@@ -208,7 +222,7 @@ def test_acl_file_exists_and_only_allows_hardware_topics():
     assert allows, "ACL 里一条 allow 都没有 —— 没有任何客户端能连（网桥会连不上）"
     assert denies, (
         "ACL 里一条显式 deny 都没有。`no_match=deny` 只在**没有匹配规则**时兜底，"
-        "但如果 allow 规则写得太宽（例如 `{allow, all, publish, [\"#\"]}`），"
+        '但如果 allow 规则写得太宽（例如 `{allow, all, publish, ["#"]}`），'
         "兜底永远不会触发 —— 需要显式 deny 收紧。"
     )
     for rule in allows:
@@ -256,10 +270,16 @@ def test_bridge_sub_topics_in_code_match_the_acl():
 def test_bootstrap_script_exists_and_is_fail_closed():
     assert BOOTSTRAP.is_file(), f"缺少 {BOOTSTRAP} —— 内置数据库里没有用户，1883 等于全员被拒"
     text = BOOTSTRAP.read_text(encoding="utf-8")
-    for var in ("HEMALL_EMQX_DASHBOARD_PASSWORD", "HEMALL_EMQX_EDGE_USERNAME", "HEMALL_EMQX_EDGE_PASSWORD"):
+    for var in (
+        "HEMALL_EMQX_DASHBOARD_PASSWORD",
+        "HEMALL_EMQX_EDGE_USERNAME",
+        "HEMALL_EMQX_EDGE_PASSWORD",
+    ):
         assert var in text, f"bootstrap 必须消费 {var}，否则账号/口令只能靠人工在控制台点"
-    assert ":?" in (IOT_COMPOSE.read_text(encoding="utf-8")), "compose 侧应以 ${VAR:?} 形式注入上述变量"
-    assert re.search(r'exit 1|exit 1\b', text), "bootstrap 在缺配置时必须非零退出"
+    assert ":?" in (IOT_COMPOSE.read_text(encoding="utf-8")), (
+        "compose 侧应以 ${VAR:?} 形式注入上述变量"
+    )
+    assert re.search(r"exit 1|exit 1\b", text), "bootstrap 在缺配置时必须非零退出"
 
 
 def test_bootstrap_rejects_weak_or_default_secrets():
@@ -267,9 +287,9 @@ def test_bootstrap_rejects_weak_or_default_secrets():
     assert re.search(r"public|admin|changeme|change_me|12345|secret", text, re.I), (
         "bootstrap 必须显式拒绝弱口令/出厂默认值，而不是照单全收"
     )
-    assert re.search(r"\$\{#", text) or "length" in text or "弱" in text or "weak" in text.lower(), (
-        "bootstrap 应当对口令做最小长度检查"
-    )
+    assert (
+        re.search(r"\$\{#", text) or "length" in text or "弱" in text or "weak" in text.lower()
+    ), "bootstrap 应当对口令做最小长度检查"
 
 
 def test_bootstrap_is_idempotent():
@@ -301,9 +321,7 @@ def test_bridge_authenticates_to_mqtt():
 
     bridge_env = _iot()["services"]["iot-bridge"].get("environment") or []
     joined = "\n".join(map(str, bridge_env))
-    assert "MQTT_USERNAME" in joined and "MQTT_PASSWORD" in joined, (
-        "compose 没给网桥注入 MQTT 凭据"
-    )
+    assert "MQTT_USERNAME" in joined and "MQTT_PASSWORD" in joined, "compose 没给网桥注入 MQTT 凭据"
     assert ":?" in joined, "网桥的 MQTT 凭据必须以 ${VAR:?} fail-closed 注入"
 
 
@@ -327,23 +345,35 @@ out=$(mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -t 'cn/v1/D1/s/S1/pick' -m x -d 
 echo "$out" | grep -q 'CONNACK (4)' || fail "匿名连接没有被拒: $out"
 
 # 口令错误必须被拒
-out=$(mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$EDGE_USER" -P wrong-password -t 'cn/v1/D1/s/S1/pick' -m x -d 2>&1 || true)
+out=$(
+    mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$EDGE_USER" \
+    -P wrong-password -t 'cn/v1/D1/s/S1/pick' -m x -d 2>&1 || true
+)
 echo "$out" | grep -qE 'CONNACK \((4|5)\)' || fail "错误口令没有被拒: $out"
 
 # 未知用户必须被拒
-out=$(mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u attacker -P whatever -t 'cn/v1/D1/s/S1/pick' -m x -d 2>&1 || true)
+out=$(
+    mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u attacker \
+    -P whatever -t 'cn/v1/D1/s/S1/pick' -m x -d 2>&1 || true
+)
 echo "$out" | grep -qE 'CONNACK \((4|5)\)' || fail "未知用户没有被拒: $out"
 
 # 正确凭据 + 允许的主题 -> 必须真的送达订阅者
-mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" -u "$EDGE_USER" -P "$EDGE_PASSWORD" -t 'cn/v1/+/s/+/pick' -v -C 1 > "$SUB_LOG" 2>/dev/null &
+mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" \
+    -u "$EDGE_USER" -P "$EDGE_PASSWORD" \
+    -t 'cn/v1/+/s/+/pick' -v -C 1 > "$SUB_LOG" 2>/dev/null &
 subpid=$!
 sleep 3
-mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$EDGE_USER" -P "$EDGE_PASSWORD" -t 'cn/v1/D1/s/S1/pick' -m 'ALLOWED' -q 1 \
-  || fail "正确凭据发布允许主题失败"
+mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" \
+    -u "$EDGE_USER" -P "$EDGE_PASSWORD" \
+    -t 'cn/v1/D1/s/S1/pick' -m 'ALLOWED' -q 1 \
+    || fail "正确凭据发布允许主题失败"
 sleep 3
 
 # 正确凭据 + 禁止的主题 -> 不得送达
-mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$EDGE_USER" -P "$EDGE_PASSWORD" -t 'cn/v1/D1/s/S1/tamper' -m 'FORBIDDEN' -q 1 >/dev/null 2>&1 || true
+mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" \
+    -u "$EDGE_USER" -P "$EDGE_PASSWORD" \
+    -t 'cn/v1/D1/s/S1/tamper' -m 'FORBIDDEN' -q 1 >/dev/null 2>&1 || true
 sleep 3
 kill "$subpid" 2>/dev/null || true
 wait "$subpid" 2>/dev/null || true
@@ -359,9 +389,10 @@ echo "RESULT_OK"
 
 
 def _have_docker() -> bool:
-    return shutil.which("docker") is not None and subprocess.run(
-        ["docker", "info"], capture_output=True
-    ).returncode == 0
+    return (
+        shutil.which("docker") is not None
+        and subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    )
 
 
 @pytest.mark.slow
@@ -383,29 +414,49 @@ def test_real_emqx_enforces_authentication_and_acl(tmp_path):
     acl_mount = str(ACL_FILE)
     acl_container_path = "/opt/emqx/etc/acl.conf"
     subprocess.run(
-            [
-                "docker", "run", "-d", "--rm", "--name", "emqx-behaviour",
-                "-p", f"127.0.0.1:{dash_port}:18083",
-                "-p", f"127.0.0.1:{mqtt_port}:1883",
-                "-e", f"EMQX_DASHBOARD__DEFAULT_PASSWORD={dl_password}",
-                "-e", "EMQX_AUTHENTICATION__1__MECHANISM=password_based",
-                "-e", "EMQX_AUTHENTICATION__1__BACKEND=built_in_database",
-                "-e", "EMQX_AUTHENTICATION__1__USER_ID_TYPE=username",
-                "-e", "EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME=sha256",
-                "-e", "EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__SALT_POSITION=suffix",
-                "-e", "EMQX_AUTHORIZATION__NO_MATCH=deny",
-                "-e", "EMQX_AUTHORIZATION__DENY_ACTION=disconnect",
-                "-e", "EMQX_AUTHORIZATION__CACHE__ENABLE=false",
-                "-e", "EMQX_AUTHORIZATION__SOURCES__1__TYPE=file",
-                "-e", "EMQX_AUTHORIZATION__SOURCES__1__ENABLE=true",
-                "-e", f"EMQX_AUTHORIZATION__SOURCES__1__PATH={acl_container_path}",
-                "-v", f"{acl_mount}:{acl_container_path}:ro",
-                "emqx:5.3",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=600,
-        )
+        [
+            "docker",
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            "emqx-behaviour",
+            "-p",
+            f"127.0.0.1:{dash_port}:18083",
+            "-p",
+            f"127.0.0.1:{mqtt_port}:1883",
+            "-e",
+            f"EMQX_DASHBOARD__DEFAULT_PASSWORD={dl_password}",
+            "-e",
+            "EMQX_AUTHENTICATION__1__MECHANISM=password_based",
+            "-e",
+            "EMQX_AUTHENTICATION__1__BACKEND=built_in_database",
+            "-e",
+            "EMQX_AUTHENTICATION__1__USER_ID_TYPE=username",
+            "-e",
+            "EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME=sha256",
+            "-e",
+            "EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__SALT_POSITION=suffix",
+            "-e",
+            "EMQX_AUTHORIZATION__NO_MATCH=deny",
+            "-e",
+            "EMQX_AUTHORIZATION__DENY_ACTION=disconnect",
+            "-e",
+            "EMQX_AUTHORIZATION__CACHE__ENABLE=false",
+            "-e",
+            "EMQX_AUTHORIZATION__SOURCES__1__TYPE=file",
+            "-e",
+            "EMQX_AUTHORIZATION__SOURCES__1__ENABLE=true",
+            "-e",
+            f"EMQX_AUTHORIZATION__SOURCES__1__PATH={acl_container_path}",
+            "-v",
+            f"{acl_mount}:{acl_container_path}:ro",
+            "emqx:5.3",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=600,
+    )
 
     try:
         import time
@@ -431,13 +482,34 @@ def test_real_emqx_enforces_authentication_and_acl(tmp_path):
             "HEMALL_EMQX_EDGE_PASSWORD": edge_password,
         }
         boot = subprocess.run(
-            ["docker", "run", "--rm", "--network", "host",
-             "-v", f"{REPO_ROOT / 'emqx'}:/work:ro", "-w", "/work",
-             "-e", "EMQX_BOOTSTRAP_URL", "-e", "HEMALL_EMQX_DASHBOARD_USERNAME",
-             "-e", "HEMALL_EMQX_DASHBOARD_PASSWORD", "-e", "HEMALL_EMQX_EDGE_USERNAME",
-             "-e", "HEMALL_EMQX_EDGE_PASSWORD",
-             "curlimages/curl:8.11.1", "sh", "/work/bootstrap.sh"],
-            capture_output=True, text=True, env={**dict(**__import__("os").environ), **env}, timeout=300,
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "host",
+                "-v",
+                f"{REPO_ROOT / 'emqx'}:/work:ro",
+                "-w",
+                "/work",
+                "-e",
+                "EMQX_BOOTSTRAP_URL",
+                "-e",
+                "HEMALL_EMQX_DASHBOARD_USERNAME",
+                "-e",
+                "HEMALL_EMQX_DASHBOARD_PASSWORD",
+                "-e",
+                "HEMALL_EMQX_EDGE_USERNAME",
+                "-e",
+                "HEMALL_EMQX_EDGE_PASSWORD",
+                "curlimages/curl:8.11.1",
+                "sh",
+                "/work/bootstrap.sh",
+            ],
+            capture_output=True,
+            text=True,
+            env={**dict(**__import__("os").environ), **env},
+            timeout=300,
         )
         assert boot.returncode == 0, f"bootstrap 失败:\n{boot.stdout}\n{boot.stderr}"
 
@@ -456,9 +528,21 @@ def test_real_emqx_enforces_authentication_and_acl(tmp_path):
         script_path.write_text(script, encoding="utf-8")
 
         run = subprocess.run(
-            ["docker", "run", "--rm", "--network", "host", "-v", f"{tmp_path}:/t",
-             "eclipse-mosquitto:2", "sh", "/t/matrix.sh"],
-            capture_output=True, text=True, timeout=600,
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "host",
+                "-v",
+                f"{tmp_path}:/t",
+                "eclipse-mosquitto:2",
+                "sh",
+                "/t/matrix.sh",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
         combined = run.stdout + run.stderr
         assert "RESULT_OK" in combined, (

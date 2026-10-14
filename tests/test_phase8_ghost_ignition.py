@@ -23,7 +23,9 @@ from app.ext.oskill_ghost_clustering import (
 
 class TestHaversine:
     def test_same_point(self):
-        assert _haversine_km((39.9042, 116.4074), (39.9042, 116.4074)) == pytest.approx(0, abs=1e-10)
+        assert _haversine_km(
+            (39.9042, 116.4074), (39.9042, 116.4074)
+        ) == pytest.approx(0, abs=1e-10)
 
     def test_known_distance_shanghai_beijing(self):
         """上海到北京约 1068 km (直线距离)。"""

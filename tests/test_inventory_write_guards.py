@@ -102,6 +102,7 @@ async def test_receive_stock_writes_movement_on_success():
     assert conn.committed == 1
     assert conn.rolled_back == 0
 
+
 async def test_deduct_stock_requires_reservation_row_update_to_match():
     """`deduct_stock` guarded inventory_batch but not inventory_reservation.
 
@@ -115,9 +116,19 @@ async def test_deduct_stock_requires_reservation_row_update_to_match():
     conn.on(r"SELECT\s+COALESCE\(SUM\(quantity\)", 0)
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "batch_id": "batch-1", "quantity": 5,
-                    "consumed_qty": 0, "released_qty": 0,
-                    "variant_id": None, "location_id": "loc-1"})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                }
+            )
+        ],
     )
     conn.on(r"UPDATE\s+inventory_batch", Recording({"id": "batch-1"}))
     # Guarded UPDATE inventory_reservation ... RETURNING id matches nothing.
@@ -126,8 +137,11 @@ async def test_deduct_stock_requires_reservation_row_update_to_match():
 
     with pytest.raises(ReservationConflictError):
         await svc.deduct_stock(
-            order_id="o-1", product_id="p-1", quantity=5,
-            location_id="loc-1", variant_id=None,
+            order_id="o-1",
+            product_id="p-1",
+            quantity=5,
+            location_id="loc-1",
+            variant_id=None,
         )
 
 
@@ -138,9 +152,19 @@ async def test_release_reservation_requires_reservation_row_update_to_match():
     conn.on(r"SELECT\s+COALESCE\(SUM\(quantity\)", 0)
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "batch_id": "batch-1", "quantity": 5,
-                    "consumed_qty": 0, "released_qty": 0,
-                    "variant_id": None, "location_id": "loc-1"})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                }
+            )
+        ],
     )
     conn.on(r"UPDATE\s+inventory_batch", Recording({"id": "batch-1"}))
     conn.on(r"UPDATE\s+inventory_reservation", None)
@@ -148,20 +172,34 @@ async def test_release_reservation_requires_reservation_row_update_to_match():
 
     with pytest.raises(ReservationConflictError):
         await svc.release_reservation(
-            order_id="o-1", product_id="p-1", quantity=5,
-            location_id="loc-1", variant_id=None,
+            order_id="o-1",
+            product_id="p-1",
+            quantity=5,
+            location_id="loc-1",
+            variant_id=None,
         )
 
 
 # ── Query methods ──────────────────────────────────────────────────
 
+
 async def test_get_stock_returns_snapshots():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "stock_qty": 10, "reserved_qty": 2,
-                    "location_name": "Warehouse A"})],
+        [
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 10,
+                    "reserved_qty": 2,
+                    "location_name": "Warehouse A",
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -178,9 +216,19 @@ async def test_get_stock_with_variant_id():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": "var-1",
-                    "location_id": "loc-1", "stock_qty": 5, "reserved_qty": 1,
-                    "location_name": "Warehouse A"})],
+        [
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": "var-1",
+                    "location_id": "loc-1",
+                    "stock_qty": 5,
+                    "reserved_qty": 1,
+                    "location_name": "Warehouse A",
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -195,12 +243,28 @@ async def test_get_available_stock_sums_across_batches():
     conn.on(
         r"FROM\s+inventory_batch",
         [
-            Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                       "location_id": "loc-1", "stock_qty": 10, "reserved_qty": 2,
-                       "location_name": "Warehouse A"}),
-            Recording({"batch_id": "batch-2", "product_id": "p-1", "variant_id": None,
-                       "location_id": "loc-1", "stock_qty": 5, "reserved_qty": 0,
-                       "location_name": "Warehouse A"}),
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 10,
+                    "reserved_qty": 2,
+                    "location_name": "Warehouse A",
+                }
+            ),
+            Recording(
+                {
+                    "batch_id": "batch-2",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 5,
+                    "reserved_qty": 0,
+                    "location_name": "Warehouse A",
+                }
+            ),
         ],
     )
     svc = _svc(conn)
@@ -214,9 +278,19 @@ async def test_check_availability_returns_true_when_enough():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "stock_qty": 10, "reserved_qty": 2,
-                    "location_name": "Warehouse A"})],
+        [
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 10,
+                    "reserved_qty": 2,
+                    "location_name": "Warehouse A",
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -229,9 +303,20 @@ async def test_get_stock_summary_filters_by_product_and_location():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"product_id": "p-1", "variant_id": None, "location_id": "loc-1",
-                    "total_qty": 15, "reserved_qty": 3, "available_qty": 12,
-                    "location_name": "Warehouse A", "batch_count": 2})],
+        [
+            Recording(
+                {
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "total_qty": 15,
+                    "reserved_qty": 3,
+                    "available_qty": 12,
+                    "location_name": "Warehouse A",
+                    "batch_count": 2,
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -247,9 +332,20 @@ async def test_get_stock_summary_low_stock_only():
     # HAVING clause filters to available <= threshold (default 10)
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"product_id": "p-1", "variant_id": None, "location_id": "loc-1",
-                    "total_qty": 8, "reserved_qty": 1, "available_qty": 7,
-                    "location_name": "Warehouse A", "batch_count": 1})],
+        [
+            Recording(
+                {
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "total_qty": 8,
+                    "reserved_qty": 1,
+                    "available_qty": 7,
+                    "location_name": "Warehouse A",
+                    "batch_count": 1,
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -261,6 +357,7 @@ async def test_get_stock_summary_low_stock_only():
 
 # ── Reserve stock (success paths) ──────────────────────────────────
 
+
 async def test_reserve_stock_allocations_success():
     conn = FakeConn()
     # Advisory lock
@@ -270,29 +367,55 @@ async def test_reserve_stock_allocations_success():
     # Available batches (first query in reserve_stock_allocations) - matches FOR UPDATE
     conn.on(
         r"FROM\s+inventory_batch.*FOR UPDATE",
-        [Recording({"id": "batch-1", "stock_qty": 10, "reserved_qty": 0,
-                    "location_id": "loc-1", "variant_id": None})],
+        [
+            Recording(
+                {
+                    "id": "batch-1",
+                    "stock_qty": 10,
+                    "reserved_qty": 0,
+                    "location_id": "loc-1",
+                    "variant_id": None,
+                }
+            )
+        ],
     )
     # UPDATE inventory_batch returns row
-    conn.on(r"UPDATE\s+inventory_batch", Recording({"id": "batch-1", "location_id": "loc-1", "variant_id": None}))
+    conn.on(
+        r"UPDATE\s+inventory_batch",
+        Recording({"id": "batch-1", "location_id": "loc-1", "variant_id": None}),
+    )
     # INSERT inventory_reservation
     conn.on(r"INSERT\s+INTO\s+inventory_reservation", "res-1")
     # INSERT stock_movement
     conn.on(r"INSERT\s+INTO\s+stock_movement", "mov-1")
-    # _check_safety_stock: get_available_stock -> get_stock (second query to inventory_batch) - matches JOIN stock_location
+    # _check_safety_stock: get_available_stock -> get_stock (second query to
+# inventory_batch) - matches JOIN stock_location
     conn.on(
         r"FROM\s+inventory_batch.*JOIN\s+stock_location",
-        [Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "stock_qty": 7, "reserved_qty": 3,
-                    "location_name": "Warehouse A"})],
+        [
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 7,
+                    "reserved_qty": 3,
+                    "location_name": "Warehouse A",
+                }
+            )
+        ],
     )
     # _check_safety_stock: product_safety_stock
     conn.on(r"FROM\s+product_safety_stock", None)
     svc = _svc(conn)
 
     allocations = await svc.reserve_stock_allocations(
-        order_id="o-1", product_id="p-1", quantity=3,
-        location_id="loc-1", variant_id=None,
+        order_id="o-1",
+        product_id="p-1",
+        quantity=3,
+        location_id="loc-1",
+        variant_id=None,
     )
 
     assert len(allocations) == 1
@@ -307,14 +430,27 @@ async def test_reserve_stock_allocations_reuses_existing():
     # Existing reservation with matching quantity (query returns id AS reservation_id)
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"reservation_id": "res-1", "batch_id": "batch-1", "quantity": 3,
-                    "product_id": "p-1", "variant_id": None, "location_id": "loc-1"})],
+        [
+            Recording(
+                {
+                    "reservation_id": "res-1",
+                    "batch_id": "batch-1",
+                    "quantity": 3,
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
     allocations = await svc.reserve_stock_allocations(
-        order_id="o-1", product_id="p-1", quantity=3,
-        location_id="loc-1", variant_id=None,
+        order_id="o-1",
+        product_id="p-1",
+        quantity=3,
+        location_id="loc-1",
+        variant_id=None,
     )
 
     assert len(allocations) == 1
@@ -329,19 +465,32 @@ async def test_reserve_stock_allocations_fails_on_insufficient_stock():
     conn.on(r"FROM\s+inventory_reservation", [])
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"id": "batch-1", "stock_qty": 2, "reserved_qty": 0,
-                    "location_id": "loc-1", "variant_id": None})],
+        [
+            Recording(
+                {
+                    "id": "batch-1",
+                    "stock_qty": 2,
+                    "reserved_qty": 0,
+                    "location_id": "loc-1",
+                    "variant_id": None,
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
     with pytest.raises(InsufficientStockError):
         await svc.reserve_stock_allocations(
-            order_id="o-1", product_id="p-1", quantity=5,
-            location_id="loc-1", variant_id=None,
+            order_id="o-1",
+            product_id="p-1",
+            quantity=5,
+            location_id="loc-1",
+            variant_id=None,
         )
 
 
 # ── Deduct stock (success path) ────────────────────────────────────
+
 
 async def test_deduct_stock_success():
     conn = FakeConn()
@@ -350,9 +499,20 @@ async def test_deduct_stock_success():
     # Reservations
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "quantity": 5, "consumed_qty": 0, "released_qty": 0,
-                    "batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1"})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                }
+            )
+        ],
     )
     # UPDATE inventory_batch
     conn.on(r"UPDATE\s+inventory_batch", Recording({"id": "batch-1"}))
@@ -363,8 +523,11 @@ async def test_deduct_stock_success():
     svc = _svc(conn)
 
     await svc.deduct_stock(
-        order_id="o-1", product_id="p-1", quantity=3,
-        location_id="loc-1", variant_id=None,
+        order_id="o-1",
+        product_id="p-1",
+        quantity=3,
+        location_id="loc-1",
+        variant_id=None,
     )
 
     assert conn.did_issue(r"UPDATE\s+inventory_batch")
@@ -379,8 +542,11 @@ async def test_deduct_stock_skips_when_already_shipped():
     svc = _svc(conn)
 
     await svc.deduct_stock(
-        order_id="o-1", product_id="p-1", quantity=3,
-        location_id="loc-1", variant_id=None,
+        order_id="o-1",
+        product_id="p-1",
+        quantity=3,
+        location_id="loc-1",
+        variant_id=None,
     )
 
     assert not conn.did_issue(r"UPDATE\s+inventory_batch")
@@ -390,6 +556,7 @@ async def test_deduct_stock_skips_when_already_shipped():
 
 # ── Release reservation (success path) ─────────────────────────────
 
+
 async def test_release_reservation_success():
     conn = FakeConn()
     # already_released = 0
@@ -397,9 +564,20 @@ async def test_release_reservation_success():
     # Reservations
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "quantity": 5, "consumed_qty": 0, "released_qty": 0,
-                    "batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1"})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                }
+            )
+        ],
     )
     # UPDATE inventory_batch
     conn.on(r"UPDATE\s+inventory_batch", Recording({"id": "batch-1"}))
@@ -410,8 +588,11 @@ async def test_release_reservation_success():
     svc = _svc(conn)
 
     await svc.release_reservation(
-        order_id="o-1", product_id="p-1", quantity=3,
-        location_id="loc-1", variant_id=None,
+        order_id="o-1",
+        product_id="p-1",
+        quantity=3,
+        location_id="loc-1",
+        variant_id=None,
     )
 
     assert conn.did_issue(r"UPDATE\s+inventory_batch")
@@ -425,8 +606,11 @@ async def test_release_reservation_skips_when_already_released():
     svc = _svc(conn)
 
     await svc.release_reservation(
-        order_id="o-1", product_id="p-1", quantity=3,
-        location_id="loc-1", variant_id=None,
+        order_id="o-1",
+        product_id="p-1",
+        quantity=3,
+        location_id="loc-1",
+        variant_id=None,
     )
 
     assert not conn.did_issue(r"UPDATE\s+inventory_batch")
@@ -436,6 +620,7 @@ async def test_release_reservation_skips_when_already_released():
 
 # ── _check_safety_stock ────────────────────────────────────────────
 
+
 async def test_check_safety_stock_dispatches_alert_when_below_threshold():
     from app.inventory.models import StockAlert
 
@@ -443,9 +628,19 @@ async def test_check_safety_stock_dispatches_alert_when_below_threshold():
     # get_available_stock returns 5
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "stock_qty": 5, "reserved_qty": 0,
-                    "location_name": "Warehouse A"})],
+        [
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 5,
+                    "reserved_qty": 0,
+                    "location_name": "Warehouse A",
+                }
+            )
+        ],
     )
     # product_safety_stock returns threshold 10
     conn.on(r"FROM\s+product_safety_stock", Recording({"safety_threshold": 10}))
@@ -463,9 +658,19 @@ async def test_check_safety_stock_returns_none_when_above_threshold():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "stock_qty": 20, "reserved_qty": 0,
-                    "location_name": "Warehouse A"})],
+        [
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 20,
+                    "reserved_qty": 0,
+                    "location_name": "Warehouse A",
+                }
+            )
+        ],
     )
     conn.on(r"FROM\s+product_safety_stock", Recording({"safety_threshold": 10}))
     svc = _svc(conn)
@@ -480,9 +685,19 @@ async def test_check_safety_stock_critical_when_zero():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"batch_id": "batch-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "stock_qty": 0, "reserved_qty": 0,
-                    "location_name": "Warehouse A"})],
+        [
+            Recording(
+                {
+                    "batch_id": "batch-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 0,
+                    "reserved_qty": 0,
+                    "location_name": "Warehouse A",
+                }
+            )
+        ],
     )
     conn.on(r"FROM\s+product_safety_stock", Recording({"safety_threshold": 10}))
     svc = _svc(conn)
@@ -495,14 +710,24 @@ async def test_check_safety_stock_critical_when_zero():
 
 # ── check_all_safety_stock ────────────────────────────────────────
 
+
 async def test_check_all_safety_stock_returns_alerts():
     from app.inventory.models import StockAlert
 
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_batch",
-        [Recording({"product_id": "p-1", "variant_id": None, "location_id": "loc-1",
-                    "threshold": 10, "available": 5})],
+        [
+            Recording(
+                {
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "threshold": 10,
+                    "available": 5,
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -516,15 +741,30 @@ async def test_check_all_safety_stock_returns_alerts():
 
 # ── get_movement_history ──────────────────────────────────────────
 
+
 async def test_get_movement_history_returns_movements():
     conn = FakeConn()
     conn.on(
         r"FROM\s+stock_movement",
-        [Recording({"id": "mov-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "batch_id": "batch-1",
-                    "movement_type": "receipt", "quantity": 10, "unit_cost": None,
-                    "reference_type": None, "reference_id": None, "reason": None,
-                    "operator_id": None, "created_at": "2024-01-01T00:00:00"})],
+        [
+            Recording(
+                {
+                    "id": "mov-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "movement_type": "receipt",
+                    "quantity": 10,
+                    "unit_cost": None,
+                    "reference_type": None,
+                    "reference_id": None,
+                    "reason": None,
+                    "operator_id": None,
+                    "created_at": "2024-01-01T00:00:00",
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -537,12 +777,15 @@ async def test_get_movement_history_returns_movements():
 
 # ── set_safety_threshold ──────────────────────────────────────────
 
+
 async def test_set_safety_threshold_executes_upsert():
     conn = FakeConn()
     conn.on(r"INSERT\s+INTO\s+product_safety_stock", "OK")
     svc = _svc(conn)
 
-    await svc.set_safety_threshold("p-1", "loc-1", 20, variant_id="var-1", alert_email="test@example.com")
+    await svc.set_safety_threshold(
+        "p-1", "loc-1", 20, variant_id="var-1", alert_email="test@example.com"
+    )
 
     assert conn.did_issue(r"INSERT\s+INTO\s+product_safety_stock")
     # No transaction used, so committed stays 0

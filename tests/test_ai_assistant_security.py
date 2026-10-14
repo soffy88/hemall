@@ -226,7 +226,17 @@ def test_llm_error_text_is_not_echoed_to_the_caller():
             "auth header: Bearer sk-live-do-not-leak"
         )
 
-    provider._client = type("C", (), {"chat": type("Chat", (), {"completions": type("X", (), {"create": staticmethod(boom)})()})()})()
+    provider._client = type(
+        "C",
+        (),
+        {
+            "chat": type(
+                "Chat",
+                (),
+                {"completions": type("X", (), {"create": staticmethod(boom)})()},
+            )(),
+        },
+    )()
     provider._started = True
 
     from app.ai_assistant.llm_provider import LLMMessage

@@ -253,7 +253,9 @@ def queries_get_order_by_receipt_token_fails(token: str) -> bool:
             raise AssertionError("token must be rejected before touching the DB")
 
     result = asyncio.run(
-        queries.get_order_by_receipt_token(_Boom(), token, settings.jwt_secret, settings.jwt_algorithm)
+        queries.get_order_by_receipt_token(
+            _Boom(), token, settings.jwt_secret, settings.jwt_algorithm
+        )
     )
     return result is None
 
@@ -286,7 +288,9 @@ def test_get_order_by_receipt_token_accepts_a_real_receipt_token():
             return _Ctx()
 
     order = asyncio.run(
-        queries.get_order_by_receipt_token(_Pool(), token, settings.jwt_secret, settings.jwt_algorithm)
+        queries.get_order_by_receipt_token(
+            _Pool(), token, settings.jwt_secret, settings.jwt_algorithm
+        )
     )
     assert order == {"order_id": "order-9", "status": "paid"}
     assert seen["order_id"] == "order-9"

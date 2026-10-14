@@ -86,15 +86,28 @@ async def test_transition_status_update_requires_expected_version_and_status():
     )
     conn.on(
         r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": None, "region_code": None,
-            "currency": "CNY", "status": "confirmed", "version": 1,
-            "subtotal_cents": 0, "discount_cents": 0, "tax_cents": 0,
-            "shipping_cents": 0, "grand_total_cents": 0,
-            "payment_provider_name": None, "payment_intent_id": None,
-            "billing_address": None, "shipping_address": None,
-            "created_at": None, "updated_at": None,
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": None,
+                "currency": "CNY",
+                "status": "confirmed",
+                "version": 1,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": None,
+                "payment_intent_id": None,
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
     )
     svc = _svc(conn)
 
@@ -131,15 +144,28 @@ async def test_transition_status_writes_history_on_success():
     # get_order called after transaction commits
     conn.on(
         r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": None, "region_code": None,
-            "currency": "CNY", "status": "confirmed", "version": 1,
-            "subtotal_cents": 0, "discount_cents": 0, "tax_cents": 0,
-            "shipping_cents": 0, "grand_total_cents": 0,
-            "payment_provider_name": None, "payment_intent_id": None,
-            "billing_address": None, "shipping_address": None,
-            "created_at": None, "updated_at": None,
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": None,
+                "currency": "CNY",
+                "status": "confirmed",
+                "version": 1,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": None,
+                "payment_intent_id": None,
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
     )
     svc = _svc(conn)
 
@@ -172,15 +198,28 @@ async def test_confirm_order_writes_payment_intent_in_same_transaction():
     )
     conn.on(
         r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": None, "region_code": None,
-            "currency": "CNY", "status": "confirmed", "version": 1,
-            "subtotal_cents": 0, "discount_cents": 0, "tax_cents": 0,
-            "shipping_cents": 0, "grand_total_cents": 0,
-            "payment_provider_name": None, "payment_intent_id": "pi-123",
-            "billing_address": None, "shipping_address": None,
-            "created_at": None, "updated_at": None,
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": None,
+                "currency": "CNY",
+                "status": "confirmed",
+                "version": 1,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": None,
+                "payment_intent_id": "pi-123",
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
     )
     svc = _svc(conn)
 
@@ -233,10 +272,18 @@ async def test_cancel_order_releases_inventory():
     conn.on(
         r"SELECT\s+id,\s*product_id,\s*variant_id,\s*location_id,\s*batch_id,\s*quantity,\s*consumed_qty,\s*released_qty\s+FROM\s+inventory_reservation",
         [
-            Recording({
-                "id": "res-1", "product_id": "p-1", "variant_id": None, "location_id": "loc-1",
-                "batch_id": "batch-1", "quantity": 5, "consumed_qty": 0, "released_qty": 0,
-            })
+            Recording(
+                {
+                    "id": "res-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                }
+            )
         ],
     )
     conn.on(
@@ -261,22 +308,37 @@ async def test_cancel_order_releases_inventory():
     )
     conn.on(
         r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": None, "region_code": None,
-            "currency": "CNY", "status": "cancelled", "version": 2,
-            "subtotal_cents": 0, "discount_cents": 0, "tax_cents": 0,
-            "shipping_cents": 0, "grand_total_cents": 0,
-            "payment_provider_name": None, "payment_intent_id": None,
-            "billing_address": None, "shipping_address": None,
-            "created_at": None, "updated_at": None,
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": None,
+                "currency": "CNY",
+                "status": "cancelled",
+                "version": 2,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": None,
+                "payment_intent_id": None,
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
     )
     svc = _svc(conn)
 
     result = await svc.cancel_order(order_id="o-1", reason="user requested")
 
     assert result.status == OrderStatus.CANCELLED
-    assert conn.did_issue(r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1")
+    assert conn.did_issue(
+        r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1"
+    )
     assert conn.did_issue(r"INSERT\s+INTO\s+stock_movement")
 
 
@@ -290,11 +352,19 @@ async def test_ship_order_deducts_inventory():
     conn.on(
         r"SELECT\s+id,\s*order_line_item_id,\s*product_id,\s*variant_id,\s*location_id,\s*batch_id,\s*quantity,\s*consumed_qty,\s*released_qty\s+FROM\s+inventory_reservation",
         [
-            Recording({
-                "id": "res-1", "order_line_item_id": "line-1", "product_id": "p-1",
-                "variant_id": None, "location_id": "loc-1", "batch_id": "batch-1",
-                "quantity": 5, "consumed_qty": 0, "released_qty": 0,
-            })
+            Recording(
+                {
+                    "id": "res-1",
+                    "order_line_item_id": "line-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                }
+            )
         ],
     )
     conn.on(
@@ -327,15 +397,28 @@ async def test_ship_order_deducts_inventory():
     )
     conn.on(
         r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": None, "region_code": None,
-            "currency": "CNY", "status": "shipped", "version": 4,
-            "subtotal_cents": 0, "discount_cents": 0, "tax_cents": 0,
-            "shipping_cents": 0, "grand_total_cents": 0,
-            "payment_provider_name": None, "payment_intent_id": None,
-            "billing_address": None, "shipping_address": None,
-            "created_at": None, "updated_at": None,
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": None,
+                "currency": "CNY",
+                "status": "shipped",
+                "version": 4,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": None,
+                "payment_intent_id": None,
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
     )
     svc = _svc(conn)
 
@@ -383,19 +466,33 @@ async def test_transition_status_not_found_raises():
 
 # ── Query methods ──────────────────────────────────────────────────
 
+
 async def test_get_order_returns_snapshot():
     conn = FakeConn()
     conn.on(
         r"FROM\s+customer_order",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": "c-1", "region_code": "cn-east",
-            "currency": "CNY", "status": "confirmed", "version": 1,
-            "subtotal_cents": 1000, "discount_cents": 0, "tax_cents": 100,
-            "shipping_cents": 50, "grand_total_cents": 1150,
-            "payment_provider_name": "manual", "payment_intent_id": "pi-1",
-            "billing_address": None, "shipping_address": None,
-            "created_at": "2024-01-01T00:00:00", "updated_at": "2024-01-01T00:00:00",
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": "c-1",
+                "region_code": "cn-east",
+                "currency": "CNY",
+                "status": "confirmed",
+                "version": 1,
+                "subtotal_cents": 1000,
+                "discount_cents": 0,
+                "tax_cents": 100,
+                "shipping_cents": 50,
+                "grand_total_cents": 1150,
+                "payment_provider_name": "manual",
+                "payment_intent_id": "pi-1",
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": "2024-01-01T00:00:00",
+                "updated_at": "2024-01-01T00:00:00",
+            }
+        ),
     )
     svc = _svc(conn)
 
@@ -422,12 +519,24 @@ async def test_get_order_items_returns_line_items():
     conn = FakeConn()
     conn.on(
         r"FROM\s+order_line_item",
-        [Recording({
-            "id": "line-1", "order_id": "o-1", "batch_id": "batch-1", "quantity": 2,
-            "unit_price_cents": 500, "line_total_cents": 1000,
-            "product_id": "p-1", "variant_id": None, "location_id": "loc-1", "stock_qty": 10,
-            "wired_location_id": "loc-1", "reservation_id": "res-1",
-        })],
+        [
+            Recording(
+                {
+                    "id": "line-1",
+                    "order_id": "o-1",
+                    "batch_id": "batch-1",
+                    "quantity": 2,
+                    "unit_price_cents": 500,
+                    "line_total_cents": 1000,
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "stock_qty": 10,
+                    "wired_location_id": "loc-1",
+                    "reservation_id": "res-1",
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -442,13 +551,27 @@ async def test_list_orders_filters_by_customer_and_status():
     conn = FakeConn()
     conn.on(
         r"FROM\s+customer_order",
-        [Recording({
-            "id": "o-1", "cart_id": None, "customer_id": "c-1", "currency": "CNY",
-            "status": "confirmed", "version": 1, "subtotal_cents": 1000,
-            "discount_cents": 0, "tax_cents": 100, "shipping_cents": 50,
-            "grand_total_cents": 1150, "payment_provider_name": "manual",
-            "payment_intent_id": "pi-1", "created_at": None, "updated_at": None,
-        })],
+        [
+            Recording(
+                {
+                    "id": "o-1",
+                    "cart_id": None,
+                    "customer_id": "c-1",
+                    "currency": "CNY",
+                    "status": "confirmed",
+                    "version": 1,
+                    "subtotal_cents": 1000,
+                    "discount_cents": 0,
+                    "tax_cents": 100,
+                    "shipping_cents": 50,
+                    "grand_total_cents": 1150,
+                    "payment_provider_name": "manual",
+                    "payment_intent_id": "pi-1",
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -482,15 +605,28 @@ async def test_deliver_order_transitions_status():
     conn.on(r"INSERT\s+INTO\s+order_status_history", "hist-1")
     conn.on(
         r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": None, "region_code": None,
-            "currency": "CNY", "status": "delivered", "version": 4,
-            "subtotal_cents": 0, "discount_cents": 0, "tax_cents": 0,
-            "shipping_cents": 0, "grand_total_cents": 0,
-            "payment_provider_name": None, "payment_intent_id": None,
-            "billing_address": None, "shipping_address": None,
-            "created_at": None, "updated_at": None,
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": None,
+                "currency": "CNY",
+                "status": "delivered",
+                "version": 4,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": None,
+                "payment_intent_id": None,
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
     )
     svc = _svc(conn)
 
@@ -513,15 +649,28 @@ async def test_complete_order_transitions_status():
     conn.on(r"INSERT\s+INTO\s+order_status_history", "hist-1")
     conn.on(
         r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
-        Recording({
-            "id": "o-1", "cart_id": None, "customer_id": None, "region_code": None,
-            "currency": "CNY", "status": "completed", "version": 5,
-            "subtotal_cents": 0, "discount_cents": 0, "tax_cents": 0,
-            "shipping_cents": 0, "grand_total_cents": 0,
-            "payment_provider_name": None, "payment_intent_id": None,
-            "billing_address": None, "shipping_address": None,
-            "created_at": None, "updated_at": None,
-        }),
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": None,
+                "currency": "CNY",
+                "status": "completed",
+                "version": 5,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": None,
+                "payment_intent_id": None,
+                "billing_address": None,
+                "shipping_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
     )
     svc = _svc(conn)
 
@@ -533,14 +682,26 @@ async def test_complete_order_transitions_status():
 
 # ── _release_order_inventory ──────────────────────────────────────
 
+
 async def test_release_order_inventory_releases_reservations():
 
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "batch_id": "batch-1",
-                    "quantity": 5, "consumed_qty": 0, "released_qty": 0})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                }
+            )
+        ],
     )
     conn.on(
         r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1",
@@ -556,7 +717,9 @@ async def test_release_order_inventory_releases_reservations():
     # Call the private method directly
     await svc._release_order_inventory(conn, "o-1")
 
-    assert conn.did_issue(r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1")
+    assert conn.did_issue(
+        r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1"
+    )
     assert conn.did_issue(r"INSERT\s+INTO\s+stock_movement")
 
 
@@ -566,9 +729,20 @@ async def test_release_order_inventory_fails_on_inconsistent_batch():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "batch_id": "batch-1",
-                    "quantity": 5, "consumed_qty": 0, "released_qty": 0})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                }
+            )
+        ],
     )
     conn.on(
         r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1",
@@ -586,9 +760,20 @@ async def test_release_order_inventory_fails_on_reservation_update_fail():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "product_id": "p-1", "variant_id": None,
-                    "location_id": "loc-1", "batch_id": "batch-1",
-                    "quantity": 5, "consumed_qty": 0, "released_qty": 0})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                }
+            )
+        ],
     )
     conn.on(
         r"UPDATE\s+inventory_batch\s+SET\s+reserved_qty\s*=\s*reserved_qty\s*-\s*\$1",
@@ -606,13 +791,26 @@ async def test_release_order_inventory_fails_on_reservation_update_fail():
 
 # ── _ship_order_inventory ────────────────────────────────────────
 
+
 async def test_ship_order_inventory_consumes_reservations():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "order_line_item_id": "line-1", "product_id": "p-1",
-                    "variant_id": None, "location_id": "loc-1", "batch_id": "batch-1",
-                    "quantity": 5, "consumed_qty": 0, "released_qty": 0})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "order_line_item_id": "line-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                }
+            )
+        ],
     )
     conn.on(r"SELECT\s+COUNT\(\*\)\s+FROM\s+order_line_item", 1)
     conn.on(
@@ -658,9 +856,21 @@ async def test_ship_order_inventory_fails_on_batch_update_fail():
     conn = FakeConn()
     conn.on(
         r"FROM\s+inventory_reservation",
-        [Recording({"id": "res-1", "order_line_item_id": "line-1", "product_id": "p-1",
-                    "variant_id": None, "location_id": "loc-1", "batch_id": "batch-1",
-                    "quantity": 5, "consumed_qty": 0, "released_qty": 0})],
+        [
+            Recording(
+                {
+                    "id": "res-1",
+                    "order_line_item_id": "line-1",
+                    "product_id": "p-1",
+                    "variant_id": None,
+                    "location_id": "loc-1",
+                    "batch_id": "batch-1",
+                    "quantity": 5,
+                    "consumed_qty": 0,
+                    "released_qty": 0,
+                }
+            )
+        ],
     )
     conn.on(r"SELECT\s+COUNT\(\*\)\s+FROM\s+order_line_item", 1)
     conn.on(
@@ -675,15 +885,25 @@ async def test_ship_order_inventory_fails_on_batch_update_fail():
 
 # ── get_status_history ────────────────────────────────────────────
 
+
 async def test_get_status_history_returns_entries():
     conn = FakeConn()
     conn.on(
         r"FROM\s+order_status_history",
-        [Recording({
-            "id": "hist-1", "order_id": "o-1", "from_status": "pending",
-            "to_status": "confirmed", "reason": "payment confirmed",
-            "operator_id": "op-1", "metadata": '{"key": "value"}', "created_at": "2024-01-01T00:00:00",
-        })],
+        [
+            Recording(
+                {
+                    "id": "hist-1",
+                    "order_id": "o-1",
+                    "from_status": "pending",
+                    "to_status": "confirmed",
+                    "reason": "payment confirmed",
+                    "operator_id": "op-1",
+                    "metadata": '{"key": "value"}',
+                    "created_at": "2024-01-01T00:00:00",
+                }
+            )
+        ],
     )
     svc = _svc(conn)
 
@@ -696,6 +916,7 @@ async def test_get_status_history_returns_entries():
 
 
 # ── get_order_stats ──────────────────────────────────────────────
+
 
 async def test_get_order_stats_groups_by_status():
     conn = FakeConn()

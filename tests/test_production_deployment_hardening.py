@@ -28,11 +28,16 @@ def test_production_elasticsearch_uses_credentials_and_ca_validation():
     assert any("HEMALL_ELASTICSEARCH_CA_CERT=" in str(v) for v in api_env)
     es_env = config["services"]["elasticsearch"]["environment"]
     assert not any("xpack.security.enabled=false" in str(v) for v in es_env)
-    assert "elasticsearch_certs:/usr/share/elasticsearch/config/certs" in config["services"]["elasticsearch"]["volumes"]
+    assert (
+        "elasticsearch_certs:/usr/share/elasticsearch/config/certs"
+        in config["services"]["elasticsearch"]["volumes"]
+    )
 
 
 def test_production_compose_requires_admin_and_real_payment_configuration():
-    api_env = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text())["services"]["api"]["environment"]
+    api_env = yaml.safe_load((ROOT / "docker-compose.prod.yml").read_text())["services"]["api"][
+        "environment"
+    ]
     joined = "\n".join(map(str, api_env))
     assert "HEMALL_PRIVILEGED_STAFF_IDS=${HEMALL_PRIVILEGED_STAFF_IDS:?" in joined
     assert "HEMALL_PAYMENT_GATEWAY_PROVIDER=${HEMALL_PAYMENT_GATEWAY_PROVIDER:?" in joined
@@ -64,5 +69,8 @@ def test_helm_requires_external_production_secret_and_rejects_insecure_embedded_
     secret_template = (ROOT / "charts/hemal/templates/secret.yaml").read_text()
     deployment_template = (ROOT / "charts/hemal/templates/deployment.yaml").read_text()
     assert "Set .Values.secrets.existingSecret" in secret_template
-    assert "Bundled Elasticsearch is not configured with verified HTTPS authentication" in secret_template
+    assert (
+        "Bundled Elasticsearch is not configured with verified HTTPS authentication"
+        in secret_template
+    )
     assert ".Values.secrets.existingSecret" in deployment_template

@@ -22,7 +22,9 @@ class TestOrderStateMachine:
     """订单状态机转换测试。"""
 
     def test_happy_path_full_lifecycle(self):
-        """完整生命周期: pending → confirmed → processing → packed → shipped → delivered → completed"""
+        """完整生命周期:
+        pending → confirmed → processing → packed → shipped → delivered → completed
+        """
         path = [
             (OrderStatus.PENDING, OrderStatus.CONFIRMED),
             (OrderStatus.CONFIRMED, OrderStatus.PROCESSING),

@@ -64,9 +64,13 @@ async def _make_variant(
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, "
-            "lat, lng, status) "
-            "VALUES ($1,'phase7_loc','cn-east','host_phase7','测试车库',$2,$3,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, "
+                "lat, lng, status) "
+                "VALUES ($1,'phase7_loc','cn-east','host_phase7','测试车库',$2,$3,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
             lat,
             lon,

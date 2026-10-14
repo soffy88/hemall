@@ -27,9 +27,13 @@ from tests.service_fakes import FakeConn, FakePool, Recording
 
 
 def _svc(conn: FakeConn) -> PaymentService:
-    settings = type("Settings", (), {
-        "wechat_pay_notify_url": "https://test/notify",
-    })()
+    settings = type(
+        "Settings",
+        (),
+        {
+            "wechat_pay_notify_url": "https://test/notify",
+        },
+    )()
     return PaymentService(FakePool(conn), settings)
 
 
@@ -74,7 +78,9 @@ class TestPaymentIntentCreation:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}
+            ),
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+order_id\s*=\s*\$1\s+AND\s+provider\s*=\s*\$2\s+FOR\s+UPDATE",
@@ -86,7 +92,17 @@ class TestPaymentIntentCreation:
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1234, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1234,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         conn.on(
             r"INSERT\s+INTO\s+payment_outbox",
@@ -99,7 +115,17 @@ class TestPaymentIntentCreation:
         # _read_intent called at the end
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1234, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1234,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -118,7 +144,9 @@ class TestPaymentIntentCreation:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}
+            ),
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+order_id\s*=\s*\$1\s+AND\s+provider\s*=\s*\$2\s+FOR\s+UPDATE",
@@ -130,7 +158,17 @@ class TestPaymentIntentCreation:
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1234, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1234,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         conn.on(
             r"INSERT\s+INTO\s+payment_outbox",
@@ -155,7 +193,9 @@ class TestPaymentIntentCreation:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}
+            ),
         )
         svc = _svc(conn)
 
@@ -183,7 +223,9 @@ class TestPaymentIntentCreation:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "CNY"}
+            ),
         )
         # First call: no existing intent
         conn.on(
@@ -196,7 +238,17 @@ class TestPaymentIntentCreation:
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         conn.on(
             r"INSERT\s+INTO\s+payment_outbox",
@@ -209,17 +261,47 @@ class TestPaymentIntentCreation:
         # _read_intent for first call
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         # Second call: existing intent found
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+order_id\s*=\s*\$1\s+AND\s+provider\s*=\s*\$2\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         # _read_intent for second call
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -246,7 +328,18 @@ class TestRefundIdempotency:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider"}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                }
+            ),
         )
         # First call: insert refund row
         conn.on(
@@ -268,7 +361,21 @@ class TestRefundIdempotency:
         # _read_refund called by request_refund -> process_refund
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "succeeded", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "succeeded",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -290,7 +397,9 @@ class TestMonetaryValuesAreIntegerCents:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1234, "currency": "CNY"}
+            ),
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+order_id\s*=\s*\$1\s+AND\s+provider\s*=\s*\$2\s+FOR\s+UPDATE",
@@ -302,7 +411,17 @@ class TestMonetaryValuesAreIntegerCents:
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1234, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1234,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         conn.on(
             r"INSERT\s+INTO\s+payment_outbox",
@@ -315,7 +434,17 @@ class TestMonetaryValuesAreIntegerCents:
         # _read_intent
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1234, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1234,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -339,7 +468,9 @@ class TestProviderConstraints:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "USD"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "USD"}
+            ),
         )
         svc = _svc(conn)
 
@@ -353,7 +484,9 @@ class TestProviderConstraints:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 0, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 0, "currency": "CNY"}
+            ),
         )
         svc = _svc(conn)
 
@@ -373,7 +506,17 @@ class TestPaymentIntentProcessing:
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -386,12 +529,22 @@ class TestPaymentIntentProcessing:
         # _claim_outbox returns a job
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
-            Recording({"id": "job-1", "payload": '{}'}),
+            Recording({"id": "job-1", "payload": "{}"}),
         )
         # _read_intent
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         # _provider_prepay raises exception
         # _mark_outbox_failed
@@ -402,7 +555,17 @@ class TestPaymentIntentProcessing:
         # _read_intent after failure
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -415,12 +578,22 @@ class TestPaymentIntentProcessing:
         # _claim_outbox returns a job
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
-            Recording({"id": "job-1", "payload": '{}'}),
+            Recording({"id": "job-1", "payload": "{}"}),
         )
         # _read_intent
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         # UPDATE payment_intent
         conn.on(
@@ -435,11 +608,21 @@ class TestPaymentIntentProcessing:
         # _read_intent after success
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "provider_pending", "metadata": {"provider_result": {}}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "provider_pending",
+                    "metadata": {"provider_result": {}},
+                }
+            ),
         )
         svc = _svc(conn)
 
-        with patch.object(svc, '_provider_prepay', return_value={"prepay_id": "prepay-1"}):
+        with patch.object(svc, "_provider_prepay", return_value={"prepay_id": "prepay-1"}):
             result = await svc.process_intent(str(FIXED_INTENT_ID))
 
         assert result.status == "provider_pending"
@@ -452,12 +635,37 @@ class TestRequestRefund:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider"}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                }
+            ),
         )
         # Existing refund with status succeeded
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+payment_intent_id\s*=\s*\$1\s+AND\s+idempotency_key\s*=\s*\$2\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "succeeded", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "succeeded",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -474,12 +682,37 @@ class TestRequestRefund:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider"}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                }
+            ),
         )
         # Existing refund with status failed
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+payment_intent_id\s*=\s*\$1\s+AND\s+idempotency_key\s*=\s*\$2\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "failed", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "failed",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         # UPDATE payment_refund to pending
         conn.on(
@@ -491,7 +724,21 @@ class TestRequestRefund:
         # _read_refund called by process_refund
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "succeeded", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "succeeded",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -516,7 +763,21 @@ class TestProcessRefund:
         )
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "pending", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -528,23 +789,56 @@ class TestProcessRefund:
         conn = FakeConn()
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
-            Recording({"id": "job-1", "payload": '{}'}),
+            Recording({"id": "job-1", "payload": "{}"}),
         )
         # JOIN query for refund + intent
         conn.on(
             r"SELECT\s+r\.\*,\s*p\.provider",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "pending", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None, "provider": "manual", "order_id": "o-1", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider", "original_amount_cents": 1000}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                    "provider": "manual",
+                    "order_id": "o-1",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                    "original_amount_cents": 1000,
+                }
+            ),
         )
         # _mark_refund_failed updates
         conn.on(r"UPDATE\s+payment_refund\s+SET\s+status\s*=\s*'failed'", "OK")
         conn.on(r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'failed'", "OK")
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "failed", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "failed",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
-        with patch.object(svc, '_provider_refund', side_effect=Exception("provider error")):
+        with patch.object(svc, "_provider_refund", side_effect=Exception("provider error")):
             result = await svc.process_refund(str(FIXED_REFUND_ID))
 
         assert result["status"] == "failed"
@@ -553,27 +847,62 @@ class TestProcessRefund:
         conn = FakeConn()
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
-            Recording({"id": "job-1", "payload": '{}'}),
+            Recording({"id": "job-1", "payload": "{}"}),
         )
         # JOIN query for refund + intent
         conn.on(
             r"SELECT\s+r\.\*,\s*p\.provider",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "pending", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None, "provider": "manual", "order_id": "o-1", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider", "original_amount_cents": 1000}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                    "provider": "manual",
+                    "order_id": "o-1",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                    "original_amount_cents": 1000,
+                }
+            ),
         )
         # UPDATE payment_refund to processing
         conn.on(
             r"UPDATE\s+payment_refund\s+SET\s+status\s*=\s*'processing'",
             Recording({"id": str(FIXED_REFUND_ID)}),
         )
-        conn.on(r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'pending'", Recording({"id": "job-1"}))
+        conn.on(
+            r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'pending'", Recording({"id": "job-1"})
+        )
         # _read_refund after processing
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "processing", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "processing",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
-        with patch.object(svc, '_provider_refund', return_value={"status": "pending"}):
+        with patch.object(svc, "_provider_refund", return_value={"status": "pending"}):
             result = await svc.process_refund(str(FIXED_REFUND_ID))
 
         assert result["status"] == "processing"
@@ -582,12 +911,31 @@ class TestProcessRefund:
         conn = FakeConn()
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
-            Recording({"id": "job-1", "payload": '{}'}),
+            Recording({"id": "job-1", "payload": "{}"}),
         )
         # JOIN query for refund + intent
         conn.on(
             r"SELECT\s+r\.\*,\s*p\.provider",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "pending", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None, "provider": "manual", "order_id": "o-1", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider", "original_amount_cents": 1000}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                    "provider": "manual",
+                    "order_id": "o-1",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                    "original_amount_cents": 1000,
+                }
+            ),
         )
         # UPDATE payment_refund to succeeded
         conn.on(
@@ -602,15 +950,33 @@ class TestProcessRefund:
             Recording({"id": str(FIXED_INTENT_ID)}),
         )
         # UPDATE payment_outbox
-        conn.on(r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'completed'", Recording({"id": "job-1"}))
+        conn.on(
+            r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'completed'", Recording({"id": "job-1"})
+        )
         # _read_refund
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "succeeded", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "succeeded",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
-        with patch.object(svc, '_provider_refund', return_value={"status": "success", "id": "refund-1"}):
+        with patch.object(
+            svc, "_provider_refund", return_value={"status": "success", "id": "refund-1"}
+        ):
             result = await svc.process_refund(str(FIXED_REFUND_ID))
 
         assert result["status"] == "succeeded"
@@ -629,7 +995,16 @@ class TestReconcile:
         # SELECT jobs to process
         conn.on(
             r"SELECT\s+id,\s+payment_intent_id,\s+refund_id,\s+kind\s+FROM\s+payment_outbox",
-            [Recording({"id": "job-1", "payment_intent_id": str(FIXED_INTENT_ID), "refund_id": None, "kind": "prepay"})],
+            [
+                Recording(
+                    {
+                        "id": "job-1",
+                        "payment_intent_id": str(FIXED_INTENT_ID),
+                        "refund_id": None,
+                        "kind": "prepay",
+                    }
+                )
+            ],
         )
         # process_intent will be called
         conn.on(
@@ -638,11 +1013,21 @@ class TestReconcile:
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
-        with patch.object(svc, 'process_intent') as mock_process:
+        with patch.object(svc, "process_intent") as mock_process:
             mock_process.return_value = None
             processed = await svc.reconcile(limit=10)
 
@@ -656,7 +1041,16 @@ class TestReconcile:
         )
         conn.on(
             r"SELECT\s+id,\s+payment_intent_id,\s+refund_id,\s+kind\s+FROM\s+payment_outbox",
-            [Recording({"id": "job-1", "payment_intent_id": str(FIXED_INTENT_ID), "refund_id": str(FIXED_REFUND_ID), "kind": "refund"})],
+            [
+                Recording(
+                    {
+                        "id": "job-1",
+                        "payment_intent_id": str(FIXED_INTENT_ID),
+                        "refund_id": str(FIXED_REFUND_ID),
+                        "kind": "refund",
+                    }
+                )
+            ],
         )
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
@@ -664,11 +1058,25 @@ class TestReconcile:
         )
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "pending", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
-        with patch.object(svc, 'process_refund') as mock_process:
+        with patch.object(svc, "process_refund") as mock_process:
             mock_process.return_value = None
             processed = await svc.reconcile(limit=10)
 
@@ -682,7 +1090,17 @@ class TestInternalMethods:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {"provider_result": {}}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {"provider_result": {}},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -706,7 +1124,21 @@ class TestInternalMethods:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "succeeded", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "succeeded",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -730,7 +1162,7 @@ class TestInternalMethods:
         conn = FakeConn()
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
-            Recording({"id": "job-1", "payload": '{}'}),
+            Recording({"id": "job-1", "payload": "{}"}),
         )
         svc = _svc(conn)
 
@@ -743,7 +1175,7 @@ class TestInternalMethods:
         conn = FakeConn()
         conn.on(
             r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
-            Recording({"id": "job-1", "payload": '{}'}),
+            Recording({"id": "job-1", "payload": "{}"}),
         )
         svc = _svc(conn)
 
@@ -783,12 +1215,24 @@ class TestCreateIntentExistingIntent:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "CNY"}
+            ),
         )
         # Existing intent found
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+order_id\s*=\s*\$1\s+AND\s+provider\s*=\s*\$2\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         # UPDATE customer_order
         conn.on(
@@ -798,7 +1242,17 @@ class TestCreateIntentExistingIntent:
         # _read_intent
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -815,12 +1269,24 @@ class TestCreateIntentExistingIntent:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 2000, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 2000, "currency": "CNY"}
+            ),
         )
         # Existing intent with different amount
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+order_id\s*=\s*\$1\s+AND\s+provider\s*=\s*\$2\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -838,7 +1304,18 @@ class TestRequestRefundFull:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider"}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                }
+            ),
         )
         # No existing refund
         conn.on(
@@ -854,7 +1331,21 @@ class TestRequestRefundFull:
         # _read_refund
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "succeeded", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "succeeded",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -872,7 +1363,18 @@ class TestRequestRefundFull:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider"}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                }
+            ),
         )
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+payment_intent_id\s*=\s*\$1\s+AND\s+idempotency_key\s*=\s*\$2\s+FOR\s+UPDATE",
@@ -883,7 +1385,21 @@ class TestRequestRefundFull:
         conn.on(r"INSERT\s+INTO\s+payment_outbox", None)
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund:full", "amount_cents": 1000, "reason": "test", "status": "succeeded", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund:full",
+                    "amount_cents": 1000,
+                    "reason": "test",
+                    "status": "succeeded",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -906,12 +1422,24 @@ class TestEdgeCases:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*status,\s*grand_total_cents,\s*currency\s+FROM\s+customer_order\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "CNY"}),
+            Recording(
+                {"id": "o-1", "status": "pending", "grand_total_cents": 1000, "currency": "CNY"}
+            ),
         )
         # Existing intent with paid status
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+order_id\s*=\s*\$1\s+AND\s+provider\s*=\s*\$2\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "metadata": {},
+                }
+            ),
         )
         conn.on(
             r"UPDATE\s+customer_order\s+SET\s+payment_provider_name",
@@ -919,7 +1447,17 @@ class TestEdgeCases:
         )
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "metadata": {}}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "metadata": {},
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -937,12 +1475,37 @@ class TestEdgeCases:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider"}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                }
+            ),
         )
         # Existing refund with different amount
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+payment_intent_id\s*=\s*\$1\s+AND\s+idempotency_key\s*=\s*\$2\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_REFUND_ID), "payment_intent_id": str(FIXED_INTENT_ID), "idempotency_key": "refund-key-1", "amount_cents": 500, "reason": "test", "status": "pending", "provider_refund_no": "provider-ref-1", "provider_result": {}, "version": 0, "created_at": None, "updated_at": None}),
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -958,7 +1521,18 @@ class TestEdgeCases:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "paid", "provider_trade_no": "trade-1", "provider_intent_id": "pi-provider"}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "paid",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                }
+            ),
         )
         conn.on(
             r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+payment_intent_id\s*=\s*\$1\s+AND\s+idempotency_key\s*=\s*\$2\s+FOR\s+UPDATE",
@@ -979,7 +1553,17 @@ class TestEdgeCases:
         conn = FakeConn()
         conn.on(
             r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
-            Recording({"id": str(FIXED_INTENT_ID), "order_id": "o-1", "amount_cents": 1000, "currency": "CNY", "provider": "manual", "status": "pending", "metadata": '{"provider_result": {"key": "value"}}'}),
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": '{"provider_result": {"key": "value"}}',
+                }
+            ),
         )
         svc = _svc(conn)
 
@@ -995,9 +1579,10 @@ class TestProviderIntegration:
         conn = FakeConn()
         svc = _svc(conn)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
+        with patch.object(svc, "_gateway") as mock_gateway:
             from app.payments.alipay import AlipayOrderResponse
-            mock_response = AlipayOrderResponse(qr_code='alipay-qr', err_code=None, err_msg=None)
+
+            mock_response = AlipayOrderResponse(qr_code="alipay-qr", err_code=None, err_msg=None)
             mock_gateway.return_value.create_order = AsyncMock(return_value=mock_response)
             # Ensure prepay doesn't exist
             mock_gateway.return_value.prepay = None
@@ -1016,9 +1601,12 @@ class TestProviderIntegration:
         conn = FakeConn()
         svc = _svc(conn)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
+        with patch.object(svc, "_gateway") as mock_gateway:
             from app.payments.alipay import AlipayOrderResponse
-            mock_response = AlipayOrderResponse(qr_code=None, err_code="40004", err_msg='alipay error')
+
+            mock_response = AlipayOrderResponse(
+                qr_code=None, err_code="40004", err_msg="alipay error"
+            )
             mock_gateway.return_value.create_order = AsyncMock(return_value=mock_response)
             mock_gateway.return_value.prepay = None
             with pytest.raises(PaymentServiceError, match="alipay error"):
@@ -1033,17 +1621,24 @@ class TestProviderIntegration:
 
     async def test_provider_prepay_wechat(self):
         conn = FakeConn()
-        settings = type("Settings", (), {
-            "wechat_pay_notify_url": "https://test/notify",
-        })()
+        settings = type(
+            "Settings",
+            (),
+            {
+                "wechat_pay_notify_url": "https://test/notify",
+            },
+        )()
         svc = PaymentService(FakePool(conn), settings)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
+        with patch.object(svc, "_gateway") as mock_gateway:
             from app.payments.wechat import WeChatPayOrderResponse
-            mock_response = WeChatPayOrderResponse(code_url='wechat-code', prepay_id='wechat-prepay', err_code=None, err_msg=None)
+
+            mock_response = WeChatPayOrderResponse(
+                code_url="wechat-code", prepay_id="wechat-prepay", err_code=None, err_msg=None
+            )
             mock_gateway.return_value.create_order = AsyncMock(return_value=mock_response)
             # Ensure prepay doesn't exist so it falls through to create_order
-            if hasattr(mock_gateway.return_value, 'prepay'):
+            if hasattr(mock_gateway.return_value, "prepay"):
                 del mock_gateway.return_value.prepay
             result = await svc._provider_prepay(
                 provider="wechat",
@@ -1059,16 +1654,23 @@ class TestProviderIntegration:
 
     async def test_provider_prepay_wechat_fails(self):
         conn = FakeConn()
-        settings = type("Settings", (), {
-            "wechat_pay_notify_url": "https://test/notify",
-        })()
+        settings = type(
+            "Settings",
+            (),
+            {
+                "wechat_pay_notify_url": "https://test/notify",
+            },
+        )()
         svc = PaymentService(FakePool(conn), settings)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
+        with patch.object(svc, "_gateway") as mock_gateway:
             from app.payments.wechat import WeChatPayOrderResponse
-            mock_response = WeChatPayOrderResponse(code_url=None, prepay_id=None, err_code="SYSTEMERROR", err_msg='wechat error')
+
+            mock_response = WeChatPayOrderResponse(
+                code_url=None, prepay_id=None, err_code="SYSTEMERROR", err_msg="wechat error"
+            )
             mock_gateway.return_value.create_order = AsyncMock(return_value=mock_response)
-            if hasattr(mock_gateway.return_value, 'prepay'):
+            if hasattr(mock_gateway.return_value, "prepay"):
                 del mock_gateway.return_value.prepay
             with pytest.raises(PaymentServiceError, match="wechat error"):
                 await svc._provider_prepay(
@@ -1084,7 +1686,7 @@ class TestProviderIntegration:
         conn = FakeConn()
         svc = _svc(conn)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
+        with patch.object(svc, "_gateway") as mock_gateway:
             # Don't set prepay or create_order attributes at all
             del mock_gateway.return_value.prepay
             del mock_gateway.return_value.create_order
@@ -1102,8 +1704,10 @@ class TestProviderIntegration:
         conn = FakeConn()
         svc = _svc(conn)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
-            mock_gateway.return_value.refund = AsyncMock(return_value={"code": "10000", "msg": "success"})
+        with patch.object(svc, "_gateway") as mock_gateway:
+            mock_gateway.return_value.refund = AsyncMock(
+                return_value={"code": "10000", "msg": "success"}
+            )
             result = await svc._provider_refund(
                 provider="alipay",
                 out_trade_no="test-alipay-refund",
@@ -1119,8 +1723,10 @@ class TestProviderIntegration:
         conn = FakeConn()
         svc = _svc(conn)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
-            mock_gateway.return_value.refund = AsyncMock(return_value={"code": "40004", "msg": "fail"})
+        with patch.object(svc, "_gateway") as mock_gateway:
+            mock_gateway.return_value.refund = AsyncMock(
+                return_value={"code": "40004", "msg": "fail"}
+            )
             with pytest.raises(PaymentServiceError, match="fail"):
                 await svc._provider_refund(
                     provider="alipay",
@@ -1136,12 +1742,14 @@ class TestProviderIntegration:
         conn = FakeConn()
         svc = _svc(conn)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
+        with patch.object(svc, "_gateway") as mock_gateway:
             # First call raises TypeError (legacy sandbox), second call succeeds
-            mock_gateway.return_value.refund = AsyncMock(side_effect=[
-                TypeError("legacy"),
-                {"status": "success", "refund_id": "wechat-refund"}
-            ])
+            mock_gateway.return_value.refund = AsyncMock(
+                side_effect=[
+                    TypeError("legacy"),
+                    {"status": "success", "refund_id": "wechat-refund"},
+                ]
+            )
             result = await svc._provider_refund(
                 provider="wechat",
                 out_trade_no="test-wechat-refund",
@@ -1157,7 +1765,7 @@ class TestProviderIntegration:
         conn = FakeConn()
         svc = _svc(conn)
 
-        with patch.object(svc, '_gateway') as mock_gateway:
+        with patch.object(svc, "_gateway") as mock_gateway:
             mock_gateway.return_value.refund = AsyncMock(return_value={"status": "failed"})
             with pytest.raises(PaymentServiceError, match="payment provider refund failed"):
                 await svc._provider_refund(

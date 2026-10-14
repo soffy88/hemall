@@ -53,12 +53,18 @@ def test_both_copies_expose_the_same_alerts():
     root_alerts = _alert_names(_rules(ROOT_RULES))
     chart_alerts = _alert_names(_rules(CHART_RULES))
     assert root_alerts, "根 prometheus.rules.yml 一条告警都没有 —— compose 侧等于没配告警"
-    assert chart_alerts == root_alerts, f"两侧告警集合不一致: 仅根={root_alerts - chart_alerts} 仅 chart={chart_alerts - root_alerts}"
+    assert chart_alerts == root_alerts, (
+        f"两侧告警集合不一致: 仅根={root_alerts - chart_alerts} "
+        f"仅 chart={chart_alerts - root_alerts}"
+    )
 
 
 def test_every_alert_has_the_fields_prometheus_needs():
     """alert/expr/severity 缺一不可；缺 severity 会让 Alertmanager 无法分级路由。"""
-    for source, groups in (("prometheus.rules.yml", _rules(ROOT_RULES)), ("chart 副本", _rules(CHART_RULES))):
+    for source, groups in (
+        ("prometheus.rules.yml", _rules(ROOT_RULES)),
+        ("chart 副本", _rules(CHART_RULES)),
+    ):
         assert groups, f"{source}: groups 为空"
         for group in groups:
             assert group.get("name"), f"{source}: 有 group 缺 name"

@@ -165,7 +165,12 @@ def test_me_with_derived_key_capability_cookie_401(client):
 
 def test_refresh_with_staff_cookie(client):
     s = get_settings()
-    refresh = _sign({"sub": "u9", "email": "x@y.com", "role": "support"}, s, typ=TOKEN_TYPE_STAFF, minutes=7 * 24 * 60)
+    refresh = _sign(
+        {"sub": "u9", "email": "x@y.com", "role": "support"},
+        s,
+        typ=TOKEN_TYPE_STAFF,
+        minutes=7 * 24 * 60,
+    )
     r = client.post("/auth/refresh", headers={"Cookie": f"{REFRESH_TOKEN_COOKIE}={refresh}"})
     assert r.status_code == 200
     body = r.json()
@@ -181,7 +186,12 @@ def test_refresh_with_customer_cookie_reissues_customer_token(client):
     from app.security.tokens import decode_token
 
     s = get_settings()
-    refresh = _sign({"customer_id": "c9", "email": "c@y.com"}, s, typ=TOKEN_TYPE_CUSTOMER, minutes=7 * 24 * 60)
+    refresh = _sign(
+        {"customer_id": "c9", "email": "c@y.com"},
+        s,
+        typ=TOKEN_TYPE_CUSTOMER,
+        minutes=7 * 24 * 60,
+    )
     r = client.post("/auth/refresh", headers={"Cookie": f"{REFRESH_TOKEN_COOKIE}={refresh}"})
     assert r.status_code == 200
     payload = decode_token(

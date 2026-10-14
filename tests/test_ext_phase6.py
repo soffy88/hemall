@@ -55,8 +55,12 @@ async def _make_variant(pool, *, product_name: str) -> tuple[str, str, str]:
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
-            "VALUES ($1,'p6_loc','cn-east','host_p6','测试车库',31.0,121.0,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, lat, lng, status) "
+                "VALUES ($1,'p6_loc','cn-east','host_p6','测试车库',31.0,121.0,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
         )
         prod_id = await conn.fetchval(

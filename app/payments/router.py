@@ -433,7 +433,7 @@ async def alipay_notify(request: Request) -> str:
     if get_settings().environment.lower() == "production":
         return "fail"
     form = await request.form()
-    params = dict(form)
+    params = {k: v for k, v in form.items() if isinstance(v, str)}
 
     notify = await _alipay_provider.handle_notify(params)
     if notify is None:

@@ -49,7 +49,10 @@ def test_register_login_and_create_region(db_client, monkeypatch):
 
     email = f"admin-{uuid.uuid4().hex[:8]}@hemall.test"
     # 1. 公开引导注册 (fixture 临时打开 HEMALL_ALLOW_PUBLIC_ADMIN_REGISTRATION)
-    r = db_client.post("/customers/create_user", json={"email": email, "password": "supersecret", "name": "Admin"})
+    r = db_client.post(
+        "/customers/create_user",
+        json={"email": email, "password": "supersecret", "name": "Admin"},
+    )
     assert r.status_code == 201, r.text
     # 2. 登录 —— 账号还没写进 HEMALL_PRIVILEGED_STAFF_IDS, 按映射表角色只是 staff
     r = db_client.post("/auth/login", json={"email": email, "password": "supersecret"})
