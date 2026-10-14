@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from app import queries
 from app.deps import get_current_customer, get_settings
 from app.security.tokens import (
+    ACCESS_TOKEN_COOKIE,
     TOKEN_TYPE_CART,
     TOKEN_TYPE_CUSTOMER,
     TOKEN_TYPE_RECEIPT,
@@ -36,12 +37,13 @@ _optional_bearer = HTTPBearer(auto_error=False)
 
 
 def _optional_customer(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
     settings: Any = Depends(get_settings),
 ) -> dict[str, Any] | None:
-    if creds is None:
+    if creds is None and not request.cookies.get(ACCESS_TOKEN_COOKIE):
         return None
-    return get_current_customer(creds=creds, settings=settings)
+    return get_current_customer(request=request, creds=creds, settings=settings)
 
 
 def _sign_cart_capability(cart_id: str, secret: str, algorithm: str) -> str:

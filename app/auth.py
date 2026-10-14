@@ -25,14 +25,18 @@ from obase.persistence.pool import PgPool
 from .config import Settings
 from .deps import get_pool, get_settings
 from .security.rate_limit import limiter
-from .security.tokens import TOKEN_TYPE_STAFF, sign_token, decode_token, TokenTypeError
+from .security.tokens import (
+    ACCESS_TOKEN_COOKIE,
+    CSRF_TOKEN_COOKIE,
+    REFRESH_TOKEN_COOKIE,
+    TOKEN_TYPE_STAFF,
+    TOKEN_TYPE_CUSTOMER,
+    decode_token,
+    sign_token,
+    TokenTypeError,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-# Cookie 名称常量
-ACCESS_TOKEN_COOKIE = "hemall_access_token"
-REFRESH_TOKEN_COOKIE = "hemall_refresh_token"
-CSRF_TOKEN_COOKIE = "hemall_csrf_token"
 
 # Token 过期时间
 ACCESS_TOKEN_EXPIRES_MINUTES = 15
@@ -167,6 +171,26 @@ async def _get_current_user_from_token(token: str, settings: Settings) -> dict |
         return None
 
 
+def _decode_session_token(token: str, settings: Settings) -> tuple[str, dict] | None:
+    """解会话 refresh token；仅接受显式白名单 {staff, customer}。
+
+    返回 ``(typ, payload)``；签名无效/类型不符/能力令牌 (cart/receipt/pickup)
+    一律 None——校验只认白名单，与 tokens.py 的类型隔离约定一致。
+    """
+    for typ in (TOKEN_TYPE_STAFF, TOKEN_TYPE_CUSTOMER):
+        try:
+            payload = decode_token(
+                token,
+                typ=typ,
+                secret=settings.jwt_secret,
+                algorithm=settings.jwt_algorithm,
+            )
+        except Exception:  # noqa: BLE001 - 换下一个白名单类型继续
+            continue
+        return typ, payload
+    return None
+
+
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def login(
@@ -236,20 +260,30 @@ async def refresh(
     response: Response,
     settings: Settings = Depends(get_settings),
 ) -> RefreshResponse:
-    """刷新 access token：用 refresh token cookie 签发新的 access token + csrf token。"""
+    """刷新 access token：用 refresh token cookie 签发新的 access token + csrf token。
+
+    会话白名单为 ``{staff, customer}``（两种已注册的身份令牌类型），按原 typ
+    重签——顾客 refresh 签出的还是顾客 access token，类型隔离不破。
+    """
     refresh_token = request.cookies.get(REFRESH_TOKEN_COOKIE)
     if not refresh_token:
         raise HTTPException(status_code=401, detail="no refresh token")
 
-    user = await _get_current_user_from_token(refresh_token, settings)
-    if not user:
+    decoded = _decode_session_token(refresh_token, settings)
+    if not decoded:
         _clear_auth_cookies(response, settings)
         raise HTTPException(status_code=401, detail="invalid or expired refresh token")
 
+    typ, payload = decoded
+    if typ == TOKEN_TYPE_STAFF:
+        claims = {"sub": payload["sub"], "email": payload.get("email"), "role": payload.get("role")}
+    else:
+        claims = {"customer_id": payload["customer_id"], "email": payload.get("email")}
+
     # 签发新的 access token + csrf token
     access_token = sign_token(
-        {"sub": user["user_id"], "email": user["email"], "role": user["role"]},
-        typ=TOKEN_TYPE_STAFF,
+        claims,
+        typ=typ,
         secret=settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
         expires_in_minutes=ACCESS_TOKEN_EXPIRES_MINUTES,
