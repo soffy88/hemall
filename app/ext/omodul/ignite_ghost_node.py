@@ -123,13 +123,6 @@ async def ignite_ghost_node(
                 )
                 updated_count += int(result.split()[-1]) if len(result.split()) > 1 else 0
 
-            # 使用 RETURNING 拿实际更新行数以获取准确计数
-            actual_updated = await conn.fetchval(
-                'SELECT COUNT(*) FROM "crowd_intent" '
-                'WHERE id = ANY($1) AND status = $2',
-                [uuid7().__class__(x) for x in []],  # placeholder
-            )
-            # 更可靠的方式：统计已更新的行数
             trail.record(
                 event="intents_marked_fulfilled",
                 target_count=len(order_ids_list),

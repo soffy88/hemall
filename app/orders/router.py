@@ -85,8 +85,8 @@ async def get_order(
 
     try:
         order = await svc.get_order(order_id)
-    except OrderNotFoundError:
-        raise HTTPException(status_code=404, detail="order not found")
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail="order not found") from e
 
     if order is None:
         raise HTTPException(status_code=404, detail="order not found")
@@ -125,15 +125,15 @@ async def confirm_order(
             payment_intent_id=body.payment_intent_id if body else None,
         )
         return {"status": "confirmed", "order": order.model_dump(mode="json")}
-    except OrderNotFoundError:
-        raise HTTPException(status_code=404, detail="order not found")
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail="order not found") from e
     except InvalidOrderTransitionError as e:
         raise HTTPException(
             status_code=409,
             detail=f"cannot confirm: order is {e.from_status.value}",
-        )
+        ) from e
     except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/{order_id}/cancel")
@@ -150,15 +150,15 @@ async def cancel_order(
         reason = body.reason if body else "user requested"
         order = await svc.cancel_order(order_id, reason=reason)
         return {"status": "cancelled", "order": order.model_dump(mode="json")}
-    except OrderNotFoundError:
-        raise HTTPException(status_code=404, detail="order not found")
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail="order not found") from e
     except InvalidOrderTransitionError as e:
         raise HTTPException(
             status_code=409,
             detail=f"cannot cancel: order is {e.from_status.value}",
-        )
+        ) from e
     except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/{order_id}/ship")
@@ -178,15 +178,15 @@ async def ship_order(
             carrier=body.carrier if body else None,
         )
         return {"status": "shipped", "order": order.model_dump(mode="json")}
-    except OrderNotFoundError:
-        raise HTTPException(status_code=404, detail="order not found")
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail="order not found") from e
     except InvalidOrderTransitionError as e:
         raise HTTPException(
             status_code=409,
             detail=f"cannot ship: order is {e.from_status.value}",
-        )
+        ) from e
     except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/{order_id}/deliver")
@@ -201,15 +201,15 @@ async def deliver_order(
     try:
         order = await svc.deliver_order(order_id)
         return {"status": "delivered", "order": order.model_dump(mode="json")}
-    except OrderNotFoundError:
-        raise HTTPException(status_code=404, detail="order not found")
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail="order not found") from e
     except InvalidOrderTransitionError as e:
         raise HTTPException(
             status_code=409,
             detail=f"cannot deliver: order is {e.from_status.value}",
-        )
+        ) from e
     except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/{order_id}/complete")
@@ -224,15 +224,15 @@ async def complete_order(
     try:
         order = await svc.complete_order(order_id)
         return {"status": "completed", "order": order.model_dump(mode="json")}
-    except OrderNotFoundError:
-        raise HTTPException(status_code=404, detail="order not found")
+    except OrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail="order not found") from e
     except InvalidOrderTransitionError as e:
         raise HTTPException(
             status_code=409,
             detail=f"cannot complete: order is {e.from_status.value}",
-        )
+        ) from e
     except (ConcurrentOrderTransitionError, OrderInventoryConflictError) as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.get("/{order_id}/history")

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from ..config import Settings
 from ..deps import get_current_user, get_settings
@@ -68,7 +68,7 @@ async def unregister_device(
 @router.post("/send")
 async def send_notification(
     template_id: str = "",
-    substitutions: dict[str, str] = {},
+    substitutions: dict[str, str] = Body(default_factory=dict),
     priority: str = "normal",
     mgr: PushManager = Depends(get_push_manager),
 ) -> dict[str, Any]:

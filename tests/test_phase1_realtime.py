@@ -127,7 +127,6 @@ class TestConnectionManager:
         """测试发送失败时自动清理死连接。"""
         cm = ConnectionManager()
         ws = MockWebSocket()
-        original_send = ws.send_text
         call_count = [0]
 
         async def failing_send(text: str) -> None:

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 # ── 库存变动类型 ─────────────────────────────────────────────────────
 
 
-class StockMovementType(str, enum.Enum):
+class StockMovementType(enum.StrEnum):
     """库存变动类型。"""
 
     # 入库

@@ -213,11 +213,13 @@ async def test_transition_status_rejects_cancelled_order_payment_intent_write():
     )
     svc = _svc(conn)
 
-    with pytest.raises(Exception):  # ConcurrentOrderTransitionError or similar
+    # 订单已是 cancelled：状态机先拒绝，根本走不到那条 UPDATE。
+    with pytest.raises(InvalidOrderTransitionError):
         await svc.confirm_order(
             order_id="o-1",
             payment_intent_id="pi-123",
         )
+    assert not conn.issued(r"UPDATE\s+customer_order\s+SET\s+payment_intent_id")
 
 
 async def test_cancel_order_releases_inventory():

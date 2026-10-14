@@ -3,6 +3,7 @@
 
 import pytest
 
+from app.ai_assistant.knowledge import FAQItem, KnowledgeBase, KnowledgeCategory
 from app.ai_assistant.llm_provider import (
     AnthropicProvider,
     LLMMessage,
@@ -311,8 +312,6 @@ async def test_ai_service_chat_stream():
 
 
 # ── 知识库测试 ──────────────────────────────────────────────────
-
-from app.ai_assistant.knowledge import FAQItem, KnowledgeBase, KnowledgeCategory
 
 
 @pytest.mark.asyncio

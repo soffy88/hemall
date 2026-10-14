@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 # ── 订单状态枚举 ─────────────────────────────────────────────────────
 
 
-class OrderStatus(str, enum.Enum):
+class OrderStatus(enum.StrEnum):
     """订单生命周期状态。
 
     完整流转:

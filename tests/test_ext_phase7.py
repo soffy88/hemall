@@ -169,8 +169,11 @@ async def test_rotate_platform_cert_rejects_garbage_pem():
         api_v3_key="0" * 32,
         platform_cert=None,
     )
-    with pytest.raises(Exception):
-        gateway.rotate_platform_cert("not a pem")
+    # 内联垃圾 PEM（带 BEGIN 标记）必须在解析阶段被拒，而不是被当成路径去读盘。
+    with pytest.raises(ValueError):
+        gateway.rotate_platform_cert(
+            "-----BEGIN CERTIFICATE-----\nnot base64 at all\n-----END CERTIFICATE-----"
+        )
 
 
 async def test_cert_rotation_engine_skips_non_wechat_gateway():

@@ -136,6 +136,7 @@ async def tote_deposit_and_refund(
                 event="deposit_refunded",
                 intent_id=deposit["intent_id"],
                 amount=deposit["amount_cents"],
+                provider_status=refund_result.get("status"),
             )
 
             async with pool.acquire() as conn:

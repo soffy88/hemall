@@ -39,7 +39,7 @@ def _pattern_matches(pattern: str, rel: str) -> bool:
     """dockerignore 语义近似：尾部无斜杠的目录模式也匹配其下所有文件。"""
     pat = pattern.rstrip("/")
     candidates = {rel, f"{pat}/{rel}" if not rel.startswith(pat) else rel}
-    for cand in list(candidates):
+    for _cand in candidates:
         if fnmatch.fnmatch(rel, pattern):
             return True
         if fnmatch.fnmatch(rel, f"{pattern}*"):

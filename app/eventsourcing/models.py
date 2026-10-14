@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 # ── 事件类型枚举 ────────────────────────────────────────────────
 
@@ -181,7 +181,7 @@ class AggregateRoot(ABC):
 ProjectionType = TypeVar("ProjectionType")
 
 
-class Projection(ABC, Generic[ProjectionType]):
+class Projection[ProjectionType](ABC):
     """读模型投影抽象基类。
 
     将领域事件转换为面向查询的读模型格式。

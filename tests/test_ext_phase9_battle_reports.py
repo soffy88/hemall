@@ -528,7 +528,7 @@ class TestBattleReportReadSide:
 
         orders = [s, await _order_on_batch(), await _order_on_batch()]
         texts = ["又脆又甜，个头大", "很新鲜，回购", "脆甜，好吃"]
-        for i, (o, t) in enumerate(zip(orders, texts)):
+        for i, (o, t) in enumerate(zip(orders, texts, strict=True)):
             await _submit(
                 cn_pool,
                 user_id=o["customer_id"],

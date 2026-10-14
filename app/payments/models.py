@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 # ── 支付状态枚举 ─────────────────────────────────────────────────────
 
 
-class PaymentStatus(str, enum.Enum):
+class PaymentStatus(enum.StrEnum):
     """支付会话状态。"""
 
     PENDING = "pending"  # 待支付
@@ -43,7 +43,7 @@ class PaymentStatus(str, enum.Enum):
     EXPIRED = "expired"  # 超时未支付
 
 
-class PaymentProvider(str, enum.Enum):
+class PaymentProvider(enum.StrEnum):
     """支付渠道。"""
 
     WECHAT = "wechat"  # 微信支付

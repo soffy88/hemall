@@ -13,7 +13,6 @@ Phase 8 Task 1: oservi 层面的自动化调度 —— 扫描意向金池，执�
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +49,6 @@ def build_ghost_ignition_engine(
     """
 
     async def ghost_ignition_tick(**_: Any) -> dict[str, Any]:
-        now = datetime.now(UTC)
         # 获取最近 7 天内产生的 pending 意向单 (带坐标信息)
         # crowd_intent 表本身不含 lat/lon，需要从 customer 或外部关联表获取
         # intention_order 是 Phase 8 新增表，直接含坐标

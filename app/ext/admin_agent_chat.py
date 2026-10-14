@@ -516,7 +516,7 @@ async def _execute_query_node_revenue(
 
     if location_name:
         safe_sql = safe_sql.replace("b.location_id = :location_id", 'sl.name ILIKE :loc_name')
-        safe_sql = safe_sql.replace("$%d" % (len(params)-1), ":loc_name")
+        safe_sql = safe_sql.replace(f"${len(params) - 1}", ":loc_name")
         params.append(f"%{location_name}%")
         # Reconstruct with named params
         safe_sql = sql.replace(":location_id", ":loc_name").replace(":start_time", ":start_time")

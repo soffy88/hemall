@@ -83,7 +83,11 @@ def test_aes_gcm_decrypt_roundtrip():
 def test_aes_gcm_decrypt_wrong_key_fails():
     nonce = "123456789012"
     ct, _ = _aes_256_gcm_encrypt("0" * 32, nonce, "secret")
-    with pytest.raises(Exception):
+    # 密钥/associated_data 不匹配时 AEAD 校验失败 -> cryptography 的 InvalidTag，
+    # 不能是别的异常（否则这个用例等于没有断言）。
+    from cryptography.exceptions import InvalidTag
+
+    with pytest.raises(InvalidTag):
         aes_256_gcm_decrypt("1" * 32, nonce, ct, "")
 
 

@@ -97,15 +97,17 @@ class FCMClient:
         try:
             # 构造 HTTP v1 payload
             payload = self._build_v1_payload(notification, device_token)
-            
+
             # 在实际环境中执行 HTTP POST:
             #   POST https://fcm.googleapis.com/v1/projects/{project}/messages:send
             #   Authorization: Bearer {access_token}
             #   Content-Type: application/json
-            
+
             # Sandbox mock
             if not self._credentials_loaded:
-                logger.debug("[FCM SANDBOX] Would send to %s: %s", device_token, notification.title)
+                logger.debug(
+                    "[FCM SANDBOX] Would POST %s: %s", device_token, payload,
+                )
                 return PushResult(device_token=device_token, success=True)
 
             return PushResult(device_token=device_token, success=True)
@@ -328,6 +330,10 @@ class APNSClient:
             #           target_device_token=bytes.fromhex(clean_token),
             #       )
             #   )
+
+            logger.debug(
+                "[APNS SANDBOX] Would POST to %s: %s", clean_token, payload,
+            )
 
             return PushResult(device_token=device_token, success=True)
 

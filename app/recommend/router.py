@@ -80,11 +80,11 @@ async def log_behavior(
     """记录用户行为 (用于训练推荐模型)。"""
     try:
         btype = UserBehaviorType(behavior_type)
-    except ValueError:
+    except ValueError as e:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid behavior_type: {behavior_type}. Must be one of: view/cart_add/favorite/purchase/share",
-        )
+        ) from e
 
     event = UserBehaviorEvent(
         user_id=user_id,

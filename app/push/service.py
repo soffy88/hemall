@@ -237,7 +237,7 @@ class PushManager:
             # FCM topic 推送
             payload = self._fcm_client._build_v1_payload(notification, f"topic:{topic}")
             # 实际执行 HTTP 请求...
-            logger.info("[SANDBOX] Topic push to %s: %s", topic, title)
+            logger.info("[SANDBOX] Topic push to %s: %s", topic, payload)
             return {"total": 0, "success": 0, "failed": 0}
         except Exception as exc:
             logger.error("Topic push failed: %s", exc)

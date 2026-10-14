@@ -142,7 +142,7 @@ class RecommendationService:
 
         # 映射为 RecommendedProduct
         products = []
-        for pid, score in recs:
+        for pid, _score in recs:
             feat = self._product_features.get(pid)
             products.append(
                 RecommendedProduct(
@@ -170,7 +170,7 @@ class RecommendationService:
         """查找相似商品 (内容-based)。"""
         recs = await self._hybrid.find_similar_products(product_id, top_k)
         products = []
-        for pid, score in recs:
+        for pid, _score in recs:
             feat = self._product_features.get(pid)
             products.append(
                 RecommendedProduct(
@@ -196,7 +196,7 @@ class RecommendationService:
         """获取热门推荐 (冷启动兜底)。"""
         recs = await self._hybrid.trending.get_trending(top_k)
         products = []
-        for pid, score in recs:
+        for pid, _score in recs:
             feat = self._product_features.get(pid)
             products.append(
                 RecommendedProduct(

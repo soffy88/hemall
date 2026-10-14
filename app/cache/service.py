@@ -226,7 +226,7 @@ class CacheManager:
         try:
             values = await self._pool.mget(keys)
             results = {}
-            for k, v in zip(keys, values):
+            for k, v in zip(keys, values, strict=True):
                 results[k] = json.loads(v) if v else None
             return results
         except Exception as exc:

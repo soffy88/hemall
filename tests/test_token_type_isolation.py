@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 from obase.crypto.util import CryptoUtil
+from obase.exceptions import ObaseAuthError
 
 from app.deps import get_settings
 from app.security.tokens import (
@@ -97,7 +98,8 @@ def test_non_staff_typ_cannot_be_decoded_as_staff(typ):
         algorithm=settings.jwt_algorithm,
         expires_in_minutes=10,
     )
-    with pytest.raises(Exception):
+    # 密钥族不同时验签就失败，密钥族相同时类型白名单拒绝；两者都是"拒绝"。
+    with pytest.raises((TokenTypeError, ObaseAuthError)):
         decode_token(
             token,
             typ=TOKEN_TYPE_STAFF,
@@ -117,7 +119,7 @@ def test_every_token_type_is_accepted_only_for_its_own_typ(typ):
         token, typ=typ, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
     )["typ"] == typ
     for other in ALL_TOKEN_TYPES - {typ}:
-        with pytest.raises(Exception):
+        with pytest.raises((TokenTypeError, ObaseAuthError)):
             decode_token(
                 token, typ=other, secret=settings.jwt_secret,
                 algorithm=settings.jwt_algorithm,
@@ -152,7 +154,7 @@ def test_untyped_token_is_rejected_by_every_whitelist():
     settings = get_settings()
     token = _raw_sign({"order_id": "o1"})
     for typ in ALL_TOKEN_TYPES:
-        with pytest.raises(Exception):
+        with pytest.raises((TokenTypeError, ObaseAuthError)):
             decode_token(
                 token, typ=typ, secret=settings.jwt_secret,
                 algorithm=settings.jwt_algorithm,
@@ -178,7 +180,8 @@ def test_capability_tokens_are_not_signed_with_the_primary_secret(typ):
         algorithm=settings.jwt_algorithm,
         expires_in_minutes=10,
     )
-    with pytest.raises(Exception):
+    # 能力令牌用派生密钥签发，主密钥验签必然失败。
+    with pytest.raises(ObaseAuthError):
         CryptoUtil.jwt_decode(
             token=token, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
         )
@@ -210,7 +213,7 @@ def test_storefront_signs_cart_and_receipt_tokens_with_isolated_keys():
     )
     # 主密钥解不出
     for token in (cart_token, receipt_token):
-        with pytest.raises(Exception):
+        with pytest.raises(ObaseAuthError):
             CryptoUtil.jwt_decode(
                 token=token, secret=settings.jwt_secret, algorithm=settings.jwt_algorithm
             )
@@ -228,20 +231,22 @@ def test_storefront_signs_cart_and_receipt_tokens_with_isolated_keys():
 
 
 def test_storefront_rejects_a_primary_secret_forged_receipt_token():
-    """攻击者拿到主密钥也不能伪造收据令牌——收据用独立派生密钥。"""
-    from app.storefront import _sign_receipt
+    """攻击者拿到主密钥也不能伪造收据令牌——收据用独立派生密钥。
 
-    settings = get_settings()
-    token = _sign_receipt("order-9", settings.jwt_secret, settings.jwt_algorithm)
-    with pytest.raises(Exception):
-        queries_get_order_by_receipt_token_fails(token, settings)
+    伪造手法是拿主密钥直接签一条 claims 写着 ``typ=receipt`` 的 JWT。
+    查单端用派生密钥验签，验不过必须在碰数据库之前就返回 None。
+    """
+    forged = _raw_sign({"typ": TOKEN_TYPE_RECEIPT, "order_id": "order-9"})
+    assert queries_get_order_by_receipt_token_fails(forged)
 
 
-def queries_get_order_by_receipt_token_fails(token: str, settings) -> None:
-    """收据查单必须拒绝用主密钥签出来的伪造令牌 (返回 None)。"""
+def queries_get_order_by_receipt_token_fails(token: str) -> bool:
+    """收据查单必须拒绝伪造令牌 (返回 None)，且全程不碰数据库。"""
     import asyncio
 
     from app import queries
+
+    settings = get_settings()
 
     class _Boom:
         def acquire(self):
@@ -250,7 +255,7 @@ def queries_get_order_by_receipt_token_fails(token: str, settings) -> None:
     result = asyncio.run(
         queries.get_order_by_receipt_token(_Boom(), token, settings.jwt_secret, settings.jwt_algorithm)
     )
-    assert result is None
+    return result is None
 
 
 def test_get_order_by_receipt_token_accepts_a_real_receipt_token():

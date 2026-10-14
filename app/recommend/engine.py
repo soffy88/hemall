@@ -186,7 +186,7 @@ class CollaborativeFilteringEngine:
         candidate_products: dict[str, float] = {}
         for other_user, _ in similar_users:
             other_ratings = self._rating_matrix.get_user_ratings(other_user)
-            for product_id, score in other_ratings.items():
+            for product_id in other_ratings:
                 if product_id not in target_ratings:
                     if product_id not in candidate_products:
                         candidate_products[product_id] = 0.0

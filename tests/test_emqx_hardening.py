@@ -135,7 +135,7 @@ def test_default_credentials_are_not_baked_into_the_compose_file():
                 continue
             resolved = _resolved_secret(value)
             assert resolved is None, (
-                f"{service}.{key} 用了 `${VAR:-...}` 默认值 {resolved!r} —— "
+                f"{service}.{key} 用了 `${{VAR:-...}}` 默认值 {resolved!r} —— "
                 f"这会在环境变量没设时悄悄退回一个可猜的值"
             )
             assert str(resolved).strip().lower() not in WEAK_SECRETS, (

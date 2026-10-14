@@ -86,6 +86,7 @@ async def process_drop_return(
             event="refunded",
             intent_id=row["payment_intent_id"],
             amount=row["line_total_cents"],
+            provider_status=refund_result.get("status"),
             reason=input_data.reason,
         )
 

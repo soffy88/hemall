@@ -79,8 +79,6 @@ def cluster_intentions_by_radius(
         if seed_idx in assigned:
             continue
 
-        seed_lat = order["lat"]
-        seed_lon = order["lon"]
         current_cluster: list[dict[str, Any]] = [order]
         assigned.add(seed_idx)
 

@@ -181,7 +181,7 @@ async def reserve_stock(
                 "requested": e.requested,
                 "available": e.available,
             },
-        )
+        ) from e
 
 
 @router.post("/deduct")
