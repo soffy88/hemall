@@ -99,13 +99,47 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
     竞态窗口(两事务同时判定"表不存在"并创建, 后到者因同名复合类型冲突报错),
     故用 advisory lock 将 schema 初始化串行化——先到者建表, 后到者等锁释放后
     跳过已存在的表。
+
+    生产环境下，连接池创建后会自动 SET ROLE hemall_runtime，
+    限制运行时权限为 DML (SELECT/INSERT/UPDATE/DELETE)，无 DDL 权限。
     """
+    # 生产环境使用 effective_pg_dsn (含 sslmode)，迁移时由 CLI 显式传 pg_dsn
+    dsn = settings.effective_pg_dsn if settings.environment.lower() == "production" else settings.pg_dsn
+
     pool = await PgPool.create(
         name=settings.pg_pool_name,
-        dsn=settings.pg_dsn,
+        dsn=dsn,
         min_size=settings.pg_pool_min,
         max_size=settings.pg_pool_max,
     )
+
+    # 生产环境：为连接池配置连接初始化钩子，自动 SET ROLE runtime
+    if settings.environment.lower() == "production":
+        async def _init_runtime_role(conn) -> None:
+            try:
+                await conn.execute("SET ROLE hemall_runtime")
+            except Exception as e:
+                # 角色不存在或无权限时记录警告但不阻塞启动 (迁移容器不需要)
+                import logging
+                logging.getLogger("hemall.bootstrap").warning(
+                    "Failed to SET ROLE hemall_runtime: %s. "
+                    "Run 'python -m app.cli grant-runtime' as owner.",
+                    e,
+                )
+
+        # 为现有连接设置角色
+        async with pool.acquire() as conn:
+            await _init_runtime_role(conn)
+
+        # 猴子补丁 acquire 以便新连接自动 SET ROLE
+        original_acquire = pool.acquire
+
+        async def acquire_with_role(*args, **kwargs):
+            conn = await original_acquire(*args, **kwargs)
+            await _init_runtime_role(conn)
+            return conn
+
+        pool.acquire = acquire_with_role  # type: ignore[method-assign]
 
     # 固定锁 ID (hemall_prod 库私有, 无跨项目冲突)
     SCHEMA_LOCK_ID = 824701

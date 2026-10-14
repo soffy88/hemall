@@ -54,8 +54,11 @@ def test_mall_compose_has_one_cors_setting_and_requires_real_provider_and_admins
     assert text.count("HEMALL_CORS_ORIGINS:") == 1
     assert "HEMALL_PRIVILEGED_STAFF_IDS" in api_env
     assert "HEMALL_PAYMENT_GATEWAY_PROVIDER" in api_env
-    assert "HEMALL_STRIPE_SECRET_KEY" in api_env
-    assert "HEMALL_WECHAT_PAY_PRIVATE_KEY_PATH" in api_env
+    # 密钥现在通过 Docker secrets 管理，检查 _FILE 变量
+    assert "HEMALL_STRIPE_SECRET_KEY_FILE" in api_env
+    assert "HEMALL_WECHAT_PAY_PRIVATE_KEY_FILE" in api_env
+    assert "HEMALL_JWT_SECRET_FILE" in api_env
+    assert "ENCRYPTION_KEY_FILE" in api_env
 
 
 def test_helm_requires_external_production_secret_and_rejects_insecure_embedded_search():

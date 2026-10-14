@@ -1,8 +1,57 @@
 # Hemall Production Docker Compose for mall.sxueji.com
 # 架构：Cloudflare Tunnel (远程管理模式) → Caddy (:8092) → FastAPI
 # TLS 由 Cloudflare 边缘终止，Caddy 仅做内部反向代理
+#
+# 权限模型:
+#   - migrate: 一次性迁移服务，以 owner 角色 (hemall) 执行 DDL
+#   - api: 运行时服务，启动后 SET ROLE hemall_runtime (仅 DML，无 DDL)
+#   - 密钥通过 Docker secrets 管理 (挂载到 /run/secrets/*)
 
 services:
+  # ── 数据库迁移 (一次性，部署前运行) ──────────────────────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: registry.sxueji.com/hemall/backend:0.3.0
+    command: ["python", "-m", "app.cli", "migrate"]
+    environment:
+      # 迁移使用 owner 角色 (hemall)，需要 DDL 权限，不设置 sslmode (容器内网)
+      HEMALL_PG_DSN: postgresql://hemall:${HEMALL_PG_PASSWORD:?set a strong pg password}@db:5432/hemall_prod
+      HEMALL_ENVIRONMENT: development  # 迁移时不触发生产校验
+    secrets:
+      - pg_password
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - hemall-backend
+    deploy:
+      restart_policy:
+        condition: none  # 一次性任务，不重启
+
+  # ── 运行时权限授予 (部署后运行一次，或迁移后) ──────────────────────────
+  grant-runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: registry.sxueji.com/hemall/backend:0.3.0
+    command: ["python", "-m", "app.cli", "grant-runtime"]
+    environment:
+      # 授权需要超级用户或 owner 权限
+      HEMALL_PG_DSN: postgresql://hemall:${HEMALL_PG_PASSWORD:?set a strong pg password}@db:5432/hemall_prod
+      HEMALL_ENVIRONMENT: development
+    secrets:
+      - pg_password
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - hemall-backend
+    deploy:
+      restart_policy:
+        condition: none
+
   # ── Hemall API 服务 ─────────────────────────────────────────────
   api:
     build:
@@ -11,31 +60,29 @@ services:
     image: registry.sxueji.com/hemall/backend:0.3.0
     restart: unless-stopped
     environment:
-      # Database (sslmode=disable: 容器内网连接无需 TLS，避免 asyncpg 读取 root 客户端证书失败)
-      HEMALL_PG_DSN: postgresql://hemall:${HEMALL_PG_PASSWORD:?set a strong pg password}@db:5432/hemall_prod?sslmode=disable
+      # Database: 不在 DSN 中放密码，改用 HEMALL_PG_PASSWORD_FILE + pg_sslmode
+      # 容器内网连接默认 sslmode=prefer，外部连接会在 config.py 中强制 require
+      HEMALL_PG_DSN: postgresql://hemall@db:5432/hemall_prod
       HEMALL_PG_POOL_MIN: 5
       HEMALL_PG_POOL_MAX: 30
+      HEMALL_PG_SSLMODE: prefer
       # Redis
       HEMALL_REDIS_URL: redis://redis:6379/0
       # 限流真实客户端 IP (audit P1-5): Caddy/nginx 是唯一入口, 它把已还原的
       # 真实客户端 IP 以单值 X-Forwarded-For / X-Real-IP 透传下来, 故可信跳数=1。
-      # 不设 (默认 0) 时 ratelimit.py 只认 ASGI 对端 = 反代容器 IP → 全站共享
-      # 一个 60/min 桶, 打满即全站 429 (含 /store/* 下单面)。
       HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS: '1'
       # JWT & Security
-      # production 触发 Settings.validate_production_security(): 弱默认密钥/缺
-      # ENCRYPTION_KEY/默认 pg 凭据 → 拒绝启动 (app/config.py)。
       HEMALL_ENVIRONMENT: ${HEMALL_ENVIRONMENT:?set production (or development/staging for non-prod)}
-      HEMALL_JWT_SECRET: ${HEMALL_JWT_SECRET:?set a strong jwt secret}
+      HEMALL_JWT_SECRET_FILE: /run/secrets/jwt_secret
       HEMALL_PRIVILEGED_STAFF_IDS: ${HEMALL_PRIVILEGED_STAFF_IDS:?set comma-separated privileged app_user IDs}
       HEMALL_JWT_ALGORITHM: HS256
       HEMALL_JWT_EXPIRES_MINUTES: 1440
       HEMALL_ANON_SALT: ${HEMALL_ANON_SALT:?set a stable anon salt}
-      # Webhook HMAC / 边缘网桥 Bearer (公开默认值在生产校验中被拒)
-      HEMALL_WEBHOOK_SECRET: ${HEMALL_WEBHOOK_SECRET:?set a strong webhook HMAC secret}
-      HEMALL_HARDWARE_SECRET: ${HEMALL_HARDWARE_SECRET:?set a strong edge-bridge bearer secret}
-      # Fernet PII 加密密钥 (无前缀, 经 os.getenv 读取; 必须稳定, 换 key 丢历史数据)
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set a stable Fernet key}
+      # Webhook HMAC / 边缘网桥 Bearer
+      HEMALL_WEBHOOK_SECRET_FILE: /run/secrets/webhook_secret
+      HEMALL_HARDWARE_SECRET_FILE: /run/secrets/hardware_secret
+      # Fernet PII 加密密钥
+      ENCRYPTION_KEY_FILE: /run/secrets/encryption_key
       # CORS - Allow only mall.sxueji.com
       HEMALL_CORS_ORIGINS: '["https://mall.sxueji.com","https://www.mall.sxueji.com"]'
       # Output directory
@@ -52,12 +99,12 @@ services:
       HEMALL_WECHAT_PAY_APPID: ${HEMALL_WECHAT_PAY_APPID:-}
       HEMALL_WECHAT_PAY_MCHID: ${HEMALL_WECHAT_PAY_MCHID:-}
       HEMALL_WECHAT_PAY_SERIAL_NO: ${HEMALL_WECHAT_PAY_SERIAL_NO:-}
-      HEMALL_WECHAT_PAY_PRIVATE_KEY_PATH: ${HEMALL_WECHAT_PAY_PRIVATE_KEY_PATH:-}
-      HEMALL_WECHAT_PAY_API_V3_KEY: ${HEMALL_WECHAT_PAY_API_V3_KEY:-}
-      HEMALL_WECHAT_PAY_PLATFORM_CERT_PATH: ${HEMALL_WECHAT_PAY_PLATFORM_CERT_PATH:-}
+      HEMALL_WECHAT_PAY_PRIVATE_KEY_FILE: /run/secrets/wechat_private_key
+      HEMALL_WECHAT_PAY_API_V3_KEY_FILE: /run/secrets/wechat_api_v3_key
+      HEMALL_WECHAT_PAY_PLATFORM_CERT_FILE: /run/secrets/wechat_platform_cert
       HEMALL_WECHAT_PAY_NOTIFY_URL: ${HEMALL_WECHAT_PAY_NOTIFY_URL:-}
-      HEMALL_STRIPE_SECRET_KEY: ${HEMALL_STRIPE_SECRET_KEY:-}
-      HEMALL_STRIPE_WEBHOOK_SECRET: ${HEMALL_STRIPE_WEBHOOK_SECRET:-}
+      HEMALL_STRIPE_SECRET_KEY_FILE: /run/secrets/stripe_secret_key
+      HEMALL_STRIPE_WEBHOOK_SECRET_FILE: /run/secrets/stripe_webhook_secret
       HEMALL_STRIPE_NOTIFY_URL: ${HEMALL_STRIPE_NOTIFY_URL:-}
       # Observability
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
@@ -66,7 +113,17 @@ services:
     volumes:
       - hemall_output:/app/var/omodul_output
       - hemall_logs:/app/logs
-      - ./secrets/wechat:/run/secrets/wechat:ro
+    secrets:
+      - pg_password
+      - jwt_secret
+      - webhook_secret
+      - hardware_secret
+      - encryption_key
+      - wechat_private_key
+      - wechat_api_v3_key
+      - wechat_platform_cert
+      - stripe_secret_key
+      - stripe_webhook_secret
     depends_on:
       db:
         condition: service_healthy
@@ -268,6 +325,40 @@ volumes:
     driver: local
   backup_data:
     driver: local
+
+# ── Docker Secrets (生产环境必须预先创建) ────────────────────────────
+# 创建示例:
+#   echo "strong-password" | docker secret create pg_password -
+#   echo "strong-jwt-secret" | docker secret create jwt_secret -
+#   echo "strong-webhook-secret" | docker secret create webhook_secret -
+#   echo "strong-hardware-secret" | docker secret create hardware_secret -
+#   echo "fernet-key" | docker secret create encryption_key -
+#   cat private_key.pem | docker secret create wechat_private_key -
+#   echo "api-v3-key" | docker secret create wechat_api_v3_key -
+#   cat platform_cert.pem | docker secret create wechat_platform_cert -
+#   echo "sk_live_xxx" | docker secret create stripe_secret_key -
+#   echo "whsec_xxx" | docker secret create stripe_webhook_secret -
+secrets:
+  pg_password:
+    external: true
+  jwt_secret:
+    external: true
+  webhook_secret:
+    external: true
+  hardware_secret:
+    external: true
+  encryption_key:
+    external: true
+  wechat_private_key:
+    external: true
+  wechat_api_v3_key:
+    external: true
+  wechat_platform_cert:
+    external: true
+  stripe_secret_key:
+    external: true
+  stripe_webhook_secret:
+    external: true
 
 # ── 网络 ────────────────────────────────────────────────────────────
 networks:
