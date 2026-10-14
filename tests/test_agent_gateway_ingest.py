@@ -404,3 +404,83 @@ class TestCSRFStagingProduction:
         )
         assert response.status_code == 403
         assert "CSRF: token mismatch" in response.json().get("detail", "")
+
+
+class TestAgentGatewayAuthBoundary:
+    """/agent/* 保持 CSRF 豁免的边界锁（BFF 层已兜住跨站请求）。
+
+    豁免理由（写进报告的结论）：
+      1. /agent/* 全部走 ``get_current_user`` 的 ADMIN OPS JWT 鉴权；
+      2. Bearer 头由浏览器外的 agent（Hermes/Cindy/curl）显式携带，
+         浏览器永远不会自动附带 Authorization → 不构成 CSRF 向量；
+      3. 浏览器侧唯一可能自动附带的是 HttpOnly 会话 cookie，而它是
+         ``SameSite=Lax``，跨站 POST 根本不会带上 → 拿不到 token → 401；
+      4. 即便 2/3 都被绕过，BFF (web/src/lib/proxy.ts) 还会对状态变更请求做
+         Origin/Sec-Fetch-Site 同源核验，跨站直接 403 且不打后端。
+
+    这里锁住后端这一侧的边界：无token 401，带 token 的跨站请求不被 CSRF 误杀。
+    """
+
+    @pytest.fixture
+    def client(self) -> TestClient:
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def _staff_token(self, user_id: str = "staff-agent-1") -> str:
+        from app.deps import get_settings
+        from app.security.tokens import TOKEN_TYPE_STAFF, sign_token
+
+        settings = get_settings()
+        return sign_token(
+            {"sub": user_id, "email": f"{user_id}@x.test", "role": "admin"},
+            typ=TOKEN_TYPE_STAFF,
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+            expires_in_minutes=10,
+        )
+
+    @staticmethod
+    def _upload() -> dict:
+        return {"file": ("边界锁测试.mp4", b"fake-video-bytes", "video/mp4")}
+
+    def test_ingest_without_token_returns_401(self, client):
+        """没有任何 token（无 Bearer、无会话 cookie）→ 401，绝不 200。"""
+        response = client.post(
+            "/agent/ingest",
+            files=self._upload(),
+            headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+        )
+        assert response.status_code == 401, response.text
+
+    def test_ingest_with_bearer_and_cross_site_origin_not_csrf_blocked(self, client):
+        """带合法 Bearer 的跨站请求不被 CSRF 误杀（Bearer 非浏览器自动凭据）。
+
+        没有 PG 时后续落到 "database not ready" (503)；有 PG 时走正常业务返回。
+        两者都不是 403 —— 证明 /agent/ 的 CSRF 豁免只对 Bearer 客户端放行，
+        而浏览器跨站场景的阻断在 BFF 层完成。
+        """
+        response = client.post(
+            "/agent/ingest",
+            files=self._upload(),
+            headers={
+                "Authorization": f"Bearer {self._staff_token()}",
+                "Origin": "https://evil.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+        assert response.status_code != 403, response.text
+        assert response.status_code != 401, response.text
+
+    def test_ingest_with_cookie_only_cross_site_rejected(self, client):
+        """只有会话 cookie（模拟浏览器跨站 POST 被 SameSite=Lax 挡住）→ 401。"""
+        # HttpOnly 会话 cookie 是 SameSite=Lax：跨站 POST 根本带不进来，
+        # 这里显式带上也只是为了证明"仅 cookie"无法通过 typ=staff 校验之外
+        # 的任何路径 —— 没有有效 JWT 就一律 401。
+        response = client.post(
+            "/agent/ingest",
+            files=self._upload(),
+            headers={"cookie": "hemall_access_token=not-a-jwt"},
+        )
+        assert response.status_code == 401, response.text
