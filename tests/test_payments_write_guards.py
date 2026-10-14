@@ -1777,3 +1777,368 @@ class TestProviderIntegration:
                     reason="generic refund",
                     total_fee_cents=1000,
                 )
+
+    async def test_provider_prepay_stripe(self):
+        conn = FakeConn()
+        svc = _svc(conn)
+
+        with patch.object(svc, "_gateway") as mock_gateway:
+            mock_gateway.return_value.stripe_prepay = AsyncMock(
+                return_value={"payment_intent_id": "pi_stripe", "prepay_id": "prepay_stripe"}
+            )
+            result = await svc._provider_prepay(
+                provider="stripe",
+                out_trade_no="test-stripe",
+                total_fee_cents=1000,
+                currency="USD",
+                description="stripe order",
+                payer_openid=None,
+            )
+        assert result["payment_intent_id"] == "pi_stripe"
+        assert result["prepay_id"] == "prepay_stripe"
+
+    async def test_provider_refund_stripe(self):
+        conn = FakeConn()
+        svc = _svc(conn)
+
+        with patch.object(svc, "_gateway") as mock_gateway:
+            mock_gateway.return_value.refund = AsyncMock(
+                return_value={"status": "success", "id": "stripe-refund"}
+            )
+            result = await svc._provider_refund(
+                provider="stripe",
+                out_trade_no="test-stripe-refund",
+                provider_intent_id="pi_stripe",
+                out_refund_no="refund-stripe",
+                refund_fee_cents=500,
+                reason="stripe refund",
+                total_fee_cents=1000,
+            )
+        assert result["status"] == "success"
+        assert result["id"] == "stripe-refund"
+
+    async def test_gateway_fallback_wechat(self):
+        conn = FakeConn()
+        svc = _svc(conn)
+
+        with patch(
+            "obase.provider_registry.ProviderRegistry",
+            side_effect=Exception("no registry"),
+        ):
+            gateway = svc._gateway("wechat")
+            assert gateway is not None
+
+    async def test_gateway_fallback_alipay(self):
+        conn = FakeConn()
+        svc = _svc(conn)
+
+        with patch(
+            "obase.provider_registry.ProviderRegistry",
+            side_effect=Exception("no registry"),
+        ):
+            gateway = svc._gateway("alipay")
+            assert gateway is not None
+
+    async def test_gateway_fallback_manual(self):
+        conn = FakeConn()
+        svc = _svc(conn)
+
+        with patch(
+            "obase.provider_registry.ProviderRegistry",
+            side_effect=Exception("no registry"),
+        ):
+            gateway = svc._gateway("manual")
+            assert gateway is not None
+
+
+class TestProcessRefundUnknownStatus:
+    """Test process_refund with unknown provider status."""
+
+    async def test_process_refund_unknown_status(self):
+        """Unknown provider status should mark refund failed."""
+        conn = FakeConn()
+        conn.on(
+            r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
+            Recording({"id": "job-1", "payload": "{}"}),
+        )
+        conn.on(
+            r"SELECT\s+r\.\*,\s*p\.provider",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                    "provider": "manual",
+                    "order_id": "o-1",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                    "original_amount_cents": 1000,
+                }
+            ),
+        )
+        conn.on(r"UPDATE\s+payment_refund\s+SET\s+status\s*=\s*'failed'", "OK")
+        conn.on(r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'failed'", "OK")
+        conn.on(
+            r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "failed",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
+        )
+        svc = _svc(conn)
+
+        with patch.object(svc, "_provider_refund", return_value={"status": "weird_status"}):
+            result = await svc.process_refund(str(FIXED_REFUND_ID))
+
+        assert result["status"] == "failed"
+
+
+class TestProcessIntentErrorPaths:
+    """Test error paths in process_intent and process_refund."""
+
+    async def test_process_intent_provider_success_but_db_fails(self):
+        """Provider succeeds but DB update fails - should log and return intent."""
+        conn = FakeConn()
+        # _claim_outbox returns a job
+        conn.on(
+            r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
+            Recording({"id": "job-1", "payload": "{}"}),
+        )
+        # _read_intent
+        conn.on(
+            r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
+        )
+        # UPDATE payment_intent fails
+        conn.on(
+            r"UPDATE\s+payment_intent\s+SET\s+status",
+            None,  # Return None to simulate not found
+        )
+        # _read_intent after failure
+        conn.on(
+            r"SELECT\s+id,\s*order_id,\s*amount_cents,\s*currency,\s*provider,\s*status,\s*metadata\s+FROM\s+payment_intent\s+WHERE\s+id\s*=\s*\$1",
+            Recording(
+                {
+                    "id": str(FIXED_INTENT_ID),
+                    "order_id": "o-1",
+                    "amount_cents": 1000,
+                    "currency": "CNY",
+                    "provider": "manual",
+                    "status": "pending",
+                    "metadata": {},
+                }
+            ),
+        )
+        svc = _svc(conn)
+
+        with patch.object(svc, "_provider_prepay", return_value={"prepay_id": "prepay-1"}):
+            result = await svc.process_intent(str(FIXED_INTENT_ID))
+
+        # Should return intent with pending status (DB update failed)
+        assert result.status == "pending"
+
+    async def test_process_refund_provider_failed_status(self):
+        """Provider returns failed/canceled status - should mark refund failed."""
+        conn = FakeConn()
+        conn.on(
+            r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
+            Recording({"id": "job-1", "payload": "{}"}),
+        )
+        conn.on(
+            r"SELECT\s+r\.\*,\s*p\.provider",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                    "provider": "manual",
+                    "order_id": "o-1",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                    "original_amount_cents": 1000,
+                }
+            ),
+        )
+        # _mark_refund_failed updates
+        conn.on(r"UPDATE\s+payment_refund\s+SET\s+status\s*=\s*'failed'", "OK")
+        conn.on(r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'failed'", "OK")
+        conn.on(
+            r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "failed",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
+        )
+        svc = _svc(conn)
+
+        with patch.object(svc, "_provider_refund", return_value={"status": "failed"}):
+            result = await svc.process_refund(str(FIXED_REFUND_ID))
+
+        assert result["status"] == "failed"
+
+    async def test_process_refund_provider_canceled_status(self):
+        """Provider returns canceled status - should mark refund failed."""
+        conn = FakeConn()
+        conn.on(
+            r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
+            Recording({"id": "job-1", "payload": "{}"}),
+        )
+        conn.on(
+            r"SELECT\s+r\.\*,\s*p\.provider",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                    "provider": "manual",
+                    "order_id": "o-1",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                    "original_amount_cents": 1000,
+                }
+            ),
+        )
+        conn.on(r"UPDATE\s+payment_refund\s+SET\s+status\s*=\s*'failed'", "OK")
+        conn.on(r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'failed'", "OK")
+        conn.on(
+            r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "failed",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
+        )
+        svc = _svc(conn)
+
+        with patch.object(svc, "_provider_refund", return_value={"status": "canceled"}):
+            result = await svc.process_refund(str(FIXED_REFUND_ID))
+
+        assert result["status"] == "failed"
+
+    async def test_process_refund_provider_success_but_db_fails(self):
+        """Provider succeeds but DB update fails - should log and return refund."""
+        conn = FakeConn()
+        conn.on(
+            r"UPDATE\s+payment_outbox\s+SET\s+status\s*=\s*'processing'",
+            Recording({"id": "job-1", "payload": "{}"}),
+        )
+        conn.on(
+            r"SELECT\s+r\.\*,\s*p\.provider",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                    "provider": "manual",
+                    "order_id": "o-1",
+                    "provider_trade_no": "trade-1",
+                    "provider_intent_id": "pi-provider",
+                    "original_amount_cents": 1000,
+                }
+            ),
+        )
+        # UPDATE payment_refund to succeeded fails
+        conn.on(
+            r"UPDATE\s+payment_refund\s+SET\s+status\s*=\s*'succeeded'",
+            None,  # Return None to simulate not found
+        )
+        # _read_refund after failure
+        conn.on(
+            r"SELECT\s+\*\s+FROM\s+payment_refund\s+WHERE\s+id\s*=\s*\$1",
+            Recording(
+                {
+                    "id": str(FIXED_REFUND_ID),
+                    "payment_intent_id": str(FIXED_INTENT_ID),
+                    "idempotency_key": "refund-key-1",
+                    "amount_cents": 500,
+                    "reason": "test",
+                    "status": "pending",
+                    "provider_refund_no": "provider-ref-1",
+                    "provider_result": {},
+                    "version": 0,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ),
+        )
+        svc = _svc(conn)
+
+        with patch.object(svc, "_provider_refund", return_value={"status": "success"}):
+            result = await svc.process_refund(str(FIXED_REFUND_ID))
+
+        # Should return refund with pending status (DB update failed)
+        assert result["status"] == "pending"
