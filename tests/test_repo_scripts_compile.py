@@ -5,13 +5,13 @@
 prior to global declaration) —— lint 只报行长度和 import 问题，没人发现它其实
 一运行就崩。这里用编译期锁住：任何一个仓库脚本出现语法错误，这个测试就红。
 
-同时锁住"ruff 检查全仓库为 0 错误"的轻量版：确保这些脚本里没有 F821 这类
-只在运行期才炸的未定义名（用 AST 扫一遍裸名字引用成本太高，改为由 CI 的
-``ruff check .`` 承担；这里只做编译 + 关键符号存在性检查）。
+同时确认这些脚本不是空壳（至少有函数/类定义或模块级配置），防止"删掉内容也能
+过编译"的假绿。
 """
 
 from __future__ import annotations
 
+import ast
 import pathlib
 
 import pytest
@@ -44,16 +44,24 @@ def _python_files() -> list[pathlib.Path]:
 def test_script_compiles(path: pathlib.Path) -> None:
     """每个脚本都要能通过 compile() —— 语法错误在此拦截。"""
     source = path.read_text(encoding="utf-8")
-    try:
-        compile(source, str(path), "exec")
-    except SyntaxError as exc:  # pragma: no cover - 失败路径
-        pytest.fail(f"{path.relative_to(ROOT)} 无法编译: {exc}")
+    tree = ast.parse(source, filename=str(path))
+    compile(tree, str(path), "exec")
+    definitions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    assert definitions, f"{path.relative_to(ROOT)} 里没有任何函数/类定义（空壳脚本?）"
 
 
 def test_gunicorn_conf_compiles() -> None:
-    """gunicorn.conf.py 是部署侧唯一入口，语法必须正确。"""
+    """gunicorn.conf.py 是部署侧唯一入口，语法与配置项都必须存在。"""
     path = ROOT / "gunicorn.conf.py"
-    compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    compile(tree, str(path), "exec")
+    assert any(isinstance(node, ast.Assign) for node in tree.body), (
+        "gunicorn.conf.py 没有任何配置项"
+    )
 
 
 def test_scripts_expose_main_guard() -> None:
@@ -62,8 +70,6 @@ def test_scripts_expose_main_guard() -> None:
     seed/benchmark/chaos 这三个脚本都是"直接运行"型，缺了守卫时 import 会
     触发副作用（连生产库 / 打满请求）。
     """
-    import ast
-
     expected = {
         "scripts/seed_grocery_catalog.py",
         "scripts/benchmark.py",
