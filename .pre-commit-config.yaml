@@ -1,0 +1,48 @@
+# Hemall pre-commit 配置
+# 与 CI lint/typecheck 保持一致
+# 只针对 app/ 和 tests/ 目录，排除生成文件、第三方文件、权限问题文件
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix, "app", "tests"]
+        types_or: [python]
+        exclude: ^(edge_bridge/|scripts/|var/|\.veya/|charts/|docs/|backup/|grafana/|nginx\.|Caddyfile|Dockerfile|gunicorn\.conf\.py|emqx/)
+      - id: ruff-format
+        args: [--check, "app", "tests"]
+        types_or: [python]
+        exclude: ^(edge_bridge/|scripts/|var/|\.veya/|charts/|docs/|backup/|grafana/|nginx\.|Caddyfile|Dockerfile|gunicorn\.conf\.py|emqx/)
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy type check (app only, critical only)
+        entry: bash -c 'PATH="/home/soffy/.local/bin:$PATH" uv run mypy app/orders app/inventory app/payments app/security --ignore-missing-imports --no-strict-optional'
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
+
+      - id: pytest-fast
+        name: pytest (fast unit tests only, no DB)
+        entry: bash -c 'PATH="/home/soffy/.local/bin:$PATH" uv run pytest -q -p no:cacheprovider -m "not slow" --ignore=tests/test_f821_fixes.py'
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^(web/|charts/|var/|\.veya/|edge_bridge/|scripts/|docs/|backup/|grafana/|nginx\.|Caddyfile|Dockerfile|gunicorn\.conf\.py|emqx/)
+      - id: trailing-whitespace
+        exclude: ^(web/|charts/|var/|\.veya/|edge_bridge/|scripts/|docs/|backup/|grafana/|nginx\.|Caddyfile|Dockerfile|gunicorn\.conf\.py|emqx/)
+      - id: check-yaml
+        exclude: ^charts/
+      - id: check-toml
+      - id: check-added-large-files
+      - id: detect-private-key
+        exclude: ^tests/test_nginx_tls_gate\.py$
