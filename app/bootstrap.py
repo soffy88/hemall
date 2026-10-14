@@ -148,6 +148,7 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
         try:
             await ensure_commerce_batch_schema(pool)
             await _ensure_hemall_local_schema(pool)
+            await _ensure_app_user_totp_schema(pool)
             await ensure_ext_schema(pool)
 
             # Phase 0 Week 2: 安全 + 支付表结构
@@ -215,6 +216,24 @@ async def _ensure_hemall_local_schema(pool: PgPool) -> None:
         await conn.execute(
             'ALTER TABLE "customer" ADD COLUMN IF NOT EXISTS password_hash TEXT'
         )
+
+
+async def _ensure_app_user_totp_schema(pool: PgPool) -> None:
+    """为 app_user 表添加 TOTP 两步验证所需列。"""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS totp_secret TEXT'
+        )
+        await conn.execute(
+            'ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS totp_recovery_codes_hash TEXT'
+        )
+        await conn.execute(
+            'ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS totp_last_used_counter BIGINT DEFAULT -1'
+        )
+        await conn.execute(
+            'ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT false'
+        )
+    logger.info("app_user TOTP schema ensured (totp_secret, totp_recovery_codes_hash, totp_last_used_counter, totp_enabled)")
 
 
 async def _ensure_security_payment_schema(
