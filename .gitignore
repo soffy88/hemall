@@ -40,3 +40,6 @@ Thumbs.db
 
 # Runtime trails (omodul output, 部署时由容器卷承载)
 var/
+
+# 本地工具缓存（如 gitleaks 二进制），不入库
+.local/

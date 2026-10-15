@@ -9,17 +9,28 @@ Cookie 会话设计 (F-01/F-02/F-03):
 - 短期 access token (15min) + 长期 refresh token (7d)，401 时前端自动刷新
 - 保留 Bearer 头兼容 API 客户端 (Authorization: Bearer <token>)
 - CSRF 保护: 双重提交 token (X-CSRF-Token header + csrf_token cookie) + Origin/Sec-Fetch-Site 校验
+
+TOTP 两步验证 (RFC 6238):
+- 仅用标准库 hmac/hashlib/base64/time 实现，无额外依赖
+- 绑定接口返回 otpauth:// URI，前端显示二维码或文本
+- 登录第二步校验 TOTP 码，防重放 (同一时间步只能用一次)
+- 哈希存储一次性恢复码 (bcrypt)
+- 错误次数限流 (配合现有 rate limiter)
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import secrets
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from obase.crypto.util import CryptoUtil
 from obase.persistence.pool import PgPool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .config import Settings
 from .deps import get_pool, get_settings
@@ -56,6 +67,31 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user_id: str
     email: str
+
+
+class LoginTotpRequiredResponse(BaseModel):
+    """登录第一步成功但需要 TOTP 第二步验证。"""
+
+    requires_totp: bool = True
+    user_id: str
+    email: str
+    #: 登录第一步下发的短期挑战令牌 (typ=staff, scope=totp, 5 分钟)。
+    #: /auth/totp/verify 可用它绑定 user_id, 防止仅凭 user_id 盲试;
+    #: scope 令牌不能访问任何其他端点 (deps.get_current_user 显式拒绝)。
+    totp_token: str | None = None
+    message: str = "TOTP verification required"
+
+
+class LoginTotpSetupRequiredResponse(BaseModel):
+    """生产环境特权账号尚未绑定 TOTP: 不签发完整会话, 只发绑定令牌。"""
+
+    requires_totp_setup: bool = True
+    user_id: str
+    email: str
+    #: 短期绑定令牌 (typ=staff, scope=totp_setup, 5 分钟) —— 绑定页用它调
+    #: /auth/totp/setup 与 /auth/totp/bind。拿不到完整会话 = 进不了后台。
+    setup_token: str | None = None
+    message: str = "TOTP enrollment required for privileged accounts in production"
 
 
 class MeResponse(BaseModel):
@@ -145,6 +181,264 @@ def _generate_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+# ── TOTP 两步验证 (RFC 6238) ──────────────────────────────────────────────
+# 仅用标准库 hmac/hashlib/base64/time 实现，无额外依赖
+# 时间步: 30 秒，算法: HMAC-SHA1，位数: 6
+_TOTP_TIME_STEP = 30
+_TOTP_DIGITS = 6
+_TOTP_ALGORITHM = hashlib.sha1
+_TOTP_ISSUER = "Hemall"
+_RECOVERY_CODE_COUNT = 10
+_RECOVERY_CODE_LENGTH = 16
+
+#: scope 受限短期令牌 (登录第二步挑战 / 绑定流程), 5 分钟有效。
+#: 带 scope 的 staff 令牌不能访问其他端点 —— deps.get_current_user 显式拒绝。
+_SCOPE_TOTP = "totp"
+_SCOPE_TOTP_SETUP = "totp_setup"
+_SCOPE_TOKEN_TTL_MINUTES = 5
+
+
+def _totp_generate_secret() -> str:
+    """生成 TOTP 密钥 (base32 编码，RFC 3548)。"""
+    # 20 字节 = 160 位，base32 编码后 32 字符
+    return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+
+
+def _totp_counter(timestamp: int | None = None) -> int:
+    """计算当前时间步计数器。"""
+    return (timestamp or int(time.time())) // _TOTP_TIME_STEP
+
+
+def _totp_hmac_sha1(secret_b32: str, counter: int) -> int:
+    """计算 HMAC-SHA1 并截取动态截断得到 6 位数字。"""
+    # base32 解码密钥
+    key = base64.b32decode(secret_b32.upper() + "=" * ((8 - len(secret_b32) % 8) % 8))
+    # counter 编码为 8 字节大端序
+    msg = counter.to_bytes(8, "big")
+    # HMAC-SHA1
+    hmac_digest = hmac.new(key, msg, _TOTP_ALGORITHM).digest()
+    # 动态截断 (RFC 4226)
+    offset = hmac_digest[-1] & 0x0F
+    code = (
+        ((hmac_digest[offset] & 0x7F) << 24)
+        | ((hmac_digest[offset + 1] & 0xFF) << 16)
+        | ((hmac_digest[offset + 2] & 0xFF) << 8)
+        | (hmac_digest[offset + 3] & 0xFF)
+    )
+    return code % (10**_TOTP_DIGITS)
+
+
+def _totp_generate_code(secret_b32: str, timestamp: int | None = None) -> str:
+    """生成当前时间步的 TOTP 码 (6 位数字字符串)。"""
+    counter = _totp_counter(timestamp)
+    code = _totp_hmac_sha1(secret_b32, counter)
+    return f"{code:0{_TOTP_DIGITS}d}"
+
+
+def _totp_verify_code(
+    secret_b32: str, code: str, timestamp: int | None = None, window: int = 1
+) -> bool:
+    """验证 TOTP 码，允许前后各 window 个时间步 (默认 ±1 步 = ±30s)。
+
+    防重放: 调用方需记录已用的 (counter, code) 对，同一 counter 不能重复使用。
+    """
+    return _totp_match_counter(secret_b32, code, timestamp, window) is not None
+
+
+def _totp_match_counter(
+    secret_b32: str, code: str, timestamp: int | None = None, window: int = 1
+) -> int | None:
+    """验证 TOTP 码并返回命中的时间步计数器; 不匹配返回 None。
+
+    防重放的关键: 调用方拿到的不是"当前步"而是**码实际命中的步**——同一时间步
+    (含前后窗口内已用过的步) 只能用一次, 重放即便落在下一个时间步也会被拒。
+    """
+    if not code.isdigit() or len(code) != _TOTP_DIGITS:
+        return None
+    current_counter = _totp_counter(timestamp)
+    for delta in range(-window, window + 1):
+        counter = current_counter + delta
+        expected = _totp_hmac_sha1(secret_b32, counter)
+        if f"{expected:0{_TOTP_DIGITS}d}" == code:
+            return counter
+    return None
+
+
+def _totp_uri(secret_b32: str, account: str) -> str:
+    """生成 otpauth:// URI (用于二维码)。"""
+    # otpauth://totp/Label?secret=XXX&issuer=YYY&algorithm=SHA1&digits=6&period=30
+    label = f"{_TOTP_ISSUER}:{account}"
+    return (
+        f"otpauth://totp/{label}?secret={secret_b32}"
+        f"&issuer={_TOTP_ISSUER}&algorithm=SHA1&digits=6&period=30"
+    )
+
+
+def _generate_recovery_codes(
+    count: int = _RECOVERY_CODE_COUNT, length: int = _RECOVERY_CODE_LENGTH
+) -> list[str]:
+    """生成一次性恢复码 (十六进制字符串)。"""
+    return [secrets.token_hex(length // 2) for _ in range(count)]
+
+
+def _hash_recovery_codes(codes: list[str]) -> list[str]:
+    """对恢复码列表进行 bcrypt 哈希。"""
+    return [CryptoUtil.hash_password(password=code) for code in codes]
+
+
+def _verify_recovery_code(hashed_codes: list[str], code: str) -> tuple[bool, int]:
+    """验证恢复码，返回 (是否匹配, 匹配的索引)。
+
+    一次性使用: 验证成功后调用方应从列表中移除该哈希。
+    """
+    for i, hashed in enumerate(hashed_codes):
+        if CryptoUtil.verify_password(password=code, hashed=hashed):
+            return True, i
+    return False, -1
+
+
+def _issue_scope_token(user_id: str, email: str, role: str, scope: str, settings: Settings) -> str:
+    """签发 scope 受限的短期 staff 令牌 (登录第二步挑战 / TOTP 绑定)。"""
+    return sign_token(
+        {"sub": user_id, "email": email, "role": role, "scope": scope},
+        typ=TOKEN_TYPE_STAFF,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        expires_in_minutes=_SCOPE_TOKEN_TTL_MINUTES,
+    )
+
+
+def _decode_scope_token(token: str, settings: Settings, expected_scope: str) -> dict | None:
+    """解码并校验 scope 令牌; 签名无效/scope 不符返回 None。"""
+    try:
+        payload = decode_token(
+            token,
+            typ=TOKEN_TYPE_STAFF,
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+        )
+    except Exception:  # noqa: BLE001 - 换调用方统一按 None 处理
+        return None
+    if payload.get("scope") != expected_scope:
+        return None
+    return payload
+
+
+# TOTP 相关请求/响应模型
+class TotpBindInput(BaseModel):
+    """绑定 TOTP: 用户提交当前 TOTP 码确认绑定。"""
+
+    code: str = Field(..., min_length=6, max_length=6, description="6 位 TOTP 码")
+
+
+class TotpBindResponse(BaseModel):
+    """绑定 TOTP 返回: otpauth URI 和恢复码。"""
+
+    otpauth_uri: str
+    recovery_codes: list[str] = Field(default_factory=list)
+    secret: str = ""  # 仅首次绑定时返回，供前端显示/备份
+
+
+class TotpBindConfirmResponse(BaseModel):
+    """确认绑定 TOTP 成功返回: 正式启用 + 这一次性恢复码。"""
+
+    message: str = "TOTP enabled"
+    recovery_codes: list[str]
+
+
+class TotpVerifyInput(BaseModel):
+    """验证 TOTP 码 (登录第二步或解绑确认)。"""
+
+    code: str = Field(..., min_length=6, max_length=6, description="6 位 TOTP 码")
+
+
+class TotpRecoveryInput(BaseModel):
+    """使用恢复码登录。"""
+
+    recovery_code: str = Field(
+        ..., min_length=_RECOVERY_CODE_LENGTH, max_length=_RECOVERY_CODE_LENGTH
+    )
+
+
+class LoginTotpInput(BaseModel):
+    """登录第二步: 提交 TOTP 码或恢复码。"""
+
+    user_id: str = Field(..., description="第一步登录返回的 user_id")
+    code: str | None = Field(None, description="6 位 TOTP 码")
+    recovery_code: str | None = Field(None, description="恢复码")
+
+    @model_validator(mode="after")
+    def _require_code_or_recovery(self) -> LoginTotpInput:
+        if not self.code and not self.recovery_code:
+            raise ValueError("code 或 recovery_code 必填其一")
+        return self
+
+
+async def _get_user_totp_info(pool: PgPool, user_id: str) -> dict | None:
+    """获取用户的 TOTP 信息 (secret, recovery_codes_hash, last_used_counter)。"""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT totp_secret, totp_recovery_codes_hash, totp_last_used_counter, totp_enabled "
+            'FROM "app_user" WHERE id = $1 AND deleted_at IS NULL',
+            user_id,
+        )
+    return dict(row) if row else None
+
+
+async def _set_user_totp_secret(
+    pool: PgPool, user_id: str, secret: str, recovery_hashes: list[str]
+) -> None:
+    """设置用户的 TOTP 密钥和恢复码哈希。"""
+    import json
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE "app_user" SET totp_secret = $1, totp_recovery_codes_hash = $2, '
+            "totp_last_used_counter = -1, totp_enabled = true WHERE id = $3",
+            secret,
+            json.dumps(recovery_hashes),
+            user_id,
+        )
+
+
+async def _update_user_totp_counter(pool: PgPool, user_id: str, counter: int) -> None:
+    """更新用户最后使用的 TOTP 计数器 (防重放)。"""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE "app_user" SET totp_last_used_counter = $1 WHERE id = $2',
+            counter,
+            user_id,
+        )
+
+
+async def _consume_recovery_code(pool: PgPool, user_id: str, index: int) -> None:
+    """消费恢复码: 从哈希列表中移除指定索引的码。"""
+    import json
+
+    info = await _get_user_totp_info(pool, user_id)
+    if not info:
+        return
+    codes = json.loads(info["totp_recovery_codes_hash"] or "[]")
+    if 0 <= index < len(codes):
+        codes.pop(index)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE "app_user" SET totp_recovery_codes_hash = $1 WHERE id = $2',
+                json.dumps(codes),
+                user_id,
+            )
+
+
+async def _disable_user_totp(pool: PgPool, user_id: str) -> None:
+    """禁用用户的 TOTP (清除密钥和恢复码)。"""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE "app_user" SET totp_secret = NULL, totp_recovery_codes_hash = NULL, '
+            "totp_last_used_counter = -1, totp_enabled = false WHERE id = $1",
+            user_id,
+        )
+
+
 def _get_token_from_cookie_or_header(request: Request, cookie_name: str) -> str | None:
     """从 cookie 或 Authorization 头获取 token (优先 cookie，兼容 Bearer)。"""
     # 优先从 cookie 读取
@@ -159,7 +453,10 @@ def _get_token_from_cookie_or_header(request: Request, cookie_name: str) -> str 
 
 
 async def _get_current_user_from_token(token: str, settings: Settings) -> dict | None:
-    """从 token 解析用户信息，返回 None 表示 token 无效。"""
+    """从 token 解析用户信息，返回 None 表示 token 无效。
+
+    scope 受限令牌 (totp 挑战 / totp_setup 绑定) 不是完整会话, 一律拒绝。
+    """
     try:
         payload = decode_token(
             token,
@@ -167,6 +464,8 @@ async def _get_current_user_from_token(token: str, settings: Settings) -> dict |
             secret=settings.jwt_secret,
             algorithm=settings.jwt_algorithm,
         )
+        if payload.get("scope"):
+            return None
         return {
             "user_id": payload["sub"],
             "email": payload.get("email"),
@@ -196,7 +495,7 @@ def _decode_session_token(token: str, settings: Settings) -> tuple[str, dict] | 
     return None
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 @limiter.limit("5/minute")
 async def login(
     request: Request,
@@ -204,14 +503,18 @@ async def login(
     body: LoginInput,
     pool: PgPool = Depends(get_pool),
     settings: Settings = Depends(get_settings),
-) -> TokenResponse:
-    """按邮箱+密码登录 app_user，成功设置 HttpOnly Cookie 会话
-    并返回 Bearer token (兼容 API 客户端)。
+) -> TokenResponse | LoginTotpRequiredResponse | LoginTotpSetupRequiredResponse:
+    """按邮箱+密码登录 app_user。
+
+    - 密码正确且未启用 TOTP: 直接签发完整会话
+    - 密码正确且已启用 TOTP: 返回 requires_totp=true + 挑战令牌, 前端调 /auth/totp/verify
+    - 生产环境 admin / privileged_staff_ids 未绑定 TOTP: 不签发完整会话,
+      返回 requires_totp_setup=true + 绑定令牌, 跳绑定页 (进不了后台)
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            'SELECT id, email, password_hash, status FROM "app_user" '
-            "WHERE email = $1 AND deleted_at IS NULL",
+            "SELECT id, email, password_hash, status, totp_enabled, totp_secret "
+            'FROM "app_user" WHERE email = $1 AND deleted_at IS NULL',
             body.email,
         )
 
@@ -225,8 +528,39 @@ async def login(
 
     user_id = str(row["id"])
     role = _staff_role_for_user(user_id, settings)
+    is_production = settings.environment.lower() == "production"
+    privileged_ids = {
+        value.strip() for value in settings.privileged_staff_ids.split(",") if value.strip()
+    }
+    is_privileged = role == "admin" or user_id in privileged_ids
 
-    # 签发短期 access token + 长期 refresh token
+    # 检查 TOTP 状态
+    totp_enabled = row.get("totp_enabled", False)
+
+    # 生产环境: admin 和 privileged_staff_ids 必须绑定 TOTP 才能进后台。
+    # 不签发完整会话, 只发 5 分钟绑定令牌——没有完整会话 = 被拒绝进后台。
+    if is_production and is_privileged and not totp_enabled:
+        return LoginTotpSetupRequiredResponse(
+            user_id=user_id,
+            email=row["email"],
+            setup_token=_issue_scope_token(
+                user_id, row["email"], role, _SCOPE_TOTP_SETUP, settings
+            ),
+        )
+
+    if totp_enabled:
+        # 已启用 TOTP: 返回需要第二步验证，不签发完整 token
+        return LoginTotpRequiredResponse(
+            user_id=user_id,
+            email=row["email"],
+            totp_token=_issue_scope_token(user_id, row["email"], role, _SCOPE_TOTP, settings),
+            message=(
+                "TOTP verification required. "
+                "Call /auth/totp/verify with TOTP code or recovery code."
+            ),
+        )
+
+    # 未启用 TOTP: 直接签发完整会话
     access_token = sign_token(
         {"sub": user_id, "email": row["email"], "role": role},
         typ=TOKEN_TYPE_STAFF,
@@ -243,11 +577,217 @@ async def login(
     )
     csrf_token = _generate_csrf_token()
 
-    # 设置 HttpOnly cookies
     _set_auth_cookies(response, access_token, refresh_token, csrf_token, settings)
 
-    # 兼容 Bearer API 客户端
     return TokenResponse(access_token=access_token, user_id=user_id, email=row["email"])
+
+
+# ── TOTP 两步验证端点 ─────────────────────────────────────────────────────
+
+
+async def _resolve_totp_actor(request: Request, settings: Settings) -> dict:
+    """解析 TOTP 绑定/管理操作的主体。
+
+    接受两种令牌:
+    - 完整 access token (已登录用户自行改绑/解绑)
+    - setup scope 令牌 (生产环境未绑定 TOTP 的特权账号的唯一绑定入口——
+      login 第一步不下发完整会话, 只发这个 5 分钟绑定令牌)
+    """
+    token = _get_token_from_cookie_or_header(request, ACCESS_TOKEN_COOKIE)
+    if not token:
+        raise HTTPException(status_code=401, detail="not authenticated")
+
+    user = await _get_current_user_from_token(token, settings)
+    if user:
+        return user
+
+    payload = _decode_scope_token(token, settings, _SCOPE_TOTP_SETUP)
+    if payload and isinstance(payload.get("sub"), str) and payload["sub"].strip():
+        return {
+            "user_id": payload["sub"],
+            "email": payload.get("email"),
+            "role": payload.get("role"),
+        }
+    raise HTTPException(status_code=401, detail="invalid or expired token")
+
+
+@router.get("/totp/setup", response_model=TotpBindResponse)
+async def totp_setup(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    pool: PgPool = Depends(get_pool),
+) -> TotpBindResponse:
+    """获取 TOTP 绑定信息: 生成密钥并返回 otpauth URI。
+
+    用户需用 Authenticator App 扫码或手输密钥，然后调用 /auth/totp/bind 确认。
+    恢复码在 bind 确认时才生成并返回 (绑定完成页展示, 仅此一次可见)。
+    """
+    user = await _resolve_totp_actor(request, settings)
+
+    # 生成新密钥 (暂不写库, 由 bind 端点校验用户输入的码后正式启用)
+    secret = _totp_generate_secret()
+    otpauth_uri = _totp_uri(secret, user.get("email") or user["user_id"])
+
+    return TotpBindResponse(otpauth_uri=otpauth_uri, secret=secret)
+
+
+@router.post("/totp/bind", response_model=TotpBindConfirmResponse)
+async def totp_bind(
+    request: Request,
+    body: TotpBindInput,
+    settings: Settings = Depends(get_settings),
+    pool: PgPool = Depends(get_pool),
+) -> TotpBindConfirmResponse:
+    """确认绑定 TOTP: 用户提交 Authenticator 显示的码，校验通过后正式启用。
+
+    secret 通过 X-TOTP-Secret 头回传 (setup 端点刚下发的, 与挑战令牌同为
+    5 分钟窗口; 不落库直到码校验通过)。
+    """
+    user = await _resolve_totp_actor(request, settings)
+    user_id = user["user_id"]
+
+    secret = request.headers.get("X-TOTP-Secret")
+    if not secret:
+        raise HTTPException(status_code=400, detail="missing X-TOTP-Secret header")
+
+    # 验证码 (RFC 6238, ±1 窗口)
+    if not _totp_verify_code(secret, body.code):
+        raise HTTPException(status_code=400, detail="invalid TOTP code")
+
+    # 生成恢复码并哈希存储 (bcrypt)
+    recovery_codes = _generate_recovery_codes()
+    recovery_hashes = _hash_recovery_codes(recovery_codes)
+
+    # 写库启用
+    await _set_user_totp_secret(pool, user_id, secret, recovery_hashes)
+
+    return TotpBindConfirmResponse(recovery_codes=recovery_codes)
+
+
+@router.post("/totp/verify", response_model=TokenResponse)
+@limiter.limit("5/minute")
+async def totp_verify(
+    request: Request,
+    body: LoginTotpInput,
+    response: Response,
+    pool: PgPool = Depends(get_pool),
+    settings: Settings = Depends(get_settings),
+) -> TokenResponse:
+    """登录第二步: 验证 TOTP 码或恢复码，成功签发完整会话。
+
+    错误次数限流 (5/minute) + 防重放 (同一时间步只能用一次)。
+    登录第一步下发的挑战令牌可选: 带上时校验 sub 与 user_id 一致,
+    防止仅凭 user_id 盲试。
+    """
+    user_id = body.user_id
+
+    # 可选挑战令牌: 与 user_id 必须一致
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.startswith("Bearer "):
+        challenge = _decode_scope_token(auth_header[7:], settings, _SCOPE_TOTP)
+        if challenge is None:
+            raise HTTPException(status_code=401, detail="invalid or expired totp token")
+        if challenge.get("sub") != user_id:
+            raise HTTPException(status_code=403, detail="totp token subject mismatch")
+
+    info = await _get_user_totp_info(pool, user_id)
+    if not info or not info["totp_enabled"]:
+        raise HTTPException(status_code=403, detail="TOTP not enabled for this user")
+
+    # 获取用户详细信息
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT id, email, password_hash, status FROM "app_user" '
+            "WHERE id = $1 AND deleted_at IS NULL",
+            user_id,
+        )
+    if not row or row["status"] != "active":
+        raise HTTPException(status_code=403, detail="user not active")
+
+    verified = False
+    used_counter = -1
+
+    if body.code:
+        # 验证 TOTP 码, 拿到码实际命中的时间步
+        secret = info["totp_secret"]
+        last_counter = info["totp_last_used_counter"] or -1
+
+        matched_counter = _totp_match_counter(secret, body.code)
+        if matched_counter is None:
+            raise HTTPException(status_code=401, detail="invalid TOTP code")
+
+        # 防重放: 同一时间步 (含窗口内已用过的步) 不能重复使用
+        if matched_counter <= last_counter:
+            raise HTTPException(status_code=401, detail="TOTP code already used (replay)")
+
+        verified = True
+        used_counter = matched_counter
+
+    elif body.recovery_code:
+        # 验证恢复码
+        import json
+
+        recovery_hashes = json.loads(info["totp_recovery_codes_hash"] or "[]")
+        ok, index = _verify_recovery_code(recovery_hashes, body.recovery_code)
+        if not ok:
+            raise HTTPException(status_code=401, detail="invalid recovery code")
+
+        # 消费恢复码 (一次性)
+        await _consume_recovery_code(pool, user_id, index)
+        verified = True
+
+    if not verified:
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    # 更新最后使用的 counter (防重放)
+    if used_counter >= 0:
+        await _update_user_totp_counter(pool, user_id, used_counter)
+
+    role = _staff_role_for_user(user_id, settings)
+
+    # 签发完整会话 token
+    access_token = sign_token(
+        {"sub": user_id, "email": row["email"], "role": role},
+        typ=TOKEN_TYPE_STAFF,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        expires_in_minutes=ACCESS_TOKEN_EXPIRES_MINUTES,
+    )
+    refresh_token = sign_token(
+        {"sub": user_id, "email": row["email"], "role": role},
+        typ=TOKEN_TYPE_STAFF,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+        expires_in_minutes=REFRESH_TOKEN_EXPIRES_DAYS * 24 * 60,
+    )
+    csrf_token = _generate_csrf_token()
+
+    _set_auth_cookies(response, access_token, refresh_token, csrf_token, settings)
+
+    return TokenResponse(access_token=access_token, user_id=user_id, email=row["email"])
+
+
+@router.delete("/totp")
+async def totp_disable(
+    request: Request,
+    body: TotpVerifyInput,
+    settings: Settings = Depends(get_settings),
+    pool: PgPool = Depends(get_pool),
+) -> dict[str, str]:
+    """解绑 TOTP: 验证当前 TOTP 码后禁用。"""
+    user = await _resolve_totp_actor(request, settings)
+    user_id = user["user_id"]
+
+    info = await _get_user_totp_info(pool, user_id)
+    if not info or not info["totp_enabled"]:
+        raise HTTPException(status_code=400, detail="TOTP not enabled")
+
+    if not _totp_verify_code(info["totp_secret"], body.code):
+        raise HTTPException(status_code=401, detail="invalid TOTP code")
+
+    await _disable_user_totp(pool, user_id)
+
+    return {"message": "TOTP disabled"}
 
 
 @router.post("/logout")
@@ -525,7 +1065,7 @@ async def customer_register(
         raise HTTPException(status_code=409, detail="email already registered")
 
     # 创建 customer
-    password_hash = CryptoUtil.hash_password(body.password)
+    password_hash = CryptoUtil.hash_password(password=body.password)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             'INSERT INTO "customer" (email, password_hash, phone, name, status) '

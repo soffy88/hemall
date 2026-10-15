@@ -411,13 +411,41 @@ def test_build_gateway_refuses_unknown_provider_in_production():
 
 
 def test_production_security_rejects_short_hmac_secrets():
+    # Provide all other required production settings to isolate JWT secret length error
+    settings = Settings(
+        environment="production",
+        payment_gateway_provider="wechat",
+        jwt_secret="x" * 31,
+        webhook_secret="x" * 32,
+        hardware_secret="x" * 32,
+        privileged_staff_ids="user1",
+        wechat_pay_appid="wx_app",
+        wechat_pay_mchid="1900000001",
+        wechat_pay_serial_no="SERIAL_1",
+        wechat_pay_private_key_path="priv.pem",
+        wechat_pay_api_v3_key="0" * 32,
+        wechat_pay_platform_cert_path="pub.pem",
+    )
     with pytest.raises(RuntimeError, match="HEMALL_JWT_SECRET 必须至少 32 字节"):
-        Settings(environment="production", jwt_secret="x" * 31).validate_production_security()
+        settings.validate_production_security()
 
 
 def test_production_security_rejects_invalid_fernet_key(monkeypatch):
-    monkeypatch.setenv("ENCRYPTION_KEY", "not-a-fernet-key")
+    # Provide all other required production settings to isolate ENCRYPTION_KEY error
+    settings = Settings(
+        environment="production",
+        payment_gateway_provider="wechat",
+        jwt_secret="x" * 32,
+        webhook_secret="x" * 32,
+        hardware_secret="x" * 32,
+        privileged_staff_ids="user1",
+        wechat_pay_appid="wx_app",
+        wechat_pay_mchid="1900000001",
+        wechat_pay_serial_no="SERIAL_1",
+        wechat_pay_private_key_path="priv.pem",
+        wechat_pay_api_v3_key="0" * 32,
+        wechat_pay_platform_cert_path="pub.pem",
+        encryption_key="not-a-fernet-key",  # Invalid Fernet key
+    )
     with pytest.raises(RuntimeError, match="ENCRYPTION_KEY 必须是有效的 Fernet base64 key"):
-        Settings(
-            environment="production", payment_gateway_provider="manual"
-        ).validate_production_security()
+        settings.validate_production_security()

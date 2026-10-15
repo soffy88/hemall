@@ -40,10 +40,11 @@ from .ai_assistant.models import AIConfig
 from .ai_assistant.router import router as ai_router
 from .ai_assistant.service import AIAssistantService
 from .analytics.service import AnalyticsService
-from .bootstrap import init_db, register_providers
+from .bootstrap import register_providers
 from .cache.router import router as cache_router
 from .cache.service import CacheManager
 from .config import Settings
+from .db_recovery import start_pool_or_recover
 from .deps import ensure_redis_connected, get_settings
 from .events import build_event_dispatcher
 from .eventsourcing.router import router as eventsourcing_router
@@ -62,6 +63,7 @@ from .observability.health import check_redis_health
 from .observability.health import router as health_router
 from .observability.tracing import setup_tracing, shutdown_tracing
 from .orders.router import router as orders_router
+from .payments.refund_router import router as refund_router
 from .payments.router import router as payment_router
 from .push.router import router as push_router
 from .push.service import PushManager
@@ -203,6 +205,8 @@ class AppState:
     """应用运行时状态 (供 health/observability 访问)。"""
 
     pool: object | None = None
+    #: 池缺失且后台自愈重试进行中 (健康检查据此暴露降级原因)
+    db_recovery_active: bool = False
     version: str = __version__
     # Phase 1
     realtime_manager: Any = None
@@ -261,6 +265,100 @@ def _recommend_price_bucket(min_price_cents: int | None) -> str:
     if min_price_cents < 200000:
         return "high"
     return "premium"
+
+
+async def _wire_db_dependent_services(app: FastAPI, settings: Settings, pool: Any) -> None:
+    """连接池就绪后的全部装配 — 启动成功与后台自愈恢复共用同一条路径。
+
+    每一步都是 best-effort: 任何单项失败只降级对应能力, 不影响已经可用的
+    连接池。必须幂等 —— :class:`app.db_recovery.PoolRecovery` 在池消失后重建时
+    会再调一次。
+    """
+    app.state.pool = pool
+    _app_state.pool = pool
+    _app_state.db_recovery_active = False
+
+    payment_reconciliation_task = asyncio.create_task(_payment_reconciliation_loop(pool, settings))
+    app.state.payment_reconciliation_task = payment_reconciliation_task
+    _app_state.payment_reconciliation_task = payment_reconciliation_task
+
+    # Eventsourcing: DB 可用时初始化 EventStore，否则路由层诚实降级 503/空态。
+    try:
+        from .eventsourcing.service import EventBus, EventStore, ProjectorRegistry
+
+        _store = EventStore(settings)
+        await _store.initialize(pool)
+        _registry = ProjectorRegistry()
+        _bus = EventBus(_store, _registry)
+        _app_state.event_store = _store
+        _app_state.projector_registry = _registry
+        _app_state.event_bus = _bus
+        app.state.event_store = _store
+        app.state.projector_registry = _registry
+        app.state.event_bus = _bus
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EventStore init failed (eventsourcing degraded): %s", exc)
+
+    # Phase 3: 初始化分析服务 (依赖连接池)
+    try:
+        _app_state.analytics_service = AnalyticsService(settings.clickhouse_url)
+        await _app_state.analytics_service.initialize(pool)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AnalyticsService init failed: %s", exc)
+
+    # Phase 4+: 初始化 AI 助手服务 (依赖连接池)
+    try:
+        ai_config = AIConfig(
+            provider=settings.ai_provider,
+            model_name=settings.ai_model_name,
+            api_key=settings.ai_api_key,
+            api_base=settings.ai_api_base,
+            temperature=settings.ai_temperature,
+            max_tokens=settings.ai_max_tokens,
+            embedding_model=settings.ai_embedding_model,
+            top_k_retrieval=settings.ai_top_k_retrieval,
+            similarity_threshold=settings.ai_similarity_threshold,
+            max_history_turns=settings.ai_max_history_turns,
+            timeout_seconds=settings.ai_timeout_seconds,
+        )
+        _app_state.ai_service = AIAssistantService(ai_config, pool)
+        await _app_state.ai_service.initialize(pool)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AI Assistant Service init failed: %s", exc)
+
+    # Phase 3: 用真实商城目录数据灌入推荐引擎 (否则 /recommend/* 一直返回空列表)
+    if _app_state.recommend_service is not None:
+        try:
+            products = await queries.list_storefront_products(pool, limit=500)
+            features = [
+                ProductFeatures(
+                    product_id=p["id"],
+                    category_id=p.get("category_id") or "uncategorized",
+                    brand_id=None,
+                    price_range=_recommend_price_bucket(p.get("min_price_cents")),
+                    tags=[],
+                    min_price_cents=p.get("min_price_cents"),
+                    max_price_cents=p.get("max_price_cents"),
+                    avg_rating=0.0,
+                    review_count=0,
+                    sold_count=0,
+                )
+                for p in products
+            ]
+            await _app_state.recommend_service.register_product_features(features)
+            await _app_state.recommend_service.train()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("recommend product feature seeding failed: %s", exc)
+
+    app.state.ext_oservi = None
+    try:
+        oservi = build_ext_oservi(pool, settings)
+        oservi.start_cron_engines()
+        app.state.ext_oservi = oservi
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ext oservi engines start failed (degraded): %s", exc)
+
+    logger.info("DB-dependent services wired (pool ready)")
 
 
 @asynccontextmanager
@@ -333,102 +431,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("i18n services init failed: %s", exc)
 
-    metrics_task: asyncio.Task | None = None
-    payment_reconciliation_task: asyncio.Task | None = None
-    try:
-        app.state.pool, metrics_task = await init_db(settings)
-    except Exception as exc:  # noqa: BLE001 - DB 不可达不阻止应用启动
-        logger.warning(
-            "database unavailable at startup; DB-backed endpoints will return 503: %s",
-            exc,
-        )
-        app.state.pool = None
+    # Phase 0/1/3/4: 建池 + 所有依赖 DB 的服务装配。
+    #
+    # 事故修复 (2026-10-15): 原来这里 init_db 失败只把 app.state.pool 置 None
+    # 就往下走, 该 worker 此后永久 503。现在改为后台退避重试 (PoolRecovery),
+    # DB 恢复后自动建池并回调同一个装配函数; 健康检查在池缺失时返 503,
+    # 容器编排据此摘流/重启兜底。
+    async def _on_pool_ready(pool: Any, metrics_task: asyncio.Task) -> None:
+        app.state.db_metrics_task = metrics_task
+        await _wire_db_dependent_services(app, settings, pool)
 
-    # Phase 0: 更新全局状态供 health 模块访问
-    _app_state.pool = app.state.pool
-
-    if app.state.pool is not None:
-        payment_reconciliation_task = asyncio.create_task(
-            _payment_reconciliation_loop(app.state.pool, settings)
-        )
-        app.state.payment_reconciliation_task = payment_reconciliation_task
-        _app_state.payment_reconciliation_task = payment_reconciliation_task
-
-    # Eventsourcing: DB 可用时初始化 EventStore，否则路由层诚实降级 503/空态。
-    if app.state.pool is not None:
-        try:
-            from .eventsourcing.service import EventBus, EventStore, ProjectorRegistry
-
-            _store = EventStore(settings)
-            await _store.initialize(app.state.pool)
-            _registry = ProjectorRegistry()
-            _bus = EventBus(_store, _registry)
-            _app_state.event_store = _store
-            _app_state.projector_registry = _registry
-            _app_state.event_bus = _bus
-            app.state.event_store = _store
-            app.state.projector_registry = _registry
-            app.state.event_bus = _bus
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("EventStore init failed (eventsourcing degraded): %s", exc)
-
-    # Phase 3: 初始化分析服务 (依赖 app.state.pool, 须在 init_db 之后)
-    try:
-        _app_state.analytics_service = AnalyticsService(settings.clickhouse_url)
-        if app.state.pool is not None:
-            await _app_state.analytics_service.initialize(app.state.pool)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("AnalyticsService init failed: %s", exc)
-
-    # Phase 4+: 初始化 AI 助手服务 (依赖 app.state.pool, 须在 init_db 之后)
-    try:
-        ai_config = AIConfig(
-            provider=settings.ai_provider,
-            model_name=settings.ai_model_name,
-            api_key=settings.ai_api_key,
-            api_base=settings.ai_api_base,
-            temperature=settings.ai_temperature,
-            max_tokens=settings.ai_max_tokens,
-            embedding_model=settings.ai_embedding_model,
-            top_k_retrieval=settings.ai_top_k_retrieval,
-            similarity_threshold=settings.ai_similarity_threshold,
-            max_history_turns=settings.ai_max_history_turns,
-            timeout_seconds=settings.ai_timeout_seconds,
-        )
-        _app_state.ai_service = AIAssistantService(ai_config, app.state.pool)
-        await _app_state.ai_service.initialize(app.state.pool)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("AI Assistant Service init failed: %s", exc)
-
-    # Phase 3: 用真实商城目录数据灌入推荐引擎 (否则 /recommend/* 一直返回空列表)
-    if app.state.pool is not None and _app_state.recommend_service is not None:
-        try:
-            products = await queries.list_storefront_products(app.state.pool, limit=500)
-            features = [
-                ProductFeatures(
-                    product_id=p["id"],
-                    category_id=p.get("category_id") or "uncategorized",
-                    brand_id=None,
-                    price_range=_recommend_price_bucket(p.get("min_price_cents")),
-                    tags=[],
-                    min_price_cents=p.get("min_price_cents"),
-                    max_price_cents=p.get("min_price_cents"),
-                    avg_rating=0.0,
-                    review_count=0,
-                    sold_count=0,
-                )
-                for p in products
-            ]
-            await _app_state.recommend_service.register_product_features(features)
-            await _app_state.recommend_service.train()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("recommend product feature seeding failed: %s", exc)
-
-    app.state.ext_oservi = None
-    if app.state.pool is not None:
-        oservi = build_ext_oservi(app.state.pool, settings)
-        oservi.start_cron_engines()
-        app.state.ext_oservi = oservi
+    pool, pool_recovery = await start_pool_or_recover(app, settings, _on_pool_ready)
+    app.state.pool = pool
+    app.state.pool_recovery = pool_recovery
+    if pool_recovery is not None:
+        _app_state.db_recovery_active = True
+    if pool is not None:
+        await _wire_db_dependent_services(app, settings, pool)
 
     logger.info("hemall backend started (version=%s)", __version__)
     yield
@@ -438,9 +457,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         oservi.stop()
         logger.info("ext oservi cron engines stopped (best-effort)")
 
+    recovery = getattr(app.state, "pool_recovery", None)
+    if recovery is not None:
+        await recovery.stop()
+
+    metrics_task = getattr(app.state, "db_metrics_task", None)
     if metrics_task is not None:
         metrics_task.cancel()
 
+    payment_reconciliation_task = getattr(app.state, "payment_reconciliation_task", None)
     if payment_reconciliation_task is not None:
         payment_reconciliation_task.cancel()
 
@@ -448,6 +473,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if pool is not None:
         await pool.close()
         logger.info("database pool closed")
+    _app_state.pool = None
+    app.state.pool = None
 
     # Phase 1: 关停 WebSocket 实时推送
     await realtime_manager.stop()
@@ -566,6 +593,7 @@ def create_app() -> FastAPI:
 
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
+    app.include_router(refund_router)
 
     # Phase 1: 挂载库存管理路由
     app.include_router(inventory_router)

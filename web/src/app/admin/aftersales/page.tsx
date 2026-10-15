@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
-import type { Order, ReturnRequest, Swap, Claim } from '@/types/api';
+import type { Order, ReturnRequest, Swap, Claim, RefundRequest, RefundStatus, RefundAuditEntry } from '@/types/api';
 import { errMessage } from '@/lib/errors';
 
 /** 客诉仲裁记录 —— VLM 判损 + 裁决结果，运营核查用，带手动刷新。 */
@@ -70,8 +70,203 @@ function RmaClaimsTable({ refreshKey }: { refreshKey: number }) {
   );
 }
 
-function parseNewItems(text: string): { batch_id: string; quantity: number }[] {
-  return text
+const REFUND_STATUSES: RefundStatus[] = ['submitted', 'approved', 'refunding', 'succeeded', 'failed', 'rejected'];
+
+const REFUND_STATUS_STYLE: Record<RefundStatus, string> = {
+  submitted: 'bg-amber-100 text-amber-700',
+  approved: 'bg-blue-100 text-blue-700',
+  refunding: 'bg-blue-100 text-blue-700',
+  succeeded: 'bg-emerald-100 text-emerald-700',
+  failed: 'bg-red-100 text-red-700',
+  rejected: 'bg-red-100 text-red-700',
+};
+
+/** 退款状态机运营面板：审核/驳回/重试/确认收货/审计轨迹，带状态筛选与手动刷新。 */
+function RefundsSection() {
+  const [rows, setRows] = useState<RefundRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+
+  const load = () =>
+    api
+      .adminListRefunds({ status: statusFilter || undefined, limit: 100 })
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败留空表，不阻断页面
+      })
+      .finally(() => setLoading(false));
+
+  const reload = () => {
+    setLoading(true);
+    load();
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
+
+  return (
+    <div>
+      <div className="mb-3 flex items-end gap-2">
+        <div>
+          <label className="text-xs text-gray-500">状态筛选</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-3 py-2 border rounded-lg text-sm"
+          >
+            <option value="">全部</option>
+            {REFUND_STATUSES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+        <button onClick={reload} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+          {loading ? '加载中...' : '刷新'}
+        </button>
+      </div>
+
+      <div className="overflow-x-auto mb-6">
+        <table className="w-full text-xs bg-white rounded-xl overflow-hidden border border-gray-200">
+          <thead className="bg-gray-50 text-left">
+            <tr>
+              <th className="px-3 py-2 font-medium text-gray-600">refund_id</th>
+              <th className="px-3 py-2 font-medium text-gray-600">order_id</th>
+              <th className="px-3 py-2 font-medium text-gray-600">type</th>
+              <th className="px-3 py-2 font-medium text-gray-600">reason</th>
+              <th className="px-3 py-2 font-medium text-gray-600">申请金额</th>
+              <th className="px-3 py-2 font-medium text-gray-600">批准金额</th>
+              <th className="px-3 py-2 font-medium text-gray-600">status</th>
+              <th className="px-3 py-2 font-medium text-gray-600">created_at</th>
+              <th className="px-3 py-2 font-medium text-gray-600">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {rows.map((r) => (
+              <RefundRow key={r.id} refund={r} onChanged={reload} />
+            ))}
+            {!loading && rows.length === 0 && (
+              <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">暂无售后申请</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RefundRow({ refund, onChanged }: { refund: RefundRequest; onChanged: () => void }) {
+  const [audit, setAudit] = useState<RefundAuditEntry[] | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  async function act(fn: () => Promise<unknown>) {
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
+  function handleApprove() {
+    if (!confirm('审核通过？将立即触发网关退款。')) return;
+    act(() => api.adminApproveRefund(refund.id));
+  }
+
+  function handleReject() {
+    const reason = prompt('驳回理由（必填）');
+    if (!reason || !reason.trim()) return;
+    act(() => api.adminRejectRefund(refund.id, reason.trim()));
+  }
+
+  function handleRetry() {
+    if (!confirm('重试这笔失败的网关退款？')) return;
+    act(() => api.adminRetryRefund(refund.id));
+  }
+
+  function handleReturnReceived() {
+    const tracking_no = prompt('退货物流单号');
+    if (!tracking_no || !tracking_no.trim()) return;
+    const batch_id = prompt('回补库存的 batch_id');
+    if (!batch_id || !batch_id.trim()) return;
+    act(() => api.adminReturnReceivedRefund(refund.id, { tracking_no: tracking_no.trim(), batch_id: batch_id.trim() }));
+  }
+
+  function toggleAudit() {
+    if (audit) {
+      setAudit(null);
+      return;
+    }
+    setAuditLoading(true);
+    api
+      .adminRefundAudit(refund.id)
+      .then(setAudit)
+      .catch((e) => {
+        alert(errMessage(e));
+        setAudit([]);
+      })
+      .finally(() => setAuditLoading(false));
+  }
+
+  const canReceiveReturn =
+    refund.type === 'return_refund' &&
+    (refund.status === 'approved' || refund.status === 'refunding' || refund.status === 'succeeded');
+
+  return (
+    <>
+      <tr className="hover:bg-gray-50">
+        <td className="px-3 py-2 font-mono" title={refund.id}>{refund.id.slice(0, 12)}...</td>
+        <td className="px-3 py-2 font-mono" title={refund.order_id}>{refund.order_id.slice(0, 12)}...</td>
+        <td className="px-3 py-2">{refund.type}</td>
+        <td className="px-3 py-2">{refund.reason}</td>
+        <td className="px-3 py-2">{formatMoney(refund.requested_amount)}</td>
+        <td className="px-3 py-2">{refund.approved_amount == null ? '—' : formatMoney(refund.approved_amount)}</td>
+        <td className="px-3 py-2">
+          <span className={`px-1.5 py-0.5 rounded ${REFUND_STATUS_STYLE[refund.status]}`}>{refund.status}</span>
+          {refund.reject_reason && <div className="text-[10px] text-red-500 mt-0.5">{refund.reject_reason}</div>}
+        </td>
+        <td className="px-3 py-2 text-gray-500">{new Date(refund.created_at).toLocaleString('zh-CN')}</td>
+        <td className="px-3 py-2">
+          <div className="flex gap-2 flex-wrap">
+            {refund.status === 'submitted' && (
+              <>
+                <button onClick={handleApprove} className="text-xs text-emerald-600 hover:underline">通过</button>
+                <button onClick={handleReject} className="text-xs text-red-600 hover:underline">驳回</button>
+              </>
+            )}
+            {refund.status === 'failed' && (
+              <button onClick={handleRetry} className="text-xs text-amber-600 hover:underline">重试退款</button>
+            )}
+            {canReceiveReturn && (
+              <button onClick={handleReturnReceived} className="text-xs text-blue-600 hover:underline">确认收货</button>
+            )}
+            <button onClick={toggleAudit} className="text-xs text-gray-500 hover:underline">
+              {audit ? '收起审计' : auditLoading ? '审计加载中...' : '审计'}
+            </button>
+          </div>
+        </td>
+      </tr>
+      {audit && (
+        <tr>
+          <td colSpan={9} className="px-3 py-2 bg-gray-50">
+            {audit.length === 0 && <div className="text-gray-400">无审计记录</div>}
+            <ul className="space-y-1">
+              {audit.map((a) => (
+                <li key={a.id} className="font-mono text-[11px]">
+                  {new Date(a.created_at).toLocaleString('zh-CN')} · {a.from_status ?? '∅'} → {a.to_status} ·{' '}
+                  {a.operator_type}{a.operator_id ? `(${a.operator_id.slice(0, 8)})` : ''} · {a.reason ?? '—'}
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function parseNewItems(text: string): { batch_id: string; quantity: number }[] {  return text
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
@@ -448,6 +643,14 @@ export default function AftersalesPage() {
           </div>
         </>
       )}
+
+      <div className="mt-10 mb-3">
+        <h2 className="text-lg font-semibold">退款状态机 — 审核 / 重试 / 确认收货</h2>
+        <p className="text-xs text-gray-500 mt-1">
+          通过=触发网关退款；重试=仅 failed；确认收货=仅 return_refund 且回补库存（幂等）。
+        </p>
+      </div>
+      <RefundsSection />
 
       <div className="mt-10 mb-3 flex items-center justify-between">
         <h2 className="text-lg font-semibold">hemall 扩展运维 — 押金/回收桶/RMA 仲裁</h2>

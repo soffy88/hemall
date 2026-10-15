@@ -111,6 +111,8 @@ def get_current_user(
     """从 Bearer JWT 或会话 cookie 解析员工主体; 缺失/无效/类型不符 → 401。
 
     类型白名单只认 ``typ=staff``——顾客/能力令牌即使从 cookie 进来也一律 401。
+    scope 受限令牌 (totp 登录挑战 / totp_setup 绑定, 见 app/auth.py) 同样拒绝——
+    它们只被 /auth/totp/* 端点接受, 不是完整会话。
     """
     token = _token_from_request(request, creds)
     if token is None:
@@ -124,6 +126,8 @@ def get_current_user(
         )
     except Exception as exc:  # noqa: BLE001 - 翻译为 HTTP 语义
         raise HTTPException(status_code=401, detail=f"invalid token: {exc}") from exc
+    if payload.get("scope"):
+        raise HTTPException(status_code=401, detail="scope-restricted token is not a session")
     if not isinstance(payload.get("sub"), str) or not payload["sub"].strip():
         raise HTTPException(status_code=401, detail="staff token missing subject")
     return {

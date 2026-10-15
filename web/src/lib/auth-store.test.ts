@@ -38,6 +38,7 @@ beforeEach(() => {
   meCalls.length = 0;
   window.localStorage.clear();
   window.sessionStorage.clear();
+  document.cookie = 'hemall_csrf_token=; Max-Age=0; path=/';
 });
 
 afterEach(() => {
@@ -53,8 +54,11 @@ describe('auth-store 会话状态', () => {
     );
     const store = await freshStore();
 
-    const user = await store.login('admin@hemal.local', 'pw');
-    expect(user).toEqual({ id: 'u-1', email: 'admin@hemal.local' });
+    const outcome = await store.login('admin@hemal.local', 'pw');
+    expect(outcome).toEqual({
+      kind: 'ok',
+      user: { id: 'u-1', email: 'admin@hemal.local' },
+    });
     expect(store.isAuthenticated()).toBe(true);
     expect(store.getAuth()).toEqual({ id: 'u-1', email: 'admin@hemal.local' });
 
@@ -185,5 +189,140 @@ describe('auth-store 会话状态', () => {
     const store = await freshStore();
     await expect(store.refreshAuth()).resolves.toBe(false);
     expect(store.isAuthenticated()).toBe(false);
+  });
+});
+describe('auth-store TOTP 登录第二步 / 首次绑定', () => {
+  it('requires_totp → 返回 totp 挑战且不建会话', async () => {
+    stubFetch((url) =>
+      url.endsWith('/auth/login')
+        ? jsonResponse({
+            requires_totp: true,
+            user_id: 'u-5',
+            email: 'admin@hemal.local',
+            totp_token: 'challenge-1',
+            message: 'TOTP verification required',
+          })
+        : jsonResponse({ detail: 'not found' }, 404),
+    );
+    const store = await freshStore();
+
+    const outcome = await store.login('admin@hemal.local', 'pw');
+    expect(outcome).toEqual({
+      kind: 'totp',
+      challenge: {
+        requires_totp: true,
+        user_id: 'u-5',
+        email: 'admin@hemal.local',
+        totp_token: 'challenge-1',
+        message: 'TOTP verification required',
+      },
+    });
+    expect(store.isAuthenticated()).toBe(false);
+    expect(store.getAuth()).toBeNull();
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it('requires_totp_setup → 返回 setup 挑战并暂存（只在内存，不落本地存储）', async () => {
+    stubFetch(() =>
+      jsonResponse({
+        requires_totp_setup: true,
+        user_id: 'u-5',
+        email: 'admin@hemal.local',
+        setup_token: 'setup-1',
+        message: 'TOTP enrollment required for privileged accounts in production',
+      }),
+    );
+    const store = await freshStore();
+
+    const outcome = await store.login('admin@hemal.local', 'pw');
+    expect(outcome.kind).toBe('setup');
+    expect(store.getPendingSetup()).toMatchObject({ setup_token: 'setup-1', user_id: 'u-5' });
+    expect(store.isAuthenticated()).toBe(false);
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+
+    store.clearPendingSetup();
+    expect(store.getPendingSetup()).toBeNull();
+  });
+
+  it('verifyTotp 带 challenge 令牌 → Authorization 头（CSRF 豁免），成功建会话', async () => {
+    const fetchMock = stubFetch((url) =>
+      url.endsWith('/auth/totp/verify')
+        ? jsonResponse({ user_id: 'u-5', email: 'admin@hemal.local', access_token: 'must-not-leak' })
+        : jsonResponse({ detail: 'not found' }, 404),
+    );
+    const store = await freshStore();
+
+    const user = await store.verifyTotp('u-5', { code: '123456' }, 'challenge-1');
+    expect(user).toEqual({ id: 'u-5', email: 'admin@hemal.local' });
+    expect(store.getAuth()).toEqual({ id: 'u-5', email: 'admin@hemal.local' });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/auth/totp/verify');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer challenge-1');
+    expect(String(init.body)).toBe(JSON.stringify({ user_id: 'u-5', code: '123456' }));
+    expect(JSON.stringify(init.headers)).not.toMatch(/x-csrf-token/i);
+    expect(JSON.stringify(init.headers)).not.toContain('must-not-leak');
+  });
+
+  it('verifyTotp 无 challenge 令牌 → 先取 csrf-token 再带 X-CSRF-Token 头', async () => {
+    const fetchMock = stubFetch((url) =>
+      url.endsWith('/auth/csrf-token')
+        ? jsonResponse({ csrf_token: 'tok-42' })
+        : jsonResponse({ user_id: 'u-5', email: 'admin@hemal.local' }),
+    );
+    const store = await freshStore();
+
+    await store.verifyTotp('u-5', { recovery_code: 'ABC123' });
+    expect(store.isAuthenticated()).toBe(true);
+
+    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calls).toEqual(['/api/auth/csrf-token', '/api/auth/totp/verify']);
+    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-CSRF-Token']).toBe('tok-42');
+    expect(headers.Authorization).toBeUndefined();
+    expect(String(init.body)).toBe(JSON.stringify({ user_id: 'u-5', recovery_code: 'ABC123' }));
+  });
+
+  it('verifyTotp 失败且 detail 是 422 数组 → 退回默认提示并保持未登录', async () => {
+    stubFetch(() => jsonResponse({ detail: [{ msg: 'invalid code' }] }, 422));
+    const store = await freshStore();
+
+    await expect(store.verifyTotp('u-5', { code: '000000' })).rejects.toThrow('验证码校验失败');
+    expect(store.isAuthenticated()).toBe(false);
+  });
+
+  it('fetchTotpSetup / bindTotp 走同源 /api 并带 setup_token Authorization', async () => {
+    document.cookie = 'hemall_csrf_token=tok; path=/';
+    const fetchMock = stubFetch((url) => {
+      if (url.endsWith('/auth/totp/setup')) {
+        return jsonResponse({ otpauth_uri: 'otpauth://totp/x', secret: 'JBSW', recovery_codes: ['a1'] });
+      }
+      if (url.endsWith('/auth/totp/bind')) {
+        return jsonResponse({ message: 'TOTP bound', recovery_codes: ['r1'] });
+      }
+      return jsonResponse({ detail: 'not found' }, 404);
+    });
+    const store = await freshStore();
+
+    const info = await store.fetchTotpSetup('setup-1');
+    expect(info.secret).toBe('JBSW');
+    const confirm = await store.bindTotp('setup-1', 'JBSW', '123456');
+    expect(confirm.recovery_codes).toEqual(['r1']);
+
+    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calls).toEqual(['/api/auth/totp/setup', '/api/auth/totp/bind']);
+    const setupInit = fetchMock.mock.calls[0][1] as RequestInit;
+    const bindInit = fetchMock.mock.calls[1][1] as RequestInit;
+    expect((setupInit.headers as Record<string, string>).Authorization).toBe('Bearer setup-1');
+    const bindHeaders = bindInit.headers as Record<string, string>;
+    expect(bindHeaders.Authorization).toBe('Bearer setup-1');
+    expect(bindHeaders['X-TOTP-Secret']).toBe('JBSW');
+    expect(bindInit.method).toBe('POST');
+    expect(JSON.stringify(setupInit.headers)).not.toMatch(/x-csrf-token/i);
   });
 });

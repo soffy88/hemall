@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from . import queries
 from .auth import router as auth_router
+from .db_recovery import kick_pool_recovery
 from .deps import (
     assert_staff_role,
     get_current_customer,
@@ -165,6 +166,9 @@ def _require_admin(
 def _pool(request: Request) -> Any:
     pool = getattr(request.app.state, "pool", None)
     if pool is None:
+        # 池缺失: 立刻唤醒后台退避重试 (笔记本休眠唤醒后 PG 才起来), 别让
+        # 这个 worker 在下一次退避窗口之前一直 503。见 app/db_recovery.py。
+        kick_pool_recovery(request.app)
         raise HTTPException(503, "database not ready")
     return pool
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Any
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: 禁止在 production 下裸用的开发默认密钥 (须与下方 Settings 默认值保持一致)。
@@ -13,13 +16,98 @@ _INSECURE_DEFAULTS: dict[str, str] = {
     "hardware_secret": "dev-hardware-secret-change-me",
 }
 
+#: Settings.pg_dsn 的开发默认值 (validate_production_security 只拦这个原值)。
+_DEV_DEFAULT_PG_DSN = "postgresql://postgres:test@localhost:5432/hemall"
+
+#: 支持 *_FILE 后缀读取密钥文件的字段映射 (env 名 -> settings 字段名)
+_SECRET_FILE_MAP: dict[str, str] = {
+    "HEMALL_JWT_SECRET_FILE": "jwt_secret",
+    "HEMALL_PG_PASSWORD_FILE": "pg_password",
+    "HEMALL_PG_DSN_FILE": "pg_dsn",
+    "ENCRYPTION_KEY_FILE": "encryption_key",
+    "HEMALL_WEBHOOK_SECRET_FILE": "webhook_secret",
+    "HEMALL_HARDWARE_SECRET_FILE": "hardware_secret",
+    "HEMALL_WECHAT_PAY_API_V3_KEY_FILE": "wechat_pay_api_v3_key",
+    "HEMALL_WECHAT_PAY_PRIVATE_KEY_FILE": "wechat_pay_private_key_path",
+    "HEMALL_WECHAT_PAY_PLATFORM_CERT_FILE": "wechat_pay_platform_cert_path",
+    "HEMALL_STRIPE_SECRET_KEY_FILE": "stripe_secret_key",
+    "HEMALL_STRIPE_WEBHOOK_SECRET_FILE": "stripe_webhook_secret",
+    "HEMALL_ALIPAY_PRIVATE_KEY_FILE": "alipay_private_key_path",
+    "HEMALL_ALIPAY_PUBLIC_KEY_FILE": "alipay_public_key_path",
+    "HEMALL_REDIS_URL_FILE": "redis_url",
+}
+
+
+#: 常见内部/本地 PG 主机名 (本机或容器内网, 不强制 TLS)
+_INTERNAL_PG_HOSTS = frozenset(
+    {"localhost", "127.0.0.1", "::1", "postgres", "db", "database", "postgresql"}
+)
+
+
+def _is_internal_pg_host(dsn: str) -> bool:
+    """判断 PG DSN 是否指向本机/容器内网 (无需强制 sslmode=require)。
+
+    docker compose 服务名通常不含点号 (db/postgres), 或以 .local/.internal/
+    .svc.cluster.local 结尾; 其余 (含公网 IP/域名) 视为外部连接。
+    """
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(dsn).hostname or "").lower()
+    except Exception:
+        return True  # 解析失败不阻塞, 由连接时报错
+    if not host:
+        return True
+    if host in _INTERNAL_PG_HOSTS:
+        return True
+    return "." not in host or host.endswith((".local", ".internal", ".svc.cluster.local"))
+
+
+def _read_secret_file(file_path: str) -> str:
+    """读取密钥文件内容，去除首尾空白。"""
+    path = Path(file_path)
+    if not path.is_file():
+        raise RuntimeError(f"Secret file not found: {file_path}")
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _load_secrets_from_files(values: dict[str, Any]) -> dict[str, Any]:
+    """从 *_FILE 环境变量加载密钥到对应字段。
+
+    优先级: 显式环境变量 > *_FILE > 默认值。
+    只在字段未通过环境变量显式设置时才读取文件。
+    """
+    # 获取实际的环境变量 (不带前缀处理，直接读 os.environ)
+    for env_name, field_name in _SECRET_FILE_MAP.items():
+        file_env = os.getenv(env_name)
+        if not file_env:
+            continue
+        # 检查对应的直接环境变量是否已设置 (HEMALL_ 前缀 + 大写字段名)
+        direct_env = f"HEMALL_{field_name.upper()}"
+        if os.getenv(direct_env):
+            continue  # 显式环境变量优先
+        try:
+            values[field_name] = _read_secret_file(file_env)
+        except RuntimeError as e:
+            raise RuntimeError(f"Failed to load secret from {env_name}: {e}") from e
+    return values
+
 
 class Settings(BaseSettings):
-    """服务层运行配置。全部可用 `HEMALL_<FIELD>` 环境变量或 .env 覆盖。"""
+    """服务层运行配置。全部可用 `HEMALL_<FIELD>` 环境变量或 .env 覆盖。
+
+    额外支持 *_FILE 后缀环境变量 (如 HEMALL_JWT_SECRET_FILE=/run/secrets/jwt_secret)
+    读取 Docker secrets 或文件挂载的密钥。显式环境变量优先于 *_FILE。
+    """
 
     model_config = SettingsConfigDict(
         env_prefix="HEMALL_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _load_file_secrets(cls, values: dict[str, Any]) -> dict[str, Any]:
+        return _load_secrets_from_files(values)
 
     # ── 运行环境 ───────────────────────────────────────────────────────
     # development | staging | production。production 下 validate_production_security()
@@ -31,12 +119,17 @@ class Settings(BaseSettings):
 
     # ── 数据库 (obase.persistence.PgPool) ──────────────────────────────
     pg_dsn: str = "postgresql://postgres:test@localhost:5432/hemall"
+    pg_password: str = ""  # 单独的密码字段，支持 HEMALL_PG_PASSWORD_FILE
+    pg_sslmode: str = "prefer"  # disable|allow|prefer|require|verify-ca|verify-full
     pg_pool_name: str = "hemall"
     pg_pool_min: int = 2
     pg_pool_max: int = 10
 
     # ── Redis (DistributedLock 防超卖 / EventBus) ──────────────────────
     redis_url: str = "redis://localhost:6379/0"
+
+    # ── 加密 (Fernet PII 加密) ───────────────────────────────────────────
+    encryption_key: str = ""  # 支持 ENCRYPTION_KEY_FILE
 
     # ── 鉴权 (obase.crypto.CryptoUtil JWT) ─────────────────────────────
     jwt_secret: str = "change-me-in-production"
@@ -83,12 +176,65 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_notify_url: str = ""
+    # Alipay (RSA2)
+    alipay_app_id: str = ""
+    alipay_private_key_path: str = ""  # 支持 HEMALL_ALIPAY_PRIVATE_KEY_FILE
+    alipay_public_key_path: str = ""  # 支持 HEMALL_ALIPAY_PUBLIC_KEY_FILE
+    alipay_notify_url: str = ""
 
     # ── omodul 输出 (decision_trail / report 落盘) ─────────────────────
     output_root: Path = Path("./var/omodul_output")
     # 根日志级别 (INFO/WARNING/DEBUG)。引擎 tick 状态日志 (爬虫/证书轮换)
     # 依赖它不被 WARNING 默认值吞掉。
     log_level: str = "INFO"
+
+    @property
+    def effective_pg_dsn(self) -> str:
+        """返回带 sslmode 的有效 DSN。
+
+        - 如果 pg_dsn 已包含 sslmode 参数，直接返回。
+        - 连接非本机/非容器内网的 PG 时，默认 sslmode=require (防明文传输)；
+          已显式设置 HEMALL_PG_SSLMODE 时尊重显式值 (可显式关闭)。
+        - pg_password 如果设置，会替换 DSN 中的密码部分。
+        """
+        dsn = self.pg_dsn
+
+        # 替换密码 (如果 pg_password 单独设置)
+        if self.pg_password and "://" in dsn:
+            from urllib.parse import urlparse, urlunparse
+
+            parsed = urlparse(dsn)
+            if parsed.password is not None or self.pg_password:
+                # 重建 netloc with new password
+                user = parsed.username or "postgres"
+                host_port = parsed.hostname
+                if parsed.port:
+                    host_port += f":{parsed.port}"
+                new_netloc = f"{user}:{self.pg_password}@{host_port}"
+                dsn = urlunparse(parsed._replace(netloc=new_netloc))
+
+        # 添加 sslmode (如果 DSN 中没有)
+        if "sslmode=" not in dsn:
+            sslmode = self.pg_sslmode
+            if (
+                sslmode == "prefer"
+                and "pg_sslmode" not in self.model_fields_set
+                and not _is_internal_pg_host(self.pg_dsn)
+            ):
+                # 外部数据库且未显式配置 sslmode: 默认升级为 require
+                sslmode = "require"
+            separator = "&" if "?" in dsn else "?"
+            dsn = f"{dsn}{separator}sslmode={sslmode}"
+
+        return dsn
+
+    @field_validator("pg_sslmode")
+    @classmethod
+    def _validate_sslmode(cls, v: str) -> str:
+        allowed = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+        if v not in allowed:
+            raise ValueError(f"pg_sslmode must be one of {allowed}")
+        return v
 
     # ── provider 装配 (obase.ProviderRegistry generic category) ────────
     # 规范名须与 bootstrap 注册名一致:
@@ -180,8 +326,28 @@ class Settings(BaseSettings):
             value = str(getattr(self, field) or "")
             if len(value.encode("utf-8")) < 32:
                 problems.append(f"HEMALL_{field.upper()} 必须至少 32 字节，避免弱 HMAC 密钥")
-        if "test@" in self.pg_dsn or self.pg_dsn.startswith("postgresql://postgres:test@"):
+        # 只拦"开发默认 DSN"本身 (Settings.pg_dsn 默认值)。早先的 `"test@" in dsn`
+        # 会把任何含 test@ 的凭据误杀 (密码 latest@ 也含 test@), 已收紧。
+        if self.pg_dsn == _DEV_DEFAULT_PG_DSN or self.pg_dsn.startswith(f"{_DEV_DEFAULT_PG_DSN}?"):
             problems.append("HEMALL_PG_DSN 仍是开发默认凭据 (postgres:test)")
+
+        # 生产环境连接非本机/非容器内网 PG 时，默认要求 sslmode=require
+        # (可显式关闭: HEMALL_PG_SSLMODE=disable 或 DSN 内显式 sslmode=)
+        if not _is_internal_pg_host(self.pg_dsn):
+            effective_sslmode = self.pg_sslmode
+            # 检查 DSN 中是否已显式设置 sslmode
+            if "sslmode=" in self.pg_dsn:
+                import re
+
+                m = re.search(r"sslmode=([^&]+)", self.pg_dsn)
+                if m:
+                    effective_sslmode = m.group(1)
+            if effective_sslmode not in ("require", "verify-ca", "verify-full"):
+                problems.append(
+                    f"HEMALL_PG_SSLMODE 必须为 require/verify-ca/verify-full "
+                    f"当连接外部数据库 (host={self.pg_dsn})，当前值: {effective_sslmode}"
+                )
+
         if "*" in self.cors_origins:
             problems.append("HEMALL_CORS_ORIGINS 含通配 '*' (生产必须收紧为具体来源列表)")
 
@@ -191,9 +357,9 @@ class Settings(BaseSettings):
             )
 
         provider = self.payment_gateway_provider.strip().lower()
-        if provider not in {"wechat", "stripe"}:
+        if provider not in {"wechat", "stripe", "alipay"}:
             problems.append(
-                "HEMALL_PAYMENT_GATEWAY_PROVIDER 必须是已配置的真实网关 wechat 或 stripe；"
+                "HEMALL_PAYMENT_GATEWAY_PROVIDER 必须是已配置的真实网关 wechat、stripe 或 alipay；"
                 "production 禁止 manual 或未知 provider"
             )
         elif provider == "wechat":
@@ -216,6 +382,15 @@ class Settings(BaseSettings):
             missing = [name for name, value in required.items() if not str(value).strip()]
             if missing:
                 problems.append("Stripe 生产配置缺失: " + ", ".join(missing))
+        elif provider == "alipay":
+            required = {
+                "alipay_app_id": self.alipay_app_id,
+                "alipay_private_key_path": self.alipay_private_key_path,
+                "alipay_public_key_path": self.alipay_public_key_path,
+            }
+            missing = [name for name, value in required.items() if not str(value).strip()]
+            if missing:
+                problems.append("支付宝生产配置缺失: " + ", ".join(missing))
 
         es_url = self.elasticsearch_url or self.hemall_elasticsearch_url
         if es_url.lower().startswith("https://"):
@@ -231,7 +406,7 @@ class Settings(BaseSettings):
             if es_missing:
                 problems.append("Elasticsearch HTTPS 生产认证配置缺失: " + ", ".join(es_missing))
 
-        encryption_key = os.getenv("ENCRYPTION_KEY", "")
+        encryption_key = self.encryption_key
         if not encryption_key:
             problems.append(
                 "ENCRYPTION_KEY 未设置 (缺失时每次重启生成新 Fernet key, 已加密 PII 将无法解密)"

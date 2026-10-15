@@ -18,6 +18,7 @@ import { POST as logoutPOST } from '@/app/api/auth/logout/route';
 import { GET as customerMeGET } from '@/app/api/auth/customer/me/route';
 import { POST as customerLoginPOST } from '@/app/api/auth/customer/login/route';
 import { POST as customerLogoutPOST } from '@/app/api/auth/customer/logout/route';
+import { POST as totpVerifyPOST } from '@/app/api/auth/totp/verify/route';
 import { POST as catchAllPOST, GET as catchAllGET } from '@/app/api/[...path]/route';
 
 interface Upstream {
@@ -345,5 +346,130 @@ describe('BFF catch-all 同源反代', () => {
     );
     const res = await catchAllGET(req('/api/health'));
     expect(setCookiesOf(res)).toEqual(['a=1; Path=/; HttpOnly', 'b=2; Path=/', 'c=3; Path=/']);
+  });
+});
+
+describe('TOTP 登录第二步 / 首次绑定（专用路由）', () => {
+  it('/api/auth/login 200 时透传 requires_totp/totp_token，access_token 仍被剥离', async () => {
+    stubUpstream(
+      jsonUpstream(
+        {
+          user_id: 'u-1',
+          email: 'a@b.c',
+          requires_totp: true,
+          totp_token: 'challenge-1',
+          message: 'TOTP verification required',
+          access_token: 'super-secret-jwt',
+        },
+        200,
+        ['hemall_csrf_token=tok-1; Path=/'],
+      ),
+    );
+    const res = await loginPOST(
+      req('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'a@b.c', password: 'pw' }),
+      }),
+    );
+
+    expect(calls[0].url).toBe('http://backend.test/auth/login');
+    await expect(res.json()).resolves.toEqual({
+      user_id: 'u-1',
+      email: 'a@b.c',
+      requires_totp: true,
+      totp_token: 'challenge-1',
+      message: 'TOTP verification required',
+    });
+    expect(setCookiesOf(res)).toEqual(['hemall_csrf_token=tok-1; Path=/']);
+  });
+
+  it('/api/auth/login 200 时透传 requires_totp_setup/setup_token（首次绑定分支）', async () => {
+    stubUpstream(
+      jsonUpstream({
+        user_id: 'u-2',
+        email: 'p@b.c',
+        requires_totp_setup: true,
+        setup_token: 'setup-1',
+        message: 'TOTP enrollment required for privileged accounts in production',
+        access_token: 'super-secret-jwt',
+      }),
+    );
+    const res = await loginPOST(
+      req('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'p@b.c', password: 'pw' }) }),
+    );
+    await expect(res.json()).resolves.toEqual({
+      user_id: 'u-2',
+      email: 'p@b.c',
+      requires_totp_setup: true,
+      setup_token: 'setup-1',
+      message: 'TOTP enrollment required for privileged accounts in production',
+    });
+  });
+
+  it('/api/auth/login 200 普通分支不掺入未出现的 TOTP 字段', async () => {
+    stubUpstream(
+      jsonUpstream({ user_id: 'u-3', email: 'c@b.c', access_token: 'super-secret-jwt' }),
+    );
+    const res = await loginPOST(
+      req('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'c@b.c', password: 'pw' }) }),
+    );
+    await expect(res.json()).resolves.toEqual({ user_id: 'u-3', email: 'c@b.c' });
+  });
+
+  it('/api/auth/totp/verify 透传到后端，剥离 access_token 并回传会话 cookie', async () => {
+    stubUpstream(
+      jsonUpstream(
+        { user_id: 'u-1', email: 'a@b.c', access_token: 'super-secret-jwt', token_type: 'bearer' },
+        200,
+        [
+          'hemall_access_token=access-3; Path=/; HttpOnly',
+          'hemall_csrf_token=tok-3; Path=/',
+        ],
+      ),
+    );
+    const res = await totpVerifyPOST(
+      req('/api/auth/totp/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer totp-challenge-1',
+        },
+        body: JSON.stringify({ user_id: 'u-1', code: '123456' }),
+      }),
+    );
+
+    expect(calls[0].url).toBe('http://backend.test/auth/totp/verify');
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].body).toBe(JSON.stringify({ user_id: 'u-1', code: '123456' }));
+    expect(calls[0].headers.authorization).toBe('Bearer totp-challenge-1');
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ user_id: 'u-1', email: 'a@b.c' });
+    expect(setCookiesOf(res)).toEqual([
+      'hemall_access_token=access-3; Path=/; HttpOnly',
+      'hemall_csrf_token=tok-3; Path=/',
+    ]);
+  });
+
+  it('/api/auth/totp/verify 401 的 detail 原样透传给登录页', async () => {
+    stubUpstream(jsonUpstream({ detail: '验证码错误' }, 401));
+    const res = await totpVerifyPOST(
+      req('/api/auth/totp/verify', {
+        method: 'POST',
+        body: JSON.stringify({ user_id: 'u-1', code: '000000' }),
+      }),
+    );
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toEqual({ detail: '验证码错误' });
+  });
+
+  it('/api/auth/totp/verify 请求体不是 JSON 时 400，且不打后端', async () => {
+    const fetchMock = stubUpstream(jsonUpstream({}));
+    const res = await totpVerifyPOST(
+      req('/api/auth/totp/verify', { method: 'POST', body: 'not-json' }),
+    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ detail: 'invalid JSON body' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

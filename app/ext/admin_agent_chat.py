@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..db_recovery import kick_pool_recovery
 from ..ext.oskill_ghost_clustering import IGNITION_THRESHOLD
 
 logger = logging.getLogger("hemall.admin_agent")
@@ -378,6 +379,7 @@ async def admin_agent_chat(
     settings = getattr(request.app.state, "config", None)
 
     if pool is None:
+        kick_pool_recovery(request.app)
         raise HTTPException(status_code=503, detail="database not ready")
     if settings is None:
         raise HTTPException(status_code=503, detail="settings not ready")

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from obase.commerce_batch_schema import ensure_commerce_batch_schema
@@ -81,7 +82,9 @@ def register_providers(settings: Settings) -> None:
     )
 
 
-async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
+async def init_db(
+    settings: Settings, *, apply_runtime_role: bool | None = None
+) -> tuple[PgPool, asyncio.Task]:
     """创建命名连接池并幂等建齐商务表。DB 不可达时向上抛, 由调用方决定降级。
 
     返回 (pool, metrics_task) —— 后台指标更新任务的引用交回调用方, 使其能在
@@ -93,50 +96,38 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
     竞态窗口(两事务同时判定"表不存在"并创建, 后到者因同名复合类型冲突报错),
     故用 advisory lock 将 schema 初始化串行化——先到者建表, 后到者等锁释放后
     跳过已存在的表。
+
+    权限分离: DDL (迁移) 一律以连接用户 (owner) 身份执行; 全部 schema 就绪后,
+    生产环境再把连接池切到 hemall_runtime (仅 DML, 无 DDL)。迁移容器
+    (python -m app.cli migrate) 传 apply_runtime_role=False 显式跳过切换。
     """
+    if apply_runtime_role is None:
+        apply_runtime_role = settings.environment.lower() == "production"
+
+    # 生产环境使用 effective_pg_dsn (含 sslmode)，迁移时由 CLI 显式传 pg_dsn
+    dsn = (
+        settings.effective_pg_dsn
+        if settings.environment.lower() == "production"
+        else settings.pg_dsn
+    )
+
     pool = await PgPool.create(
         name=settings.pg_pool_name,
-        dsn=settings.pg_dsn,
+        dsn=dsn,
         min_size=settings.pg_pool_min,
         max_size=settings.pg_pool_max,
     )
 
-    # 固定锁 ID (hemall_prod 库私有, 无跨项目冲突)
-    SCHEMA_LOCK_ID = 824701
-    async with pool.acquire() as lock_conn:
-        await lock_conn.execute("SELECT pg_advisory_lock($1)", SCHEMA_LOCK_ID)
-        try:
-            await ensure_commerce_batch_schema(pool)
-            await _ensure_hemall_local_schema(pool)
-            await ensure_ext_schema(pool)
-
-            # Phase 0 Week 2: 安全 + 支付表结构
-            from .payments.models import PAYMENT_SESSION_DDL
-            from .security.audit import AUDIT_LOG_DDL
-
-            await _ensure_security_payment_schema(pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL)
-
-            # Phase 1: 库存管理表结构
-            from .inventory.models import STOCK_MOVEMENT_DDL
-
-            await _ensure_inventory_schema(pool, STOCK_MOVEMENT_DDL)
-
-            # Phase 1: 订单生命周期表结构
-            from .orders.models import ORDER_LIFECYCLE_DDL
-
-            await _ensure_order_lifecycle_schema(pool, ORDER_LIFECYCLE_DDL)
-
-            # P0: payment authority/outbox, exact inventory reservations and
-            # versioned order transitions.  Keep this project-local rather than
-            # modifying the shared 3O schema used by other services.
-            from .p0_schema import ensure_p0_schema
-
-            await ensure_p0_schema(pool)
-
-            # 启动自检：验证关键列和约束已就位，缺失则 fail-fast
-            await _verify_critical_schema(pool)
-        finally:
-            await lock_conn.execute("SELECT pg_advisory_unlock($1)", SCHEMA_LOCK_ID)
+    try:
+        await _ensure_schema_and_verify(pool, apply_runtime_role=apply_runtime_role)
+    except BaseException:
+        # 建表阶段失败 (PG 起来了但 schema 半成品 / 权限不足 / 网络中途断) 时,
+        # 池已经进了 PgPool._registry 却没人 close: 进程内泄漏连接, 且下一次
+        # 重试的 PgPool.create 会因重名直接抛 ValueError —— 自愈重试因此永远
+        # 无法成功。这里显式关掉并从注册表摘除, 让调用方可以干净地重试。
+        with contextlib.suppress(Exception):
+            await pool.close()
+        raise
 
     # Phase 0: 更新 DB 连接池指标
     async def update_metrics():
@@ -158,6 +149,90 @@ async def init_db(settings: Settings) -> tuple[PgPool, asyncio.Task]:
     return pool, metrics_task
 
 
+async def _ensure_schema_and_verify(pool: PgPool, *, apply_runtime_role: bool) -> None:
+    """在 advisory lock 内幂等建齐全部 schema 并做启动自检。"""
+    # 固定锁 ID (hemall_prod 库私有, 无跨项目冲突)
+    SCHEMA_LOCK_ID = 824701
+    async with pool.acquire() as lock_conn:
+        await lock_conn.execute("SELECT pg_advisory_lock($1)", SCHEMA_LOCK_ID)
+        try:
+            await ensure_commerce_batch_schema(pool)
+            await _ensure_hemall_local_schema(pool)
+            await _ensure_app_user_totp_schema(pool)
+            await ensure_ext_schema(pool)
+
+            # Phase 0 Week 2: 安全 + 支付表结构
+            from .payments.models import PAYMENT_SESSION_DDL
+            from .security.audit import AUDIT_LOG_DDL
+
+            await _ensure_security_payment_schema(pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL)
+
+            # Phase 1: 库存管理表结构
+            from .inventory.models import STOCK_MOVEMENT_DDL
+
+            await _ensure_inventory_schema(pool, STOCK_MOVEMENT_DDL)
+
+            # Phase 1: 订单生命周期表结构
+            from .orders.models import ORDER_LIFECYCLE_DDL
+
+            await _ensure_order_lifecycle_schema(pool, ORDER_LIFECYCLE_DDL)
+
+            # 售后/退款表结构
+            from .payments.refund_models import REFUND_REQUEST_DDL
+
+            async with pool.acquire() as conn:
+                await conn.execute(REFUND_REQUEST_DDL)
+            logger.info("refund schema ensured (refund_request, refund_audit_log)")
+
+            # P0: payment authority/outbox, exact inventory reservations and
+            # versioned order transitions.  Keep this project-local rather than
+            # modifying the shared 3O schema used by other services.
+            from .p0_schema import ensure_p0_schema
+
+            await ensure_p0_schema(pool)
+
+            # 启动自检：验证关键列和约束已就位，缺失则 fail-fast
+            await _verify_critical_schema(pool)
+        finally:
+            await lock_conn.execute("SELECT pg_advisory_unlock($1)", SCHEMA_LOCK_ID)
+
+    # 生产环境：schema 全部就绪后，把连接池切到 hemall_runtime (仅 DML)。
+    # 必须在 DDL 之后——运行时角色没有 CREATE 权限，提前切换会让迁移本身失败。
+    if apply_runtime_role:
+        _switch_pool_to_runtime_role(pool)
+
+
+def _switch_pool_to_runtime_role(pool: PgPool) -> None:
+    """把连接池的所有 (含未来) 连接切到 hemall_runtime 角色 (仅 DML, 无 DDL)。
+
+    SET ROLE 失败 (角色不存在/未授权) 只记 warning 不阻塞启动——由运维补跑
+    `python -m app.cli grant-runtime`。acquire 包装必须返回异步上下文管理器
+    (与 asyncpg Pool.acquire 契约一致)，直接返回协程会让调用方
+    `async with pool.acquire()` 全部崩溃。
+    """
+    import contextlib
+
+    async def _init_runtime_role(conn) -> None:
+        try:
+            await conn.execute("SET ROLE hemall_runtime")
+        except Exception as e:
+            logger.warning(
+                "Failed to SET ROLE hemall_runtime: %s. "
+                "Run 'python -m app.cli grant-runtime' as owner.",
+                e,
+            )
+
+    original_acquire = pool.acquire
+
+    @contextlib.asynccontextmanager
+    async def acquire_with_role(*args, **kwargs):
+        async with original_acquire(*args, **kwargs) as conn:
+            await _init_runtime_role(conn)
+            yield conn
+
+    pool.acquire = acquire_with_role  # type: ignore[method-assign]
+
+
 async def _ensure_hemall_local_schema(pool: PgPool) -> None:
     """hemall 项目层的补丁表结构 — 顾客密码登录不在 obase 共享的
     commerce_batch_schema 里 (那是跨项目库, 故意不在这加字段影响其他消费者);
@@ -165,6 +240,26 @@ async def _ensure_hemall_local_schema(pool: PgPool) -> None:
     """
     async with pool.acquire() as conn:
         await conn.execute('ALTER TABLE "customer" ADD COLUMN IF NOT EXISTS password_hash TEXT')
+
+
+async def _ensure_app_user_totp_schema(pool: PgPool) -> None:
+    """为 app_user 表添加 TOTP 两步验证所需列。"""
+    async with pool.acquire() as conn:
+        await conn.execute('ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS totp_secret TEXT')
+        await conn.execute(
+            'ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS totp_recovery_codes_hash TEXT'
+        )
+        await conn.execute(
+            'ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS '
+            "totp_last_used_counter BIGINT DEFAULT -1"
+        )
+        await conn.execute(
+            'ALTER TABLE "app_user" ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT false'
+        )
+    logger.info(
+        "app_user TOTP schema ensured "
+        "(totp_secret, totp_recovery_codes_hash, totp_last_used_counter, totp_enabled)"
+    )
 
 
 async def _ensure_security_payment_schema(pool: PgPool, audit_ddl: str, payment_ddl: str) -> None:

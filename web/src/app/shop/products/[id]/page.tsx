@@ -8,6 +8,7 @@ import { formatMoney } from '@/lib/format';
 import { getSelectedRegion } from '@/lib/region-store';
 import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { productIcon, productGradient } from '@/lib/product-visual';
+import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
 import type { StorefrontProduct, ProductVariant, InventoryBatch } from '@/types/api';
 import { errMessage } from '@/lib/errors';
@@ -26,11 +27,13 @@ export default function ProductDetailPage() {
   const [quantity, setQuantity] = useState(1);
   const [adding, setAdding] = useState(false);
   const [similar, setSimilar] = useState<StorefrontProduct[]>([]);
+  const [imgBroken, setImgBroken] = useState(false);
 
   useEffect(() => {
     api.storeProduct(productId)
       .then((p) => {
         setProduct(p);
+        setImgBroken(false);
         if (p.variants?.length > 0) {
           setSelectedVariant(p.variants[0]);
           if (p.variants[0].batches?.length > 0) {
@@ -101,12 +104,27 @@ export default function ProductDetailPage() {
   if (error) return <div className="text-center py-12 text-red-600">{error}</div>;
   if (!product) return <div className="text-center py-12 text-gray-400">商品不存在</div>;
 
+  const heroImg = imgBroken ? null : productImage(product);
+
   return (
     <div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Product Image */}
-        <div className={`aspect-square bg-gradient-to-br ${productGradient(product.id)} rounded-2xl flex items-center justify-center`}>
-          <span className="text-8xl">{productIcon(product.title)}</span>
+        {/* Product Image — 白底方图, 缺图/加载失败回落 emoji 占位 */}
+        <div className="aspect-square overflow-hidden rounded-2xl border border-gray-100 bg-white">
+          {heroImg ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={heroImg}
+              alt={product.title}
+              loading="lazy"
+              className="h-full w-full object-contain p-4"
+              onError={() => setImgBroken(true)}
+            />
+          ) : (
+            <div className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${productGradient(product.id)}`}>
+              <span className="text-8xl">{productIcon(product.title)}</span>
+            </div>
+          )}
         </div>
 
         {/* Product Info */}
@@ -207,15 +225,30 @@ export default function ProductDetailPage() {
         <section className="mt-14">
           <h2 className="text-lg font-bold text-gray-900 mb-3">相似商品</h2>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-            {similar.map((p) => (
-              <Link
-                key={p.id}
-                href={`/shop/products/${p.id}`}
-                className="group bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition"
-              >
-                <div className={`aspect-square bg-gradient-to-br ${productGradient(p.id)} flex items-center justify-center text-3xl`}>
-                  {productIcon(p.title)}
-                </div>
+            {similar.map((p) => {
+              const simImg = productImage(p);
+              return (
+                <Link
+                  key={p.id}
+                  href={`/shop/products/${p.id}`}
+                  className="group bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition"
+                >
+                  {/* emoji 占位垫底, 图片叠在上层; 加载失败隐藏图片即回落占位 */}
+                  <div className={`relative aspect-square bg-gradient-to-br ${productGradient(p.id)} flex items-center justify-center text-3xl`}>
+                    <span>{productIcon(p.title)}</span>
+                    {simImg && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={simImg}
+                        alt={p.title}
+                        loading="lazy"
+                        className="absolute inset-0 h-full w-full bg-white object-contain p-2"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    )}
+                  </div>
                 <div className="p-3">
                   <h3 className="text-sm font-medium text-gray-900 truncate group-hover:text-emerald-700 transition">
                     {p.title}
@@ -225,7 +258,8 @@ export default function ProductDetailPage() {
                   </div>
                 </div>
               </Link>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}

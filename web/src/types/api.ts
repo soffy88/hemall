@@ -12,6 +12,47 @@ export interface AuthUser {
   email: string;
 }
 
+// ── Auth: TOTP 两步登录 / 首次绑定 ──────────────────────────────────────
+
+/** POST /auth/login「密码正确但需 TOTP 第二步」分支（BFF 已剥 access_token）。 */
+export interface TotpLoginChallenge {
+  requires_totp: true;
+  user_id: string;
+  email: string;
+  totp_token: string | null;
+  message: string;
+}
+
+/** POST /auth/login「生产环境特权账号尚未绑定 TOTP」分支。 */
+export interface TotpSetupChallenge {
+  requires_totp_setup: true;
+  user_id: string;
+  email: string;
+  setup_token: string | null;
+  message: string;
+}
+
+/** login() 的判别联合结果：成功建会话 / 需验证码 / 需先绑定。 */
+export type LoginOutcome =
+  | { kind: 'ok'; user: AuthUser }
+  | { kind: 'totp'; challenge: TotpLoginChallenge }
+  | { kind: 'setup'; challenge: TotpSetupChallenge };
+
+/** GET /auth/totp/setup：一次性绑定信息（secret 仅此时下发，恢复码在 bind 后返回）。 */
+export interface TotpSetupInfo {
+  otpauth_uri: string;
+  secret: string;
+  recovery_codes?: string[];
+}
+
+/** POST /auth/totp/bind 成功确认。recovery_codes 仅此一次可见。 */
+export interface TotpBindConfirm {
+  message: string;
+  recovery_codes: string[];
+}
+
+// ── Customer auth（顾客侧经 BFF，同样剥 access_token）─────────────────
+
 export interface CustomerTokenResponse {
   access_token: string;
   token_type: string;
@@ -626,4 +667,71 @@ export interface AgentIngestResult {
   hint?: string;
   input?: string;
   [key: string]: unknown;
+}
+
+// ── Aftersales: 退款状态机 ──────────────────────────────────────────────
+
+export type RefundStatus =
+  | 'submitted'
+  | 'approved'
+  | 'refunding'
+  | 'succeeded'
+  | 'failed'
+  | 'rejected';
+
+export type RefundType = 'refund_only' | 'return_refund';
+
+export type RefundReason =
+  | 'buyer_remorse'
+  | 'product_issue'
+  | 'not_as_described'
+  | 'shipping_delay'
+  | 'other';
+
+/** GET /aftersales/refunds 与 /my 的单条记录（_refund_to_dict）。 */
+export interface RefundRequest {
+  id: string;
+  order_id: string;
+  order_line_id: string | null;
+  customer_id: string;
+  type: RefundType;
+  reason: RefundReason;
+  reason_detail: string | null;
+  status: RefundStatus;
+  requested_amount: number;
+  approved_amount: number | null;
+  actual_refunded_amount: number | null;
+  provider: string | null;
+  provider_trade_no: string | null;
+  provider_refund_no: string | null;
+  return_tracking_no: string | null;
+  return_batch_id: string | null;
+  reviewer_id: string | null;
+  reject_reason: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  processed_at: string | null;
+}
+
+/** GET /aftersales/refunds/{id}/audit 单条。 */
+export interface RefundAuditEntry {
+  id: string;
+  refund_id: string;
+  from_status: RefundStatus | null;
+  to_status: RefundStatus;
+  operator_id: string | null;
+  operator_type: string;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RefundCreateBody {
+  order_id: string;
+  order_line_id?: string | null;
+  type?: RefundType;
+  reason?: RefundReason;
+  reason_detail?: string | null;
+  requested_amount: number;
 }

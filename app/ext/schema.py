@@ -603,13 +603,13 @@ async def ensure_ext_schema(pool: PgPool) -> None:
     # REFERENCES 需要 supplier 表已存在)。
     for table, columns in _TABLES:
         await ensure_table(pool=pool, schema=_SCHEMA, table=table, columns=columns)
-    for table, index_name, columns in _INDEXES:
+    for table, index_name, index_cols in _INDEXES:
         await ensure_index(
             pool=pool,
             schema=_SCHEMA,
             table=table,
             index_name=index_name,
-            columns=columns,
+            columns=index_cols,
         )
     await _ensure_shared_table_local_columns(pool)
     await _ensure_labor_ledger_widened_column(pool)

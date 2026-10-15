@@ -70,12 +70,14 @@ def _prod_settings(**overrides) -> Settings:
         "jwt_secret": "j" * 48,
         "webhook_secret": "w" * 48,
         "hardware_secret": "h" * 48,
-        "pg_dsn": "postgresql://hemall:realpw@db.internal:5432/hemall",
+        "pg_dsn": "postgresql://hemall:realpw@db:5432/hemall",
+        "pg_sslmode": "require",  # 显式设置 require 以通过 sslmode 检查
         "cors_origins": ["https://mall.example.com"],
         "privileged_staff_ids": "u1",
         "payment_gateway_provider": "stripe",
         "stripe_secret_key": "sk_live_placeholder",
         "stripe_webhook_secret": "whsec_placeholder",
+        "encryption_key": _fernet_key(),  # 有效的 Fernet key
     }
     base.update(overrides)
     return Settings(**base)

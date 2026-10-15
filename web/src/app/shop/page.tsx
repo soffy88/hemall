@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api-client';
 import { productIcon, productGradient } from '@/lib/product-visual';
+import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
 import type { GroceryCategory, StorefrontProduct } from '@/types/api';
 import { errMessage } from '@/lib/errors';
@@ -30,6 +31,8 @@ export default function ShopPage() {
   const [loading, setLoading] = useState(true);
   const [activeCat, setActiveCat] = useState<string>('all');
   const [search, setSearch] = useState('');
+  // 图片加载失败的 product id — 回落占位图而不是隐藏 (缺图不再留白块)
+  const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
 
   function load() {
     api.storeProducts({ limit: 200 })
@@ -87,15 +90,6 @@ export default function ShopPage() {
     }
     return [...list].sort((a, b) => (a.min_price_cents ?? 0) - (b.min_price_cents ?? 0));
   }, [products, activeCat, search]);
-
-  // 取商品首图 (batch.shelf_image_url → 第一个 media_assets → 兜底 emoji)
-  function productImage(p: StorefrontProduct): string | null {
-    const v = p.variants?.[0];
-    const b = v?.batches?.[0];
-    if (b?.shelf_image_url) return b.shelf_image_url;
-    if (b?.media_assets?.length) return b.media_assets[0];
-    return null;
-  }
 
   // 取商品划线价 (variant.reference_price_cents 优先)
   function referencePrice(p: StorefrontProduct): number | null {
@@ -181,7 +175,7 @@ export default function ShopPage() {
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
             {filtered.map((p) => {
-              const img = productImage(p);
+              const img = brokenImgs.has(p.id) ? null : productImage(p);
               const ref = referencePrice(p);
               const retail = p.min_price_cents ?? 0;
               const stock = p.total_stock ?? 0;
@@ -189,20 +183,20 @@ export default function ShopPage() {
               return (
                 <div
                   key={p.id}
-                  className="group overflow-hidden rounded-2xl bg-white shadow-sm transition hover:shadow-md"
+                  className="group overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm transition hover:shadow-md"
                 >
                   {/* 图片区 */}
                   <Link href={`/shop/products/${p.id}`} className="block">
-                    <div className="relative aspect-square w-full overflow-hidden">
+                    <div className="relative aspect-square w-full overflow-hidden bg-white">
                       {img ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={img}
                           alt={p.title}
                           loading="lazy"
-                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
+                          className="h-full w-full object-contain p-2 transition-transform group-hover:scale-105"
+                          onError={() => {
+                            setBrokenImgs((prev) => new Set(prev).add(p.id));
                           }}
                         />
                       ) : (

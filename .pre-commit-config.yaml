@@ -3,6 +3,15 @@
 # 只针对 app/ 和 tests/ 目录，排除生成文件、第三方文件、权限问题文件
 
 repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks secret scan
+        entry: gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
+        language: system
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.4.4
     hooks:

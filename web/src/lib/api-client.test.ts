@@ -225,3 +225,71 @@ describe('401 自动续期', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe('退款状态机端点（/aftersales/refunds*）', () => {
+  it('顾客申请售后：POST 同源路径 + CSRF 头 + 请求体原样', async () => {
+    document.cookie = 'hemall_csrf_token=tok-rf; path=/';
+    stubFetch([jsonResponse({ id: 'rf1', status: 'submitted' })]);
+    await api.createRefund({
+      order_id: 'o1',
+      requested_amount: 1999,
+      reason: 'product_issue',
+      reason_detail: '坏了',
+    });
+    const call = calls[calls.length - 1];
+    expect(call.url).toBe('/api/aftersales/refunds');
+    expect(call.init.method).toBe('POST');
+    expect(headerOf(call, 'X-CSRF-Token')).toBe('tok-rf');
+    expect(JSON.parse(String(call.init.body))).toEqual({
+      order_id: 'o1',
+      requested_amount: 1999,
+      reason: 'product_issue',
+      reason_detail: '坏了',
+    });
+  });
+
+  it('我的售后：GET /my（顾客会话），不做 CSRF 取 token', async () => {
+    stubFetch([jsonResponse([])]);
+    await expect(api.customerMyRefunds({ limit: 20 })).resolves.toEqual([]);
+    expect(calls[0].url).toBe('/api/aftersales/refunds/my?limit=20');
+    expect(calls.some((c) => c.url.includes('csrf-token'))).toBe(false);
+  });
+
+  it('后台列表：status/order_id 过滤拼进 query', async () => {
+    stubFetch([jsonResponse([])]);
+    await api.adminListRefunds({ status: 'submitted', order_id: 'o9' });
+    expect(calls[0].url).toBe('/api/aftersales/refunds?status=submitted&order_id=o9');
+  });
+
+  it('通过 / 驳回 / 重试 / 收货 各自打到正确子路径', async () => {
+    document.cookie = 'hemall_csrf_token=tok-rf; path=/';
+    stubFetch([jsonResponse({ id: 'rf1' }), jsonResponse({ id: 'rf1' }), jsonResponse({ id: 'rf1' }), jsonResponse({ id: 'rf1' })]);
+    await api.adminApproveRefund('rf1', { approved_amount: 500 });
+    expect(calls[0].url).toBe('/api/aftersales/refunds/rf1/approve');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ approved_amount: 500 });
+
+    await api.adminRejectRefund('rf1', '超出可退额度');
+    expect(calls[1].url).toBe('/api/aftersales/refunds/rf1/reject');
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ reject_reason: '超出可退额度' });
+
+    await api.adminRetryRefund('rf1');
+    expect(calls[2].url).toBe('/api/aftersales/refunds/rf1/retry');
+
+    await api.adminReturnReceivedRefund('rf1', { tracking_no: 'SF1', batch_id: 'b1' });
+    expect(calls[3].url).toBe('/api/aftersales/refunds/rf1/return-received');
+    expect(JSON.parse(String(calls[3].init.body))).toEqual({ tracking_no: 'SF1', batch_id: 'b1' });
+  });
+
+  it('审计日志：GET audit，403 detail 透出（support 可看 / approve 需 admin）', async () => {
+    stubFetch([jsonResponse({ detail: '需要 admin 角色' }, 403)]);
+    await expect(api.adminRefundAudit('rf1')).rejects.toThrow('需要 admin 角色');
+    expect(calls[0].url).toBe('/api/aftersales/refunds/rf1/audit');
+  });
+
+  it('refund id 需 URL 编码（避免 / 等字符破坏路径）', async () => {
+    document.cookie = 'hemall_csrf_token=tok-rf; path=/';
+    stubFetch([jsonResponse({ id: 'rf/x' })]);
+    await api.adminRetryRefund('rf/x');
+    expect(calls[0].url).toBe('/api/aftersales/refunds/rf%2Fx/retry');
+  });
+});

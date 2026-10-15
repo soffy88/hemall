@@ -55,8 +55,10 @@ USER hemall
 EXPOSE 8000
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')" || exit 1
+# 就绪探针 (非存活探针): 连接池缺失时返 503, 连续失败即重启该容器,
+# 避免笔记本休眠唤醒后 worker 永久 503 (见 app/db_recovery.py)。
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')" || exit 1
 
 # 启动命令 (生产用 gunicorn + uvicorn workers)
 CMD ["gunicorn", "app.main:app", \
