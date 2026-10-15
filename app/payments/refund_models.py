@@ -4,15 +4,15 @@ RefundRequest 生命周期 (售后申请):
 
     submitted ──approve()──→ approved ──refund()──→ refunding ──succeed()──→ succeeded
            │                                        │
-           ├──reject()──→ rejected                  └──fail()──→ failed
+           ├──reject()──→ rejected                  └──fail()──→ failed ──retry()──→ refunding
 
 状态转换矩阵:
     submitted  → approved, rejected
     approved   → refunding
     refunding  → succeeded, failed
+    failed     → refunding  (网关失败可重试)
     rejected   → (terminal)
     succeeded  → (terminal)
-    failed     → (terminal)
 
 关键约束:
 - 退款金额不超过实付金额
@@ -26,6 +26,7 @@ RefundRequest 生命周期 (售后申请):
 from __future__ import annotations
 
 import enum
+import json
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -80,9 +81,11 @@ VALID_REFUND_TRANSITIONS: dict[RefundStatus, set[RefundStatus]] = {
         RefundStatus.SUCCEEDED,
         RefundStatus.FAILED,
     },
+    RefundStatus.FAILED: {
+        RefundStatus.REFUNDING,     # 网关退款失败 → 可重试
+    },
     RefundStatus.REJECTED: set(),   # terminal
     RefundStatus.SUCCEEDED: set(),  # terminal
-    RefundStatus.FAILED: set(),     # terminal
 }
 
 
@@ -162,6 +165,17 @@ class RefundRequest(BaseModel):
         """失败后是否可重试。"""
         return self.status == RefundStatus.FAILED
 
+    @classmethod
+    def from_row(cls, row: Any) -> RefundRequest:
+        """从 asyncpg row 构造 (UUID→str, jsonb 可能以 str 返回)。"""
+        data = dict(row)
+        for field in ("id", "order_id", "order_line_id", "customer_id", "return_batch_id", "reviewer_id"):
+            if data.get(field) is not None:
+                data[field] = str(data[field])
+        if isinstance(data.get("metadata"), str):
+            data["metadata"] = json.loads(data["metadata"]) if data["metadata"] else {}
+        return cls(**data)
+
 
 class RefundAuditLog(BaseModel):
     """售后审计日志。"""
@@ -175,6 +189,17 @@ class RefundAuditLog(BaseModel):
     reason: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    def from_row(cls, row: Any) -> RefundAuditLog:
+        """从 asyncpg row 构造 (UUID→str, jsonb 可能以 str 返回)。"""
+        data = dict(row)
+        for field in ("id", "refund_id", "operator_id"):
+            if data.get(field) is not None:
+                data[field] = str(data[field])
+        if isinstance(data.get("metadata"), str):
+            data["metadata"] = json.loads(data["metadata"]) if data["metadata"] else {}
+        return cls(**data)
 
 
 # ── DDL ──────────────────────────────────────────────────────────────

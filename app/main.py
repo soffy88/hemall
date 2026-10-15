@@ -44,6 +44,7 @@ from .observability.health import check_redis_health
 from .observability.health import router as health_router
 from .observability.tracing import setup_tracing, shutdown_tracing
 from .payments.router import router as payment_router
+from .payments.refund_router import router as refund_router
 from .push.service import PushManager
 from .realtime.hub import manager as realtime_manager
 from .realtime.hub import router as realtime_router
@@ -567,6 +568,7 @@ def create_app() -> FastAPI:
 
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
+    app.include_router(refund_router)
 
     # Phase 1: 挂载库存管理路由
     app.include_router(inventory_router)

@@ -6,8 +6,43 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { getCustomerAuth, initCustomerAuth, customerLogout } from '@/lib/customer-auth-store';
 import { useToast } from '@/components/Toast';
-import type { Customer, CustomerAddress, Order, RmaClaim, SubmitClaimResult } from '@/types/api';
+import type {
+  Customer,
+  CustomerAddress,
+  Order,
+  RmaClaim,
+  RefundReason,
+  RefundRequest,
+  RefundType,
+  SubmitClaimResult,
+} from '@/types/api';
 import { errMessage } from '@/lib/errors';
+
+const REFUND_REASON_LABEL: Record<RefundReason, string> = {
+  buyer_remorse: '不想要了/后悔购买',
+  product_issue: '商品质量问题',
+  not_as_described: '与描述不符',
+  shipping_delay: '物流太慢',
+  other: '其他',
+};
+
+const REFUND_STATUS_LABEL: Record<RefundRequest['status'], string> = {
+  submitted: '待审核',
+  approved: '已通过，退款中',
+  refunding: '退款处理中',
+  succeeded: '退款成功',
+  failed: '退款失败，待重试',
+  rejected: '已驳回',
+};
+
+const REFUND_STATUS_STYLE: Record<RefundRequest['status'], string> = {
+  submitted: 'bg-amber-100 text-amber-700',
+  approved: 'bg-blue-100 text-blue-700',
+  refunding: 'bg-blue-100 text-blue-700',
+  succeeded: 'bg-emerald-100 text-emerald-700',
+  failed: 'bg-red-100 text-red-700',
+  rejected: 'bg-red-100 text-red-700',
+};
 
 function claimDecisionCopy(decision: RmaClaim['decision']): { label: string; className: string; detail: string } {
   if (decision === 'instant_refund') {
@@ -29,8 +64,17 @@ export default function AccountPage() {
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [claims, setClaims] = useState<RmaClaim[]>([]);
+  const [refunds, setRefunds] = useState<RefundRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // 申请售后（退款状态机入口）——一次只展开一个订单行的表单。
+  const [refundingLineItemId, setRefundingLineItemId] = useState<string | null>(null);
+  const [refundType, setRefundType] = useState<RefundType>('refund_only');
+  const [refundReason, setRefundReason] = useState<RefundReason>('buyer_remorse');
+  const [refundDetail, setRefundDetail] = useState('');
+  const [refundAmountYuan, setRefundAmountYuan] = useState('');
+  const [submittingRefund, setSubmittingRefund] = useState(false);
 
   // 报告问题（RMA 客诉自助报案）——一次只展开一个订单行的表单。
   const [claimingLineItemId, setClaimingLineItemId] = useState<string | null>(null);
@@ -59,11 +103,12 @@ export default function AccountPage() {
     }
     setLoading(true);
     try {
-      const [p, a, o, c] = await Promise.all([
+      const [p, a, o, c, r] = await Promise.all([
         api.customerMe(),
         api.customerMyAddresses(),
         api.customerMyOrders(),
         api.customerMyClaims(),
+        api.customerMyRefunds(),
       ]);
       setProfile(p);
       setName(p.name || '');
@@ -71,6 +116,7 @@ export default function AccountPage() {
       setAddresses(a);
       setOrders(o);
       setClaims(c);
+      setRefunds(r);
     } catch (e) {
       setError(errMessage(e));
     } finally {
@@ -159,8 +205,42 @@ export default function AccountPage() {
     }
   }
 
-  if (loading) return <div className="text-center py-12 text-gray-500">加载中...</div>;
-  if (error) return <div className="text-center py-12 text-red-600">{error}</div>;
+  function startRefund(lineItemId: string, defaultCents: number) {
+    setRefundingLineItemId(lineItemId);
+    setRefundType('refund_only');
+    setRefundReason('buyer_remorse');
+    setRefundDetail('');
+    setRefundAmountYuan((defaultCents / 100).toFixed(2));
+  }
+
+  async function handleSubmitRefund(orderId: string, lineItemId: string) {
+    const cents = Math.round(parseFloat(refundAmountYuan) * 100);
+    if (!Number.isFinite(cents) || cents <= 0) {
+      showToast('请填写正确的退款金额', 'error');
+      return;
+    }
+    setSubmittingRefund(true);
+    try {
+      await api.createRefund({
+        order_id: orderId,
+        order_line_id: lineItemId,
+        type: refundType,
+        reason: refundReason,
+        reason_detail: refundDetail.trim() || null,
+        requested_amount: cents,
+      });
+      setRefundingLineItemId(null);
+      showToast('售后申请已提交，等待审核', 'info');
+      const r = await api.customerMyRefunds();
+      setRefunds(r);
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    } finally {
+      setSubmittingRefund(false);
+    }
+  }
+
+  if (loading) return <div className="text-center py-12 text-gray-500">加载中...</div>;  if (error) return <div className="text-center py-12 text-red-600">{error}</div>;
   if (!profile) return null;
 
   return (
@@ -269,20 +349,31 @@ export default function AccountPage() {
               <div className="space-y-1.5 border-t border-gray-200 pt-2">
                 {(o.line_items || []).map((li) => {
                   const result = claimResults[li.id];
+                  const lineRefund = refunds.find((r) => r.order_line_id === li.id);
                   return (
                     <div key={li.id} className="text-xs">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-gray-600">
                           {li.product_title || li.variant_sku || '商品'} × {li.quantity}
                         </span>
-                        {li.batch_id && !result && (
-                          <button
-                            onClick={() => startClaim(li.id)}
-                            className="text-red-600 hover:underline shrink-0"
-                          >
-                            报告问题
-                          </button>
-                        )}
+                        <span className="flex gap-2 shrink-0">
+                          {li.batch_id && !result && (
+                            <button
+                              onClick={() => startClaim(li.id)}
+                              className="text-red-600 hover:underline shrink-0"
+                            >
+                              报告问题
+                            </button>
+                          )}
+                          {!lineRefund && refundingLineItemId !== li.id && (
+                            <button
+                              onClick={() => startRefund(li.id, li.line_total_cents)}
+                              className="text-amber-600 hover:underline shrink-0"
+                            >
+                              申请售后
+                            </button>
+                          )}
+                        </span>
                       </div>
 
                       {claimingLineItemId === li.id && li.batch_id && (
@@ -311,6 +402,78 @@ export default function AccountPage() {
                         </div>
                       )}
 
+                      {refundingLineItemId === li.id && (
+                        <div className="mt-1.5 p-2 bg-white rounded border border-gray-200 space-y-1.5">
+                          <select
+                            value={refundType}
+                            onChange={(e) => setRefundType(e.target.value as RefundType)}
+                            className="w-full px-2 py-1 border rounded text-xs"
+                          >
+                            <option value="refund_only">仅退款（无需寄回）</option>
+                            <option value="return_refund">退货退款（需寄回商品）</option>
+                          </select>
+                          <select
+                            value={refundReason}
+                            onChange={(e) => setRefundReason(e.target.value as RefundReason)}
+                            className="w-full px-2 py-1 border rounded text-xs"
+                          >
+                            {(Object.keys(REFUND_REASON_LABEL) as RefundReason[]).map((r) => (
+                              <option key={r} value={r}>{REFUND_REASON_LABEL[r]}</option>
+                            ))}
+                          </select>
+                          <input
+                            value={refundDetail}
+                            onChange={(e) => setRefundDetail(e.target.value)}
+                            placeholder="补充说明（可选）"
+                            className="w-full px-2 py-1 border rounded text-xs"
+                          />
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={refundAmountYuan}
+                              onChange={(e) => setRefundAmountYuan(e.target.value)}
+                              aria-label="退款金额（元）"
+                              className="w-28 px-2 py-1 border rounded text-xs"
+                            />
+                            <span className="text-[10px] text-gray-400">
+                              元 · 本行最高 {formatMoney(li.line_total_cents, o.currency)}
+                            </span>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              disabled={submittingRefund}
+                              onClick={() => handleSubmitRefund(o.id, li.id)}
+                              className="px-3 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 disabled:opacity-50"
+                            >
+                              {submittingRefund ? '提交中...' : '提交售后申请'}
+                            </button>
+                            <button
+                              onClick={() => setRefundingLineItemId(null)}
+                              className="px-3 py-1 text-gray-500 hover:text-gray-700 text-xs"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {lineRefund && (
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded ${REFUND_STATUS_STYLE[lineRefund.status]}`}>
+                            {REFUND_STATUS_LABEL[lineRefund.status]}
+                          </span>
+                          <span className="text-gray-500">
+                            售后申请 {formatMoney(lineRefund.requested_amount, o.currency)} ·{' '}
+                            {REFUND_REASON_LABEL[lineRefund.reason]}
+                          </span>
+                          {lineRefund.reject_reason && (
+                            <span className="text-red-500">驳回原因：{lineRefund.reject_reason}</span>
+                          )}
+                        </div>
+                      )}
+
                       {result && (
                         'error' in result ? (
                           <div className="mt-1 text-red-600">提交失败：{result.error}</div>
@@ -331,9 +494,44 @@ export default function AccountPage() {
         </div>
       </div>
 
-      {/* RMA claim history */}
+      {/* RMA claim history + 退款申请记录 */}
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <h2 className="font-semibold mb-3">我的售后</h2>
+
+        {refunds.length > 0 && (
+          <div className="space-y-2 mb-4">
+            <div className="text-xs font-medium text-gray-500">退款申请</div>
+            {refunds.map((r) => (
+              <div key={r.id} className="bg-gray-50 rounded-lg px-3 py-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs text-gray-500">订单 {r.order_id.slice(0, 12)}...</span>
+                  <span className={`text-xs px-2 py-0.5 rounded ${REFUND_STATUS_STYLE[r.status]}`}>
+                    {REFUND_STATUS_LABEL[r.status]}
+                  </span>
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {r.type === 'return_refund' ? '退货退款' : '仅退款'} · {REFUND_REASON_LABEL[r.reason]}
+                  {r.reason_detail ? ` · ${r.reason_detail}` : ''}
+                </div>
+                <div className="text-xs mt-0.5">
+                  <span className="text-gray-500">申请 {formatMoney(r.requested_amount)}</span>
+                  {r.approved_amount != null && (
+                    <span className="ml-2 text-emerald-600">批准 {formatMoney(r.approved_amount)}</span>
+                  )}
+                  {r.actual_refunded_amount != null && (
+                    <span className="ml-2 text-emerald-600">已退 {formatMoney(r.actual_refunded_amount)}</span>
+                  )}
+                </div>
+                {r.reject_reason && (
+                  <div className="text-xs text-red-500 mt-0.5">驳回原因：{r.reject_reason}</div>
+                )}
+                <div className="text-xs text-gray-400 mt-1">{new Date(r.created_at).toLocaleString('zh-CN')}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="text-xs font-medium text-gray-500 mb-2">极速报案（RMA）</div>
         <div className="space-y-2">
           {claims.map((c) => {
             const copy = claimDecisionCopy(c.decision);
@@ -351,7 +549,12 @@ export default function AccountPage() {
               </div>
             );
           })}
-          {claims.length === 0 && <div className="text-sm text-gray-400">暂无售后记录</div>}
+            {claims.length === 0 && refunds.length === 0 && (
+              <div className="text-sm text-gray-400">暂无售后记录</div>
+            )}
+            {claims.length === 0 && refunds.length > 0 && (
+              <div className="text-sm text-gray-400">暂无报案记录</div>
+            )}
         </div>
       </div>
     </div>

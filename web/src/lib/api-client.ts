@@ -32,6 +32,9 @@ import type {
   ProductCategory,
   ProductCollection,
   RecommendationResult,
+  RefundAuditEntry,
+  RefundCreateBody,
+  RefundRequest,
   Region,
   ReturnRequest,
   RmaClaim,
@@ -819,6 +822,65 @@ export const api = {
 
   fulfillClaim: (data: { claim_id: string }) =>
     omodul('aftersales', 'fulfill_claim', data),
+
+  // ── Aftersales: 退款状态机 (POST /aftersales/refunds*) ───────
+
+  /** 顾客发起售后申请（金额不超过可退额度，超了后端 400）。 */
+  createRefund: (data: RefundCreateBody) =>
+    request<RefundRequest>('/aftersales/refunds', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  /** 顾客查看自己的售后申请。 */
+  customerMyRefunds: (params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    return request<RefundRequest[]>(`/aftersales/refunds/my?${qs}`, {}, 'customer');
+  },
+
+  /** 后台列出售后（status/order_id 过滤）。 */
+  adminListRefunds: (params?: { status?: string; order_id?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.order_id) qs.set('order_id', params.order_id);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    return request<RefundRequest[]>(`/aftersales/refunds?${qs}`, {}, true);
+  },
+
+  /** 后台审核通过 → 自动触发网关退款（approved_amount 缺省=申请金额）。 */
+  adminApproveRefund: (refundId: string, data?: { approved_amount?: number }) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(data ?? {}),
+    }, true),
+
+  /** 后台驳回售后申请（必须给驳回理由）。 */
+  adminRejectRefund: (refundId: string, reject_reason: string) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reject_reason }),
+    }, true),
+
+  /** 后台重试 failed 状态的网关退款。 */
+  adminRetryRefund: (refundId: string) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }, true),
+
+  /** 后台确认收到退货 → 回补库存（幂等）。 */
+  adminReturnReceivedRefund: (refundId: string, data: { tracking_no: string; batch_id: string }) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/return-received`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 后台查看售后审计日志（状态流转轨迹）。 */
+  adminRefundAudit: (refundId: string) =>
+    request<RefundAuditEntry[]>(`/aftersales/refunds/${encodeURIComponent(refundId)}/audit`, {}, true),
 
   // ── Batch jobs ───────────────────────────────────────────────
 
