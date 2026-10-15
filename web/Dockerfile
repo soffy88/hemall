@@ -33,10 +33,18 @@ COPY --from=builder --chown=hemall:hemall /app/.next/static ./.next/static
 USER hemall
 
 ENV PORT=3000
+# 事故修复 (2026-10-15): 健康检查打 127.0.0.1:3000 被拒 (Connection refused)。
+# 根因是 Docker 会在容器运行时注入自己的 HOSTNAME (= 容器 ID / 容器 IP),
+# 覆盖掉镜像层的 `ENV HOSTNAME=0.0.0.0`; Next standalone 的 server.js 读
+# process.env.HOSTNAME 去 bind, 于是只绑到容器 IP, loopback 上没人监听。
+# 下面 CMD 用 shell 在 exec 前就地赋值 —— shell 设的环境变量一定压过 Docker
+# 注入的那个, 0.0.0.0 绑定才真正生效。健康检查同时兜底探测容器 IP。
 ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD wget --spider -q http://127.0.0.1:3000/ || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget --spider -q http://127.0.0.1:3000/ \
+        || wget --spider -q "http://$(hostname -i | awk '{print $1}'):3000/" \
+        || exit 1
 
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "HOSTNAME=0.0.0.0 exec node server.js"]
