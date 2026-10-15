@@ -154,11 +154,13 @@ class TestIngestMedia:
         from app.ext.agent_gateway import ingest_media
 
         # 先清理所有相关表，确保没有 active stock_location
+        # 注意: 多个表引用 inventory_batch，使用 TRUNCATE CASCADE 级联清理
+        # stock_location 也有多个引用表，使用 TRUNCATE CASCADE
         async with cn_pool.acquire() as conn:
-            await conn.execute('DELETE FROM "inventory_batch"')
-            await conn.execute('DELETE FROM "product_variant"')
+            await conn.execute('TRUNCATE TABLE "inventory_batch" CASCADE')
+            await conn.execute('TRUNCATE TABLE "product_variant" CASCADE')
+            await conn.execute('TRUNCATE TABLE "stock_location" CASCADE')
             await conn.execute('DELETE FROM "product"')
-            await conn.execute('DELETE FROM "stock_location" WHERE status = $1', "active")
 
         with pytest.raises(HTTPException) as exc_info:
             await ingest_media(
@@ -209,8 +211,8 @@ class TestIngestMedia:
 
         # 清理可能存在的测试数据
         async with cn_pool.acquire() as conn:
-            await conn.execute('DELETE FROM "inventory_batch"')
-            await conn.execute('DELETE FROM "product_variant"')
+            await conn.execute('TRUNCATE TABLE "inventory_batch" CASCADE')
+            await conn.execute('TRUNCATE TABLE "product_variant" CASCADE')
             await conn.execute('DELETE FROM "product"')
 
         # 第一次上传
