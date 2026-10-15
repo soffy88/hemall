@@ -19,6 +19,7 @@ from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
+from app.db_recovery import kick_pool_recovery
 from app.deps import get_current_customer, get_settings
 from app.security.tokens import (
     ACCESS_TOKEN_COOKIE,
@@ -144,6 +145,9 @@ def _step_dir(out_root: Path, step: str) -> Path:
 def _pool(request: Request) -> Any:
     pool = getattr(request.app.state, "pool", None)
     if pool is None:
+        # 池缺失: 立刻唤醒后台退避重试 (笔记本休眠唤醒后 PG 才起来), 别让
+        # 这个 worker 在下一次退避窗口之前一直 503。见 app/db_recovery.py。
+        kick_pool_recovery(request.app)
         raise HTTPException(503, "database not ready")
     return pool
 

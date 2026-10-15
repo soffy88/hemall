@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from obase.commerce_batch_schema import ensure_commerce_batch_schema
@@ -119,6 +120,45 @@ async def init_db(
         max_size=settings.pg_pool_max,
     )
 
+    try:
+        await _ensure_schema_and_verify(pool, apply_runtime_role=apply_runtime_role)
+    except BaseException:
+        # 建表阶段失败 (PG 起来了但 schema 半成品 / 权限不足 / 网络中途断) 时,
+        # 池已经进了 PgPool._registry 却没人 close: 进程内泄漏连接, 且下一次
+        # 重试的 PgPool.create 会因重名直接抛 ValueError —— 自愈重试因此永远
+        # 无法成功。这里显式关掉并从注册表摘除, 让调用方可以干净地重试。
+        with contextlib.suppress(Exception):
+            await pool.close()
+        raise
+
+    # Phase 0: 更新 DB 连接池指标
+    async def update_metrics():
+        while True:
+            try:
+                used = (
+                    len(pool._used_connections)
+                    if hasattr(pool, "_used_connections")
+                    else 0
+                )
+                update_db_pool_metrics(
+                    settings.pg_pool_name, settings.pg_pool_max, used
+                )
+            except Exception as e:
+                logger.warning("Failed to update DB pool metrics: %s", e)
+            await asyncio.sleep(10)  # 每 10 秒更新一次
+
+    # 启动后台任务更新指标
+    metrics_task = asyncio.create_task(update_metrics())
+
+    logger.info(
+        "database pool '%s' ready; commerce + ext schema ensured",
+        settings.pg_pool_name,
+    )
+    return pool, metrics_task
+
+
+async def _ensure_schema_and_verify(pool: PgPool, *, apply_runtime_role: bool) -> None:
+    """在 advisory lock 内幂等建齐全部 schema 并做启动自检。"""
     # 固定锁 ID (hemall_prod 库私有, 无跨项目冲突)
     SCHEMA_LOCK_ID = 824701
     async with pool.acquire() as lock_conn:
@@ -133,9 +173,7 @@ async def init_db(
             from .security.audit import AUDIT_LOG_DDL
             from .payments.models import PAYMENT_SESSION_DDL
 
-            await _ensure_security_payment_schema(
-                pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL
-            )
+            await _ensure_security_payment_schema(pool, AUDIT_LOG_DDL, PAYMENT_SESSION_DDL)
 
             # Phase 1: 库存管理表结构
             from .inventory.models import STOCK_MOVEMENT_DDL
@@ -170,31 +208,6 @@ async def init_db(
     # 必须在 DDL 之后——运行时角色没有 CREATE 权限，提前切换会让迁移本身失败。
     if apply_runtime_role:
         _switch_pool_to_runtime_role(pool)
-
-    # Phase 0: 更新 DB 连接池指标
-    async def update_metrics():
-        while True:
-            try:
-                used = (
-                    len(pool._used_connections)
-                    if hasattr(pool, "_used_connections")
-                    else 0
-                )
-                update_db_pool_metrics(
-                    settings.pg_pool_name, settings.pg_pool_max, used
-                )
-            except Exception as e:
-                logger.warning("Failed to update DB pool metrics: %s", e)
-            await asyncio.sleep(10)  # 每 10 秒更新一次
-
-    # 启动后台任务更新指标
-    metrics_task = asyncio.create_task(update_metrics())
-
-    logger.info(
-        "database pool '%s' ready; commerce + ext schema ensured",
-        settings.pg_pool_name,
-    )
-    return pool, metrics_task
 
 
 def _switch_pool_to_runtime_role(pool: PgPool) -> None:

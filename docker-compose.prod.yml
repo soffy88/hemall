@@ -62,7 +62,10 @@ services:
       - ./secrets/wechat:/run/secrets/wechat:ro
       - elasticsearch_certs:/app/certs/elasticsearch:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      # 用就绪探针而不是存活探针: 池缺失时 /health/ready 返 503, 连续失败
+      # 触发容器重启——笔记本休眠唤醒后 PG 晚于 API 起来时, 否则该 worker
+      # 会永远对 DB 端点返回 503 (见 app/db_recovery.py 的后台自愈重试)。
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 3

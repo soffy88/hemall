@@ -32,6 +32,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from ..db_recovery import kick_pool_recovery
 from .oskill import (
     compute_cart_delta,
     compute_tare_adjustment,
@@ -89,6 +90,9 @@ def require_hardware_secret(request: Request) -> None:
 def _pool(request: Request) -> Any:
     pool = getattr(request.app.state, "pool", None)
     if pool is None:
+        # 池缺失: 立刻唤醒后台退避重试 (笔记本休眠唤醒后 PG 才起来), 别让
+        # 这个 worker 在下一次退避窗口之前一直 503。见 app/db_recovery.py。
+        kick_pool_recovery(request.app)
         raise HTTPException(503, "database not ready")
     return pool
 

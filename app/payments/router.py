@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..db_recovery import kick_pool_recovery
 from ..deps import get_current_user, get_pool, get_settings, require_staff_role
 from .alipay import AlipayProvider
 from .models import PaymentProvider, PaymentStatus
@@ -482,6 +483,7 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
 
     pool = getattr(request.app.state, "pool", None)
     if pool is None:
+        kick_pool_recovery(request.app)
         raise HTTPException(status_code=503, detail="database not ready")
     async with pool.acquire() as conn:
         intent = await conn.fetchrow(

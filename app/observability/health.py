@@ -56,8 +56,10 @@ async def health_ready(
 ) -> dict[str, Any]:
     """就绪探针 (readiness probe) — 依赖就绪才可接收流量。
 
-    Kubernetes 用此判断是否加入 Service 负载均衡。
-    降级策略：DB/Redis 不可用时返 503 + degraded，K8s/网关据此摘流。
+    Kubernetes / docker healthcheck 用此判断是否加入 Service 负载均衡。
+    降级策略：DB/Redis 不可用时返 503 + degraded，K8s/网关据此摘流；容器编排
+    的 healthcheck 连续多次失败即重启该 worker（笔记本休眠唤醒、PG 短暂不可用
+    后永久 503 的兜底，见 app/db_recovery.py）。
     """
     # 延迟导入，避免与 main.py 的循环导入
     from ..main import get_app_state
@@ -68,6 +70,10 @@ async def health_ready(
 
     # DB 检查
     db_result = await check_db_health(state.pool)
+    if db_result["status"] == "down" and getattr(state, "db_recovery_active", False):
+        db_result["message"] = (
+            f"{db_result.get('message', 'unavailable')}; background recovery retrying"
+        )
     checks["database"] = db_result
     if db_result["status"] == "down":
         overall_status = "degraded"
