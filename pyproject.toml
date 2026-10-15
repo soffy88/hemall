@@ -22,8 +22,15 @@ dependencies = [
     "beautifulsoup4>=4.12",
     # httpx 真实传输栈的 HTTP/2 依赖: 老版 h2 2.x + hyperframe 3.x 在 Py3.12
     # 下崩溃 (collections.MutableSet 已移除)，钉住兼容组合。
-    "h2>=4.0",
+    # 安全更新: h2 4.4.0 有漏洞, 需 >=4.4.1
+    "h2>=4.4.1",
     "hyperframe>=6.0",
+    # 安全更新: multidict 6.7.1 有漏洞, 需 >=6.9.1
+    "multidict>=6.9.1",
+    # 安全更新: urllib3 2.7.0 有漏洞, 需 >=2.8.0
+    "urllib3>=2.8.0",
+    # 安全更新: pyjwt 2.13.0 有漏洞, 需 >=2.15.0
+    "pyjwt>=2.15.0",
     # app/search/client imports the async client at application import time;
     # keep this explicit instead of relying on a transitive 3O dependency.
     "elasticsearch>=8.12",
@@ -35,7 +42,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=4.0",
-    "httpx>=0.27",
+    "httpx>=0.28.1",
     "mypy>=1.10",
     "ruff>=0.8",
 ]
