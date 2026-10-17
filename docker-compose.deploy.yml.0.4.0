@@ -1,0 +1,18 @@
+services:
+  api:
+    image: registry.sxueji.com/hemall/backend:0.4.0-audit
+  web:
+    image: registry.sxueji.com/hemall/frontend:0.4.0-audit
+    environment:
+      HEMALL_BACKEND_URL: http://hemal-api-1:8000
+  caddy:
+    environment:
+      HEMALL_API_CONTAINER: hemal-api-1
+      HEMALL_WEB_CONTAINER: hemal-web-1
+  db:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hemall -d hemall_prod"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

@@ -1,0 +1,11 @@
+services:
+  api:
+    image: registry.sxueji.com/hemall/backend:0.5.0-prod
+  web:
+    image: registry.sxueji.com/hemall/frontend:0.5.1-prod
+    environment:
+      HEMALL_BACKEND_URL: http://hemal-api-1:8000
+  caddy:
+    environment:
+      HEMALL_API_CONTAINER: hemal-api-1
+      HEMALL_WEB_CONTAINER: hemal-web-1
