@@ -153,6 +153,10 @@ jobs:
             -q
 
       - name: Upload coverage to Codecov
+        # 覆盖率上传是锦上添花：无 CODECOV_TOKEN 时 codecov 拒绝 tokenless
+        # 上传（连 create-commit 都过不了），continue-on-error 保证不拖红 CI。
+        # 如需覆盖率追踪，请在仓库 Settings > Secrets 中添加 CODECOV_TOKEN。
+        continue-on-error: true
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
@@ -216,6 +220,10 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Build Next.js app
+        # next.config.ts fail-closed（audit F-05）：构建期必须给后端地址；
+        # CI 只做构建校验，用占位地址即可（浏览器侧走同源 /api）。
+        env:
+          NEXT_PUBLIC_API_URL: https://example.invalid
         run: npm run build
 
   # ── 集成测试 (默认分支 push 才跑) ─────────────────────────────────────
