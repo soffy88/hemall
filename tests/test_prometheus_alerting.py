@@ -288,12 +288,15 @@ def test_entrypoint_fails_closed_on_empty_value():
     assert proc.returncode != 0, "空 webhook 地址被当成有效配置"
 
 
-def test_entrypoint_fails_closed_on_unresolvable_placeholder():
+def test_entrypoint_fails_closed_on_unresolvable_placeholder(tmp_path):
     """未知占位符必须报错，不能原样写进配置让 Alertmanager 启动后收不到。"""
+    # NOTE: 用例实测的是"多余环境变量被忽略"（见下断言）；渲染目标必须落在
+    # 真实存在的目录里，否则脚本因建不出 tmp 文件而失败，与用例意图无关。
+    # （此前硬编码 /tmp/opencode/should-not-exist3.yml，在 CI 上目录不存在导致误失败。）
     proc = _run_entrypoint(
         {
             "ALERTMANAGER_CONFIG_TEMPLATE": str(AM_CONFIG),
-            "ALERTMANAGER_RENDERED_CONFIG": "/tmp/opencode/should-not-exist3.yml",
+            "ALERTMANAGER_RENDERED_CONFIG": str(tmp_path / "rendered.yml"),
             "HEMALL_ALERT_WEBHOOK_URL": "https://example.invalid/hook",
             "HEMALL_ALERT_TYPO_EXTRA": "x",
         }
