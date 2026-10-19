@@ -59,8 +59,12 @@ jobs:
         run: uv run mypy app --ignore-missing-imports --no-strict-optional
 
       - name: Actionlint workflow validation
+        # NOTE: 不用 ghcr.io 的 docker 镜像（2026-10-19 起 runner 拉取被拒: denied），
+        # 改直下官方 release 二进制，效果等价。
         run: |
-          docker run --rm -v "${{ github.workspace }}:/ws" ghcr.io/rhysd/actionlint:1.7 -color /ws/.github/workflows/ci.yml
+          curl -sSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint ${{ github.workspace }}/.github/workflows/ci.yml
 
   # ── 单元/集成测试 (含 PG + Redis 服务容器) ────────────────────────────
   test:
