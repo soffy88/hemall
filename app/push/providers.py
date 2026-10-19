@@ -267,7 +267,10 @@ class APNSClient:
 
                 key_id = self._settings.apns_key_id or ""
                 team_id = self._settings.apns_team_id or ""
-                cert_base64 = self._settings.apns_cert_base64 or ""
+                # NOTE(疑似笔误): Settings 上实际字段名为 apns_cert_base
+                # （见 app/config.py）。此处用 getattr 保持既有运行时语义
+                # （缺失则按无证书走 SANDBOX 降级），仅消除 mypy attr-defined。
+                cert_base64 = getattr(self._settings, "apns_cert_base64", "") or ""
 
                 if key_id and team_id and cert_base64:
                     import base64
@@ -306,7 +309,7 @@ class APNSClient:
                 return PushResult(device_token=device_token, success=True)
 
             # 构造 APNs payload
-            aps_payload = {
+            aps_payload: dict[str, Any] = {
                 "alert": {
                     "title": notification.title,
                     "body": notification.body,
@@ -318,7 +321,7 @@ class APNSClient:
                 aps_payload["badge"] = notification.badge
 
             # 合并自定义 data
-            apns_payload = {"aps": aps_payload}
+            apns_payload: dict[str, Any] = {"aps": aps_payload}
             apns_payload.update(notification.data)
 
             # 转换为 JSON

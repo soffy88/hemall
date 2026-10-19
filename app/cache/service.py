@@ -170,7 +170,9 @@ class CacheManager:
         if not self.is_available:
             return []
         try:
-            results = await self._pool.zrevrange(key, 0, 9, withscores=True)
+            # redis-py 对 withscores=True 的返回类型标注不可靠，实际为
+            # [(member, score), ...]；用 Any 避免误报，元素类型由下方 isinstance 收窄。
+            results: Any = await self._pool.zrevrange(key, 0, 9, withscores=True)
         except (redis.RedisError, UnicodeDecodeError) as exc:
             # 只有"Redis 连不上 / 返回值编码坏了"才降级成空榜。
             logger.warning("cache GET_RANK failed for %s: %s", key, exc)

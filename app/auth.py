@@ -806,7 +806,7 @@ async def refresh(
     request: Request,
     response: Response,
     settings: Settings = Depends(get_settings),
-) -> RefreshResponse:
+) -> RefreshResponse | JSONResponse:
     """刷新 access token：用 refresh token cookie 签发新的 access token + csrf token。
 
     会话白名单为 ``{staff, customer}``（两种已注册的身份令牌类型），按原 typ

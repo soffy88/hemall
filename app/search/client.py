@@ -323,7 +323,7 @@ class ElasticsearchClient:
             return []
 
         try:
-            suggestion_body = {
+            suggestion_body: dict[str, Any] = {
                 "prefix": prefix,
                 "size": size,
                 "completion": {

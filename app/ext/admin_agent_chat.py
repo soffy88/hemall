@@ -591,7 +591,7 @@ async def _execute_query_system_liabilities(
     pool: Any, args: dict[str, Any], compensation_amount: int
 ) -> str:
     """执行系统总负债查询。"""
-    liability_data = {}
+    liability_data: dict[str, float] = {}
 
     async with pool.acquire() as conn:
         # 用户余额

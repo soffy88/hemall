@@ -85,14 +85,20 @@ class LLMProvider(ABC):
         ...
 
     @abstractmethod
-    async def chat_stream(
+    def chat_stream(
         self,
         messages: list[LLMMessage],
         temperature: float = 0.7,
         max_tokens: int = 1000,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """流式聊天接口。"""
+        """流式聊天接口。
+
+        注意：故意不用 ``async def``。各实现都是异步生成器（函数体内含
+        ``yield``），调用即返回 ``AsyncIterator``；若基类写成 ``async def``，
+        mypy 会将其理解为 ``Coroutine[..., AsyncIterator[str]]``，与实现及
+        ``async for ... in provider.chat_stream(...)`` 的调用方式冲突。
+        """
         ...
 
     @abstractmethod

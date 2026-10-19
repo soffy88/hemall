@@ -286,8 +286,10 @@ async def update_line_item(
     )
 
     cfg = _cfg(request, UpdateLineItemConfig)
+    # omodul 侧字段名为 batch_id（API 层对外仍叫 line_item_id）；
+    # 原先传 line_item_id 会触发 pydantic ValidationError（batch_id 缺失），接口永远 500。
     inp = UpdateLineItemInput(
-        cart_id=body.cart_id, line_item_id=body.line_item_id, quantity=body.quantity
+        cart_id=body.cart_id, batch_id=body.line_item_id, quantity=body.quantity
     )
     result = await update_line_item_in_cart(
         cfg, inp, _output_dir(request, "update_line_item_in_cart"), pool=_pool(request)
@@ -319,7 +321,8 @@ async def delete_line_item(
     )
 
     cfg = _cfg(request, DeleteLineItemConfig)
-    inp = DeleteLineItemInput(cart_id=body.cart_id, line_item_id=body.line_item_id)
+    # omodul 侧字段名为 batch_id（见上）。
+    inp = DeleteLineItemInput(cart_id=body.cart_id, batch_id=body.line_item_id)
     result = await delete_line_item_from_cart(
         cfg,
         inp,

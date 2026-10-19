@@ -24,9 +24,9 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from prometheus_client import make_asgi_app
@@ -213,6 +213,7 @@ class AppState:
     # Phase 2
     cache_manager: CacheManager | None = None
     search_client: ElasticsearchClient | None = None
+    search_service: Any = None  # 懒初始化（见 app/search/router.get_search_service）
     push_manager: PushManager | None = None
     # Phase 3
     recommend_service: RecommendationService | None = None
@@ -502,6 +503,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     shutdown_tracing()
 
 
+def _slowapi_rate_limit_handler(request: Request, exc: Exception) -> Response:
+    """slowapi 限流异常处理器的签名适配层。
+
+    Starlette 要求异常处理器兼容 ``(Request, Exception)`` 签名；slowapi 自带的
+    ``_rate_limit_exceeded_handler`` 第二个参数收窄为 ``RateLimitExceeded``，
+    直接注册会触发 mypy ``[arg-type]``。包一层转发（``cast`` 在运行时是恒等
+    函数），运行时行为不变；有/无 slowapi 的 mypy 环境下都能通过
+    （无 slowapi 时相关名字退化为 Any）。
+    """
+    return _rate_limit_exceeded_handler(request, cast("RateLimitExceeded", exc))
+
+
 def create_app() -> FastAPI:
     """构建 FastAPI 应用。"""
     # gunicorn 启动路径 (生产) 不走 __main__ 的 basicConfig, root logger 默认
@@ -574,7 +587,7 @@ def create_app() -> FastAPI:
 
     # Phase 0 Week 2: 限流
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, _slowapi_rate_limit_handler)
 
     # Phase 0: 挂载健康检查路由
     app.include_router(health_router)

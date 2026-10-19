@@ -26,19 +26,19 @@ class ProductDocument(BaseModel):
     # 核心字段
     product_id: str = Field(description="商品 ID")
     name: str = Field(description="商品名称 (需分词)")
-    description: str | None = Field(None, description="商品描述 (全文检索)")
-    subtitle: str | None = Field(None, description="副标题/卖点")
+    description: str | None = Field(default=None, description="商品描述 (全文检索)")
+    subtitle: str | None = Field(default=None, description="副标题/卖点")
 
     # 分类与品牌
-    category_id: str | None = Field(None, description="分类 ID")
+    category_id: str | None = Field(default=None, description="分类 ID")
     category_path: list[str] = Field(default_factory=list, description="分类树路径 (用于多级筛选)")
-    brand_name: str | None = Field(None, description="品牌名称")
-    brand_id: str | None = Field(None, description="品牌 ID")
+    brand_name: str | None = Field(default=None, description="品牌名称")
+    brand_id: str | None = Field(default=None, description="品牌 ID")
 
     # 价格 (cents: 分为单位, 避免浮点精度问题)
-    original_price_cents: int | None = Field(None, description="原价 (分)")
-    selling_price_cents: int | None = Field(None, description="售价 (分)")
-    promotion_price_cents: int | None = Field(None, description="促销价 (分)")
+    original_price_cents: int | None = Field(default=None, description="原价 (分)")
+    selling_price_cents: int | None = Field(default=None, description="售价 (分)")
+    promotion_price_cents: int | None = Field(default=None, description="促销价 (分)")
 
     # SKU 与库存
     skus: list[dict[str, Any]] = Field(default_factory=list, description="SKU 列表")
@@ -54,17 +54,17 @@ class ProductDocument(BaseModel):
     attributes: dict[str, Any] = Field(default_factory=dict, description="SPU 级扩展属性")
 
     # 媒体
-    main_image_url: str | None = Field(None, description="主图 URL")
+    main_image_url: str | None = Field(default=None, description="主图 URL")
     image_urls: list[str] = Field(default_factory=list, description="详情图列表")
 
     # 门店与卖家
-    seller_id: str | None = Field(None, description="卖家/店铺 ID")
-    seller_name: str | None = Field(None, description="店铺名称")
-    warehouse_code: str | None = Field(None, description="发货仓库代码")
+    seller_id: str | None = Field(default=None, description="卖家/店铺 ID")
+    seller_name: str | None = Field(default=None, description="店铺名称")
+    warehouse_code: str | None = Field(default=None, description="发货仓库代码")
 
     # 元数据
     is_active: bool = Field(default=True, description="是否上架")
-    indexed_at: str | None = Field(None, description="最近一次索引时间 (ISO8601)")
+    indexed_at: str | None = Field(default=None, description="最近一次索引时间 (ISO8601)")
 
 
 class SynonymEntry(BaseModel):
@@ -80,12 +80,12 @@ class SynonymEntry(BaseModel):
 class SearchQueryParams(BaseModel):
     """商品搜索请求参数。"""
 
-    keyword: str | None = Field(None, description="搜索关键词")
-    category_id: str | None = Field(None, description="按分类筛选")
-    brand_id: str | None = Field(None, description="按品牌筛选")
-    price_min_cents: int | None = Field(None, ge=0, description="最低价格 (分)")
-    price_max_cents: int | None = Field(None, ge=0, description="最高价格 (分)")
-    min_rating: float | None = Field(None, ge=0, le=5, description="最低评分")
+    keyword: str | None = Field(default=None, description="搜索关键词")
+    category_id: str | None = Field(default=None, description="按分类筛选")
+    brand_id: str | None = Field(default=None, description="按品牌筛选")
+    price_min_cents: int | None = Field(default=None, ge=0, description="最低价格 (分)")
+    price_max_cents: int | None = Field(default=None, ge=0, description="最高价格 (分)")
+    min_rating: float | None = Field(default=None, ge=0, le=5, description="最低评分")
     in_stock_only: bool = Field(default=False, description="仅显示有货商品")
     sort_by: str = Field(
         default="relevance",
@@ -157,7 +157,7 @@ class SearchResponse(BaseModel):
     """完整搜索响应。"""
 
     products: list[HitProduct] = Field(default_factory=list)
-    aggregation: AggregationResult | None = Field(None, description="聚合分析结果")
+    aggregation: AggregationResult | None = Field(default=None, description="聚合分析结果")
     pagination: PaginationInfo = Field(
         default_factory=lambda: PaginationInfo(page=1, size=20, total=0, pages=0)
     )

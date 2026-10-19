@@ -112,6 +112,9 @@ jobs:
           TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_REDIS_URL: redis://localhost:6379/0
+          # conftest.test_redis_url 缺省指向 127.0.0.1:56379（本地专用测试 redis）；
+          # CI 只有一个 redis service，用 db1 与 HEMALL_REDIS_URL(db0) 隔离
+          TEST_REDIS_URL: redis://localhost:6379/1
         run: |
           uv run pytest tests/ \
             --cov=app \
@@ -125,6 +128,9 @@ jobs:
           TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_REDIS_URL: redis://localhost:6379/0
+          # conftest.test_redis_url 缺省指向 127.0.0.1:56379（本地专用测试 redis）；
+          # CI 只有一个 redis service，用 db1 与 HEMALL_REDIS_URL(db0) 隔离
+          TEST_REDIS_URL: redis://localhost:6379/1
         run: |
           uv run pytest tests/ \
             --cov=app.orders.service \
@@ -249,5 +255,8 @@ jobs:
           TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_integration
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_integration
           HEMALL_REDIS_URL: redis://localhost:6379/0
+          # conftest.test_redis_url 缺省指向 127.0.0.1:56379（本地专用测试 redis）；
+          # CI 只有一个 redis service，用 db1 与 HEMALL_REDIS_URL(db0) 隔离
+          TEST_REDIS_URL: redis://localhost:6379/1
         run: |
           uv run pytest tests/ -v

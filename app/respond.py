@@ -108,48 +108,34 @@ def omodul_endpoint(
     omodul_name = getattr(config_cls, "_omodul_name", "") or fn.__name__
     role_key = op_name or omodul_name
 
-    if require_auth:
+    # 鉴权依赖按 require_auth 二选一：mypy 要求同名条件分支的函数签名完全一致，
+    # 故只定义一次 handler。非鉴权分支的依赖直接返回 ANONYMOUS_PRINCIPAL，
+    # 与原先“直接传 ANONYMOUS_PRINCIPAL 给 _invoke”的运行时行为完全一致。
+    _principal_dependency = (
+        Depends(require_op_role_for(role_key))
+        if require_auth
+        else Depends(lambda: ANONYMOUS_PRINCIPAL)
+    )
 
-        async def handler(
-            body: input_cls,  # type: ignore[valid-type]
-            request: Request,
-            principal: dict = Depends(require_op_role_for(role_key)),
-            settings: Settings = Depends(get_settings),
-            pool: PgPool = Depends(get_pool),
-        ) -> JSONResponse:
-            return await _invoke(
-                fn,
-                config_cls,
-                body,
-                omodul_name,
-                pool,
-                principal,
-                settings,
-                success_status,
-                request,
-                post_hook,
-            )
-
-    else:
-
-        async def handler(
-            body: input_cls,  # type: ignore[valid-type]
-            request: Request,
-            settings: Settings = Depends(get_settings),
-            pool: PgPool = Depends(get_pool),
-        ) -> JSONResponse:
-            return await _invoke(
-                fn,
-                config_cls,
-                body,
-                omodul_name,
-                pool,
-                ANONYMOUS_PRINCIPAL,
-                settings,
-                success_status,
-                request,
-                post_hook,
-            )
+    async def handler(
+        body: input_cls,  # type: ignore[valid-type]
+        request: Request,
+        principal: dict = _principal_dependency,
+        settings: Settings = Depends(get_settings),
+        pool: PgPool = Depends(get_pool),
+    ) -> JSONResponse:
+        return await _invoke(
+            fn,
+            config_cls,
+            body,
+            omodul_name,
+            pool,
+            principal,
+            settings,
+            success_status,
+            request,
+            post_hook,
+        )
 
     handler.__name__ = f"handle_{fn.__name__}"
     handler.__qualname__ = f"handle_{fn.__name__}"

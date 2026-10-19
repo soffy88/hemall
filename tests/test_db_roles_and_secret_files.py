@@ -228,6 +228,8 @@ def test_production_external_pg_without_sslmode_is_rejected():
         wechat_pay_private_key_path="/tmp/k.pem",
         wechat_pay_api_v3_key="k" * 32,
         wechat_pay_platform_cert_path="/tmp/c.pem",
+        # 与仓库默认保持一致: 避免本机 .env 的 HEMALL_CORS_ORIGINS 污染测试
+        cors_origins=["http://localhost:3000"],
     )
     with pytest.raises(RuntimeError, match="HEMALL_PG_SSLMODE"):
         settings.validate_production_security()
@@ -251,6 +253,8 @@ def test_production_internal_pg_prefer_is_accepted():
         wechat_pay_private_key_path="/tmp/k.pem",
         wechat_pay_api_v3_key="k" * 32,
         wechat_pay_platform_cert_path="/tmp/c.pem",
+        # 与仓库默认保持一致: 避免本机 .env 的 HEMALL_CORS_ORIGINS 污染测试
+        cors_origins=["http://localhost:3000"],
     )
     # 不得抛; 且内网连接不会被强制升级成 require
     settings.validate_production_security()

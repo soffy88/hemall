@@ -1051,7 +1051,10 @@ def compute_batch_affinity_scores(
             continue
         total = 0
         for u in user_set:
-            key = tuple(sorted((u, cand)))
+            # tuple(sorted(...)) 推导为 tuple[str, ...]，与
+            # dict[tuple[str, str], int] 的键类型不匹配；两元解包写法等价且类型精确。
+            first, second = sorted((u, cand))
+            key = (first, second)
             total += cooccurrence.get(key, 0)
         if total > 0:
             scores[cand] = total / len(user_set)
