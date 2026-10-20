@@ -1,0 +1,82 @@
+# Hemall IoT live 适配版（基于 docker-compose.iot.yml）
+#
+# 与 iot.yml 的唯一差异：live 栈（docker-compose.mall-old.yml）里 API 服务名
+# 是 api（容器 hemal-api-1），不是 iot.yml 假设的 app。本文件把 iot-bridge 的
+# 上游地址与 depends_on 改到 api，其余安全设置（Dashboard 只绑回环、1883
+# 启用内置库认证、ACL deny+disconnect、不缓存）与 iot.yml 逐项一致。
+#
+# 密钥从同目录 iot.env 读（600 权限，不入库）：
+#   HARDWARE_SECRET —— 必须与 api 的 HEMALL_HARDWARE_SECRET 一致
+#   HEMALL_EMQX_DASHBOARD_PASSWORD / HEMALL_EMQX_EDGE_PASSWORD
+#
+# 用法：
+#   docker compose -p hemal \
+#     -f docker-compose.mall-old.yml -f docker-compose.deploy.yml \
+#     -f docker-compose.infra.yml -f docker-compose.iot-live.yml \
+#     --env-file iot.env up -d emqx emqx-bootstrap iot-bridge
+
+services:
+  emqx:
+    image: emqx:5.3@sha256:140e405b10cc8ebf026be5065ee50d73c9c3aa9423cf965d3125b1502227eab5
+    container_name: hemall-emqx
+    ports:
+      - "1883:1883"         # 物理车库硬件 MQTT 端口 (已启用认证 + ACL)
+      - "127.0.0.1:18083:18083"  # EMQX Dashboard —— 只绑回环
+    environment:
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${HEMALL_EMQX_DASHBOARD_PASSWORD:?set in iot.env}
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
+      EMQX_AUTHENTICATION__1__USER_ID_TYPE: username
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME: sha256
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__SALT_POSITION: suffix
+      EMQX_AUTHORIZATION__NO_MATCH: deny
+      EMQX_AUTHORIZATION__DENY_ACTION: disconnect
+      EMQX_AUTHORIZATION__CACHE__ENABLE: "false"
+      EMQX_AUTHORIZATION__SOURCES__1__TYPE: file
+      EMQX_AUTHORIZATION__SOURCES__1__ENABLE: "true"
+      EMQX_AUTHORIZATION__SOURCES__1__PATH: /opt/emqx/etc/acl.conf
+    volumes:
+      - ./emqx/acl.conf:/opt/emqx/etc/acl.conf:ro
+    restart: unless-stopped
+
+  emqx-bootstrap:
+    image: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+    container_name: hemall-emqx-bootstrap
+    entrypoint: ["sh", "/work/bootstrap.sh"]
+    environment:
+      EMQX_BOOTSTRAP_URL: http://emqx:18083
+      HEMALL_EMQX_DASHBOARD_USERNAME: admin
+      HEMALL_EMQX_DASHBOARD_PASSWORD: ${HEMALL_EMQX_DASHBOARD_PASSWORD:?set in iot.env}
+      HEMALL_EMQX_EDGE_USERNAME: "${HEMALL_EMQX_EDGE_USERNAME:-edge_bridge}"
+      HEMALL_EMQX_EDGE_PASSWORD: ${HEMALL_EMQX_EDGE_PASSWORD:?set in iot.env}
+    volumes:
+      - ./emqx:/work:ro
+    depends_on:
+      - emqx
+    restart: "no"
+
+  iot-bridge:
+    build:
+      context: ./edge_bridge
+    container_name: hemall-iot-bridge
+    environment:
+      - MQTT_BROKER=emqx
+      - MQTT_USERNAME=${HEMALL_EMQX_EDGE_USERNAME:-edge_bridge}
+      - MQTT_PASSWORD=${HEMALL_EMQX_EDGE_PASSWORD:?set in iot.env}
+      - HEMALL_API_URL=http://api:8000/ext/hardware/webhook
+      - HARDWARE_SECRET=${HARDWARE_SECRET:?set in iot.env}
+      - DLQ_PATH=/data/dlq.sqlite
+      - LOG_LEVEL=INFO
+    volumes:
+      - bridge-dlq:/data
+    depends_on:
+      emqx:
+        condition: service_started
+      emqx-bootstrap:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  bridge-dlq:
