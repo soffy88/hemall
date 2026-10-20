@@ -17,6 +17,8 @@
 
 services:
   emqx:
+    networks:
+      - hemall-backend
     image: emqx:5.3@sha256:140e405b10cc8ebf026be5065ee50d73c9c3aa9423cf965d3125b1502227eab5
     container_name: hemall-emqx
     ports:
@@ -40,6 +42,8 @@ services:
     restart: unless-stopped
 
   emqx-bootstrap:
+    networks:
+      - hemall-backend
     image: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
     container_name: hemall-emqx-bootstrap
     entrypoint: ["sh", "/work/bootstrap.sh"]
@@ -56,6 +60,8 @@ services:
     restart: "no"
 
   iot-bridge:
+    networks:
+      - hemall-backend
     build:
       context: ./edge_bridge
     container_name: hemall-iot-bridge

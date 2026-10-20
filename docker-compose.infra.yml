@@ -10,11 +10,14 @@
 #     -f docker-compose.infra.yml up -d elasticsearch clickhouse
 #   （api 需带上本文件重建一次以注入 env：up -d api）
 #
+# 网络：必须挂 hemall-backend（mall-old 定义的服务网络），否则与 api 不通。
 # 端口策略：ES/CH 只在项目内网可达，不发布到宿主机（CH 的 8123/9000、
 # ES 的 9200 均不对公网/局域网开放，需要时走容器内或 SSH 隧道）。
 
 services:
   elasticsearch:
+    networks:
+      - hemall-backend
     image: elasticsearch:8.15.3
     container_name: hemal-elasticsearch
     environment:
@@ -32,6 +35,8 @@ services:
       retries: 30
 
   clickhouse:
+    networks:
+      - hemall-backend
     image: clickhouse/clickhouse-server:24.8
     container_name: hemal-clickhouse
     volumes:
