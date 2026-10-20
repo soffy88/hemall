@@ -18,7 +18,9 @@ services:
   elasticsearch:
     networks:
       - hemall-backend
-    image: elasticsearch:8.15.3
+    # 自建镜像：官方 8.15.3 + IK 中文分词插件（索引映射用 ik_max_word，
+    # 无插件建索引 400）。构建配方: build-es-ik/Dockerfile
+    image: hemall/elasticsearch-ik:8.15.3
     container_name: hemal-elasticsearch
     environment:
       - discovery.type=single-node
@@ -39,6 +41,12 @@ services:
       - hemall-backend
     image: clickhouse/clickhouse-server:24.8
     container_name: hemal-clickhouse
+    environment:
+      # 新版 CH 的 default 用户只许本机连接，api 必须用独立账号（密码在 .env）。
+      # 注：只在数据卷首次初始化时生效；已初始化的卷需手工 CREATE USER（已做）。
+      CLICKHOUSE_USER: ${HEMALL_CLICKHOUSE_USER:-hemall}
+      CLICKHOUSE_PASSWORD: ${HEMALL_CLICKHOUSE_PASSWORD:?set in .env}
+      CLICKHOUSE_DB: ${HEMALL_CLICKHOUSE_DB:-hemall}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     ulimits:
@@ -58,7 +66,7 @@ services:
       # 搜索：app/config.py 的 elasticsearch_url（HEMALL_ 前缀映射）
       HEMALL_ELASTICSEARCH_URL: http://elasticsearch:9200
       # 分析：app/config.py 的 clickhouse_url；为空时 AnalyticsService 纯 PG。
-      HEMALL_CLICKHOUSE_URL: http://clickhouse:8123
+      HEMALL_CLICKHOUSE_URL: http://${HEMALL_CLICKHOUSE_USER:-hemall}:${HEMALL_CLICKHOUSE_PASSWORD:?set in .env}@clickhouse:8123/${HEMALL_CLICKHOUSE_DB:-hemall}
 
 volumes:
   elasticsearch_data:
