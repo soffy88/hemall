@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 from app import queries
 from app.db_recovery import kick_pool_recovery
 from app.deps import get_current_customer, get_settings
+from app.recommend.models import UserBehaviorEvent, UserBehaviorType
 from app.security.tokens import (
     ACCESS_TOKEN_COOKIE,
     TOKEN_TYPE_CART,
@@ -45,6 +47,67 @@ def _optional_customer(
     if creds is None and not request.cookies.get(ACCESS_TOKEN_COOKIE):
         return None
     return get_current_customer(request=request, creds=creds, settings=settings)
+
+
+# ── 推荐行为旁路 ────────────────────────────────────────────────
+# 协同过滤靠行为数据训练 (RecommendationService 每小时重建评分矩阵)。
+# 商城主流程在这里把 view / cart_add / purchase 三种行为喂给它。全部
+# fire-and-forget: 服务未初始化 / 投递失败只记 debug, 绝不影响主流程。
+
+_behavior_tasks: set[asyncio.Task[None]] = set()
+
+
+def _log_recommend_behavior(user_id: str, product_id: str, behavior_type: UserBehaviorType) -> None:
+    """把一条行为事件投递给推荐服务 (fire-and-forget)。
+
+    服务实例挂在 app.main 的全局 AppState 上, 取法与
+    app/recommend/router.py 的 get_recommend_service 一致 (函数内懒导入,
+    避免与 app.main 循环导入)。强引用保存在 _behavior_tasks 里防任务被
+    GC 回收, 完成后自动移除。
+    """
+    try:
+        from app.main import get_app_state
+
+        svc = get_app_state().recommend_service
+        if svc is None:
+            return
+        event = UserBehaviorEvent(
+            user_id=user_id, product_id=product_id, behavior_type=behavior_type
+        )
+        task = asyncio.get_running_loop().create_task(svc.log_behavior(event))
+        _behavior_tasks.add(task)
+        task.add_done_callback(_behavior_tasks.discard)
+    except Exception:  # noqa: BLE001 - 行为日志是旁路, 失败静默
+        logger.debug("recommend behavior logging skipped", exc_info=True)
+
+
+def _optional_customer_id(request: Request) -> str | None:
+    """从 cookie / Bearer 解析已登录顾客 id; 无凭证或凭证无效一律 None。
+
+    商品详情是公开端点, 不能套 _optional_customer (过期 cookie 会 401);
+    这里吞掉一切解析异常, 身份只用于 view 行为旁路。
+    """
+    try:
+        token = request.cookies.get(ACCESS_TOKEN_COOKIE)
+        if not token:
+            auth = request.headers.get("authorization") or ""
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+        if not token:
+            return None
+        cfg = request.app.state.config
+        payload = decode_token(
+            token=token,
+            typ=TOKEN_TYPE_CUSTOMER,
+            secret=cfg.jwt_secret,
+            algorithm=cfg.jwt_algorithm,
+        )
+        customer_id = payload.get("customer_id")
+        if isinstance(customer_id, str) and customer_id.strip():
+            return customer_id
+        return None
+    except Exception:  # noqa: BLE001 - 身份解析失败按匿名处理
+        return None
 
 
 def _sign_cart_capability(cart_id: str, secret: str, algorithm: str) -> str:
@@ -246,7 +309,7 @@ async def add_line_item(
     request: Request,
     principal: dict[str, Any] | None = Depends(_optional_customer),
 ):
-    await _authorize_cart(request, body.cart_id, principal)
+    customer_id = await _authorize_cart(request, body.cart_id, principal)
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
         AddLineItemInput,
@@ -260,6 +323,21 @@ async def add_line_item(
     )
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
+    # 推荐行为旁路: 有顾客身份时把这次加购记 cart_add, 喂协同过滤训练。
+    # 失败只记 debug, 绝不影响加购主流程。
+    if customer_id is not None:
+        try:
+            async with _pool(request).acquire() as conn:
+                added_product_id = await conn.fetchval(
+                    'SELECT product_id FROM "inventory_batch" WHERE id = $1',
+                    body.batch_id,
+                )
+            if added_product_id:
+                _log_recommend_behavior(
+                    customer_id, str(added_product_id), UserBehaviorType.CART_ADD
+                )
+        except Exception:  # noqa: BLE001 - 行为日志是旁路, 不阻断加购
+            logger.debug("recommend cart_add logging failed", exc_info=True)
     return {
         "line_item_id": result["line_item_id"],
         "new_quantity": result["quantity"],
@@ -956,6 +1034,27 @@ async def checkout(
         except Exception as exc:  # noqa: BLE001 - 行为轨迹是旁路，不阻断下单
             logger.warning("device purchase log failed (order=%s): %s", order_id, exc)
 
+    # 推荐行为旁路: 已登录顾客的成交行项逐个记 purchase (权重最高的行为),
+    # 喂协同过滤训练。匿名结账没有 user_id, 跳过。失败只记 debug,
+    # 绝不影响下单主流程。
+    if authenticated_customer_id:
+        try:
+            async with pool.acquire() as conn:
+                purchased_rows = await conn.fetch(
+                    'SELECT ib.product_id FROM "order_line_item" oli '
+                    'JOIN "inventory_batch" ib ON ib.id = oli.batch_id '
+                    "WHERE oli.order_id = $1",
+                    order_id,
+                )
+            for purchased in purchased_rows:
+                _log_recommend_behavior(
+                    authenticated_customer_id,
+                    str(purchased["product_id"]),
+                    UserBehaviorType.PURCHASE,
+                )
+        except Exception:  # noqa: BLE001 - 行为日志是旁路, 不阻断下单
+            logger.debug("recommend purchase logging failed (order=%s)", order_id, exc_info=True)
+
     return {
         "order_id": order_id,
         "grand_total_cents": order["grand_total_cents"],
@@ -1323,6 +1422,11 @@ async def storefront_product(product_id: str, request: Request):
     product = await queries.get_storefront_product(_pool(request), product_id)
     if product is None:
         raise HTTPException(404, "product not found")
+    # 推荐行为旁路: 已登录顾客记 view, 喂协同过滤训练; 匿名跳过
+    # (公开端点, 凭证无效也不 401, 见 _optional_customer_id)。
+    view_customer_id = _optional_customer_id(request)
+    if view_customer_id is not None:
+        _log_recommend_behavior(view_customer_id, product_id, UserBehaviorType.VIEW)
     return product
 
 

@@ -90,6 +90,8 @@ class PushResult(BaseModel):
     success: bool
     error_code: int | None = None
     error_message: str | None = None
+    # 服务商侧消息 ID（FCM message_id / APNs apns-id）；sandbox 或失败时为 None
+    message_id: str | None = None
 
 
 class PushBatchResponse(BaseModel):

@@ -66,7 +66,10 @@ class ElasticsearchClient:
         try:
             url = self._load_es_url_from_settings()
             client_options: dict[str, Any] = {
-                "maxsize": self._settings.es_max_connections or 10,
+                # connections_per_node: elasticsearch-py 8.x 参数（旧名 maxsize
+                # 已弃用；9.x 两个都移除，依赖已在 pyproject 钉 <9.0——锁曾漂到
+                # 9.5.1 导致构造 TypeError、搜索整体降级，2026-10-21 线上实测）
+                "connections_per_node": self._settings.es_max_connections or 10,
                 "request_timeout": self._settings.es_request_timeout or 30,
                 "retry_on_timeout": True,
             }

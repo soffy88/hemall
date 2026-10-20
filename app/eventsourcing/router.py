@@ -5,6 +5,9 @@
     POST /eventsourcing/snapshot              # 手动创建快照
     GET /eventsourcing/projections            # 查看投影状态
 
+鉴权: events / snapshot 需员工令牌 (deps.get_current_user, 与 search/risk/
+cache/ai 等模块 router 同一模式); /health 保持公开供探活。
+
 诚实降级原则: 事件溯源仍未接入全局状态 (app_state.event_store 为空) 时,
 返回真实空态并明示未接入, 绝不伪造事件/投影数据。
 """
@@ -17,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..config import Settings
-from ..deps import get_settings
+from ..deps import get_current_user, get_settings
 from .service import EventBus, EventStore, ProjectorRegistry
 
 router = APIRouter(prefix="/eventsourcing", tags=["eventsourcing"])
@@ -63,8 +66,9 @@ async def get_aggregate_events(
     aggregate_id: str,
     from_version: int = 0,
     max_count: int = 100,
+    principal: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """获取聚合的事件流 (用于调试/审计)。未接入时明示空态。"""
+    """获取聚合的事件流 (用于调试/审计, 需员工鉴权)。未接入时明示空态。"""
     store = _get_event_store()
     if store is None:
         return {
@@ -89,8 +93,9 @@ async def get_aggregate_events(
 async def create_snapshot(
     aggregate_id: str = "",
     aggregate_type: str = "",
+    principal: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """手动触发聚合快照创建 (取该聚合最新事件生成快照)。"""
+    """手动触发聚合快照创建 (取该聚合最新事件生成快照, 需员工鉴权)。"""
     store = _get_event_store()
     if store is None:
         raise HTTPException(status_code=503, detail="EventStore 未接入")

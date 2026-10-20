@@ -419,7 +419,7 @@ class Settings(BaseSettings):
             except (ValueError, TypeError, UnicodeEncodeError):
                 problems.append("ENCRYPTION_KEY 必须是有效的 Fernet base64 key")
 
-        # 遗留支付 SDK (app/payments/{wechat,alipay}.py) 的生产分支是 8 处
+        # 遗留支付 SDK (app/payments/{wechat,alipay}.py) 的生产分支是 10 处
         # NotImplementedError: 回调不验签 → 支付状态永不回写 / 任何人都能把订单
         # 标 paid; 退款必 500。真正的收款走 HEMALL_PAYMENT_GATEWAY_PROVIDER
         # + app/ext/payment_gateways.py。生产下配了这两个遗留开关 = 选到了

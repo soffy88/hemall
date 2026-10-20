@@ -1,0 +1,34 @@
+# Hemall 蓝绿部署 — 绿色槽位（与 docker-compose.mall-old.yml 的 api/web 并行）
+#
+# 原理：Caddy 的上游容器名由环境变量 HEMALL_API_CONTAINER / HEMALL_WEB_CONTAINER
+# 注入（见 Caddyfile 与 docker-compose.deploy.yml），因此蓝绿切换 = 起新槽位 →
+# 健康检查 → 改 Caddy 上游 env 并重建 caddy → 停旧槽位。全程旧槽位保持可回滚。
+#
+# 用法（在部署目录，与 live 栈相同的 -p 与 -f 组合，最后追加本文件）：
+#   BACKEND_IMAGE=registry.sxueji.com/hemall/backend:X \
+#   FRONTEND_IMAGE=registry.sxueji.com/hemall/frontend:Y \
+#   docker compose -p hemal \
+#     -f docker-compose.mall-old.yml -f docker-compose.deploy.yml \
+#     -f docker-compose.bluegreen.yml up -d api-green web-green
+#
+# 正常发布请直接用 scripts/deploy-blue-green.sh（封装了健康检查/切换/回滚）。
+# 蓝色槽位就是 mall-old 里的 api/web 本身（容器名 hemal-api-1 / hemal-web-1）。
+
+services:
+  api-green:
+    extends:
+      file: docker-compose.mall-old.yml
+      service: api
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE for the green slot}
+    container_name: hemal-api-green
+    # 与蓝槽位共用 db/redis（有状态层不参与蓝绿），其余环境/卷沿用 api 定义。
+
+  web-green:
+    extends:
+      file: docker-compose.mall-old.yml
+      service: web
+    image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE for the green slot}
+    container_name: hemal-web-green
+    environment:
+      # 绿槽位前端必须回连绿槽位后端，避免新旧版本交叉调用。
+      HEMALL_BACKEND_URL: http://hemal-api-green:8000

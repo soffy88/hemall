@@ -1,0 +1,60 @@
+# Hemall live 栈基础件补齐（功能审计修复 2026-10-21）
+#
+# 背景：搜索（Elasticsearch）与分析（ClickHouse）的代码早已就绪，但 live 栈
+# 从未部署这两个服务，线上一直是降级状态。本文件把它们作为附加服务注入
+# 同一 compose 项目（-p hemal），并给 api 注入连接地址。
+#
+# 用法（部署目录）：
+#   docker compose -p hemal \
+#     -f docker-compose.mall-old.yml -f docker-compose.deploy.yml \
+#     -f docker-compose.infra.yml up -d elasticsearch clickhouse
+#   （api 需带上本文件重建一次以注入 env：up -d api）
+#
+# 端口策略：ES/CH 只在项目内网可达，不发布到宿主机（CH 的 8123/9000、
+# ES 的 9200 均不对公网/局域网开放，需要时走容器内或 SSH 隧道）。
+
+services:
+  elasticsearch:
+    image: elasticsearch:8.15.3
+    container_name: hemal-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    mem_limit: 1536m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://127.0.0.1:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: hemal-clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    mem_limit: 1536m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  api:
+    environment:
+      # 搜索：app/config.py 的 elasticsearch_url（HEMALL_ 前缀映射）
+      HEMALL_ELASTICSEARCH_URL: http://elasticsearch:9200
+      # 分析：app/config.py 的 clickhouse_url；为空时 AnalyticsService 纯 PG。
+      HEMALL_CLICKHOUSE_URL: http://clickhouse:8123
+
+volumes:
+  elasticsearch_data:
+  clickhouse_data:
