@@ -11,6 +11,14 @@
 #   （api 需带上本文件重建一次以注入 env：up -d api）
 #
 # 网络：必须挂 hemall-backend（mall-old 定义的服务网络），否则与 api 不通。
+#
+# 单节点运维注记（2026-10-21 实测）：
+#   - 本机 /data 长期 ~98% 满，ES 默认 95% 洪泛水位会拒绝分片分配（集群 red）。
+#     已在集群持久化设置里把水位改成绝对值：low 5gb / high 3gb /
+#     flood_stage 2gb（存于 ES 数据卷，重装 ES 需重设）。
+#   - 索引副本数：hemall_products / hemall_autocomplete 均已设 replicas=0
+#     （单节点副本无处分配，只会长期 yellow）；映射里默认仍是 1，
+#     删除索引重建后需再设一次。
 # 端口策略：ES/CH 只在项目内网可达，不发布到宿主机（CH 的 8123/9000、
 # ES 的 9200 均不对公网/局域网开放，需要时走容器内或 SSH 隧道）。
 
