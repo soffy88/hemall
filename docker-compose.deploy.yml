@@ -1,12 +1,12 @@
 services:
   api:
-    image: registry.sxueji.com/hemall/backend:0.6.1-prod
+    image: registry.sxueji.com/hemall/backend:0.6.2-prod
     environment:
       # VLM 截图填价通道 (宿主机 hemal-shotd, 令牌在 .env 插值, 不落明文)
       HEMALL_VLM_SCREENSHOT_URL: http://172.17.0.1:8799/shot
       HEMALL_VLM_SCREENSHOT_TOKEN: ${HEMALL_VLM_SCREENSHOT_TOKEN}
   web:
-    image: registry.sxueji.com/hemall/frontend:0.5.1-prod
+    image: registry.sxueji.com/hemall/frontend:0.5.2-prod
     environment:
       HEMALL_BACKEND_URL: http://hemal-api-1:8000
   caddy:
