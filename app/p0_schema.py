@@ -158,6 +158,35 @@ CREATE TRIGGER trg_hemall_wire_order_line_item
     BEFORE INSERT OR UPDATE OF batch_id, location_id, reservation_id
     ON order_line_item
     FOR EACH ROW EXECUTE FUNCTION hemall_wire_order_line_item();
+
+-- ── customer preorder / merchant reserve ──────────────────────────
+-- 客户预订: 无货也可下单。购物车行/订单行允许只绑变体不绑批次
+-- (batch_id 可空 + variant_id), 订单行用 preorder_qty 记未配货部分;
+-- 商家客户带 is_merchant 标记, 常购清单存 customer_reserve_list。
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE cart_line_item
+    ADD COLUMN IF NOT EXISTS variant_id UUID;
+ALTER TABLE cart_line_item
+    ALTER COLUMN batch_id DROP NOT NULL;
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS variant_id UUID;
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS preorder_qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE order_line_item
+    ALTER COLUMN batch_id DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS customer_reserve_list (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id UUID NOT NULL,
+    variant_id UUID NOT NULL,
+    default_qty INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_reserve_list_active
+    ON customer_reserve_list(customer_id, variant_id)
+    WHERE deleted_at IS NULL;
 """
 
 
