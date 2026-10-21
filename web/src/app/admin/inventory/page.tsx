@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
-import type { StockLocation, SalesChannel, PriceList } from '@/types/api';
+import type { StockLocation, SalesChannel, PriceList, InventoryBatch } from '@/types/api';
 import { errMessage } from '@/lib/errors';
 
 export default function InventorySettingsPage() {
@@ -18,6 +18,8 @@ export default function InventorySettingsPage() {
     }
     setOpsCtx((c) => ({ ...c, ...next }));
   }
+
+  const [batches, setBatches] = useState<InventoryBatch[]>([]);
 
   const [locations, setLocations] = useState<StockLocation[]>([]);
   const [channels, setChannels] = useState<SalesChannel[]>([]);
@@ -53,6 +55,25 @@ export default function InventorySettingsPage() {
   }
 
   useEffect(() => { load(); }, []);
+
+  // ── Batches / inspection ─────────────────────────────────────
+
+  function loadBatches() {
+    api.adminListBatches()
+      .then(setBatches)
+      .catch((e) => setError(errMessage(e)));
+  }
+
+  useEffect(() => { loadBatches(); }, []);
+
+  async function handleInspection(b: InventoryBatch, status: 'passed' | 'failed' | 'pending') {
+    try {
+      await api.updateBatchInspection(b.id, status);
+      loadBatches();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
 
   // ── Stock locations ──────────────────────────────────────────
 
@@ -428,6 +449,67 @@ export default function InventorySettingsPage() {
               </tr>
             ))}
             {priceLists.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-400">暂无价格表</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Batches / Inspection */}
+      <div className="flex items-center justify-between mb-3 mt-10">
+        <h2 className="text-lg font-semibold">批次质检</h2>
+        <button onClick={loadBatches} className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-sm">
+          刷新
+        </button>
+      </div>
+      <div className="overflow-x-auto mb-8">
+        <table className="w-full text-sm bg-white rounded-xl overflow-hidden border border-gray-200">
+          <thead className="bg-gray-50 text-left">
+            <tr>
+              <th className="px-4 py-2 font-medium text-gray-600">批次号</th>
+              <th className="px-4 py-2 font-medium text-gray-600">商品</th>
+              <th className="px-4 py-2 font-medium text-gray-600">仓位</th>
+              <th className="px-4 py-2 font-medium text-gray-600">库存（可用/总量）</th>
+              <th className="px-4 py-2 font-medium text-gray-600">状态</th>
+              <th className="px-4 py-2 font-medium text-gray-600">质检</th>
+              <th className="px-4 py-2 font-medium text-gray-600">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {batches.map((b) => (
+              <tr key={b.id}>
+                <td className="px-4 py-2 font-medium">{b.batch_no}</td>
+                <td className="px-4 py-2">
+                  {b.product_title}
+                  <span className="block text-xs text-gray-400">{b.sku_code || b.variant_id.slice(0, 8)}</span>
+                </td>
+                <td className="px-4 py-2">{b.location_name || '—'}</td>
+                <td className="px-4 py-2">{b.available_qty} / {b.stock_qty}</td>
+                <td className="px-4 py-2">
+                  <span className={`px-2 py-0.5 rounded text-xs ${b.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{b.status}</span>
+                </td>
+                <td className="px-4 py-2">
+                  {b.inspection_status === 'passed' && <span className="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">通过</span>}
+                  {b.inspection_status === 'pending' && <span className="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700">待检</span>}
+                  {b.inspection_status === 'failed' && <span className="px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">不通过</span>}
+                  {!['passed', 'pending', 'failed'].includes(b.inspection_status) && (
+                    <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{b.inspection_status}</span>
+                  )}
+                </td>
+                <td className="px-4 py-2">
+                  <div className="flex gap-2">
+                    {b.inspection_status !== 'passed' && (
+                      <button onClick={() => handleInspection(b, 'passed')} className="text-xs text-green-600 hover:underline">通过</button>
+                    )}
+                    {b.inspection_status !== 'failed' && (
+                      <button onClick={() => handleInspection(b, 'failed')} className="text-xs text-red-600 hover:underline">不通过</button>
+                    )}
+                    {b.inspection_status !== 'pending' && (
+                      <button onClick={() => handleInspection(b, 'pending')} className="text-xs text-gray-500 hover:underline">待检</button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {batches.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-gray-400">暂无批次</td></tr>}
           </tbody>
         </table>
       </div>

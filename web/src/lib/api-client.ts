@@ -3,6 +3,7 @@
 import type {
   Address,
   AdminPreorder,
+  InventoryBatch,
   AdminRegion,
   AgentCommandResult,
   AgentIngestResult,
@@ -578,6 +579,21 @@ export const api = {
   adminAllocatePreorder: (lineId: string) =>
     request<{ allocated: number; preorder_qty_left: number }>(`/admin/preorders/${lineId}/allocate`, {
       method: 'POST',
+    }, true),
+
+  // ── 后台：批次质检 ─────────────────────────────────────────
+
+  adminListBatches: (inspectionStatus?: string) =>
+    request<InventoryBatch[]>(
+      `/inventory/batches${inspectionStatus ? `?inspection_status=${encodeURIComponent(inspectionStatus)}` : ''}`,
+      {},
+      true,
+    ),
+
+  updateBatchInspection: (batchId: string, inspectionStatus: 'passed' | 'failed' | 'pending') =>
+    request<{ id: string; inspection_status: string }>(`/inventory/batches/${batchId}/inspection`, {
+      method: 'PATCH',
+      body: JSON.stringify({ inspection_status: inspectionStatus }),
     }, true),
 
   // ── 售后：RMA 客诉自助报案 ──────────────────────────────────
