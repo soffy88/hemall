@@ -9,6 +9,7 @@ import { useToast } from '@/components/Toast';
 import type {
   Customer,
   CustomerAddress,
+  CustomerPreorder,
   Order,
   RmaClaim,
   RefundReason,
@@ -63,6 +64,7 @@ export default function AccountPage() {
   const [profile, setProfile] = useState<Customer | null>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [preorders, setPreorders] = useState<CustomerPreorder[]>([]);
   const [claims, setClaims] = useState<RmaClaim[]>([]);
   const [refunds, setRefunds] = useState<RefundRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,10 +105,11 @@ export default function AccountPage() {
     }
     setLoading(true);
     try {
-      const [p, a, o, c, r] = await Promise.all([
+      const [p, a, o, po, c, r] = await Promise.all([
         api.customerMe(),
         api.customerMyAddresses(),
         api.customerMyOrders(),
+        api.customerMyPreorders(),
         api.customerMyClaims(),
         api.customerMyRefunds(),
       ]);
@@ -115,6 +118,7 @@ export default function AccountPage() {
       setPhone(p.phone || '');
       setAddresses(a);
       setOrders(o);
+      setPreorders(po);
       setClaims(c);
       setRefunds(r);
     } catch (e) {
@@ -355,6 +359,11 @@ export default function AccountPage() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-gray-600">
                           {li.product_title || li.variant_sku || '商品'} × {li.quantity}
+                          {(li.preorder_qty ?? 0) > 0 && (
+                            <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                              预订 ×{li.preorder_qty} 待配货
+                            </span>
+                          )}
                         </span>
                         <span className="flex gap-2 shrink-0">
                           {li.batch_id && !result && (
@@ -491,6 +500,40 @@ export default function AccountPage() {
             </div>
           ))}
           {orders.length === 0 && <div className="text-sm text-gray-400">暂无订单</div>}
+        </div>
+      </div>
+
+      {/* 我的预订：缺货预订的待配货进度 */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="font-semibold mb-3">我的预订</h2>
+        <div className="space-y-2">
+          {preorders.map((po) => (
+            <div key={po.line_id} className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2 text-sm">
+              {po.image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={po.image_url} alt={po.title} className="w-11 h-11 rounded-lg object-cover bg-white shrink-0" />
+              ) : (
+                <div className="w-11 h-11 rounded-lg flex items-center justify-center shrink-0 bg-gray-100">
+                  <span className="text-xl">📦</span>
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="truncate text-gray-800">{po.title}</div>
+                <div className="text-xs text-gray-400 mt-0.5">
+                  {new Date(po.created_at).toLocaleString('zh-CN')} · 订单状态 {po.order_status}
+                </div>
+              </div>
+              <span className="text-gray-500 shrink-0">× {po.quantity}</span>
+              {po.preorder_qty > 0 ? (
+                <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">
+                  待配货 ×{po.preorder_qty}
+                </span>
+              ) : (
+                <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">已配货</span>
+              )}
+            </div>
+          ))}
+          {preorders.length === 0 && <div className="text-sm text-gray-400">暂无预订，缺货商品也可直接下单预订。</div>}
         </div>
       </div>
 

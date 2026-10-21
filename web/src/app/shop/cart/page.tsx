@@ -162,6 +162,11 @@ export default function CartPage() {
                   )}
                 </p>
                 <p className="text-sm text-emerald-700 font-medium mt-1">{fmt(item.unit_price_cents)}</p>
+                {(item.preorder_qty_preview ?? 0) > 0 && (
+                  <p className="text-xs text-amber-600 mt-0.5">
+                    其中预订 ×{item.preorder_qty_preview}（到货后配货）
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <button

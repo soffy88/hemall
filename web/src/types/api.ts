@@ -134,6 +134,8 @@ export interface OrderLineItem {
   id: string;
   batch_id: string | null;
   quantity: number;
+  /** 该行中待配货的预订量（>0 表示部分/全部为缺货预订，到货后配货） */
+  preorder_qty: number;
   unit_price_cents: number;
   line_total_cents: number;
   product_title: string | null;
@@ -222,13 +224,16 @@ export interface Customer {
   created_at: string;
   order_count: number;
   total_spent_cents: number;
+  /** 商家账号标记：商家可用专属「商家预订」常购清单快速下单 */
+  is_merchant?: boolean;
 }
 
 // ── Cart types ──────────────────────────────────────────────────
 
 export interface CartLineItem {
   id: string;
-  batch_id: string;
+  batch_id: string | null;
+  variant_id: string | null;
   quantity: number;
   unit_price_cents: number;
   line_total_cents: number;
@@ -236,6 +241,8 @@ export interface CartLineItem {
   variant_sku: string | null;
   option_values: Record<string, string> | null;
   available_qty: number;
+  /** 本行中超出可用库存的预订量预览（= max(0, quantity - available_qty)） */
+  preorder_qty_preview: number;
 }
 
 export interface CartDiscount {
@@ -269,6 +276,61 @@ export interface Cart {
   line_items: CartLineItem[];
   discounts: CartDiscount[];
   gift_cards: CartGiftCard[];
+}
+
+// ── 客户预订 ────────────────────────────────────────────────────
+
+/** 我的预订一行：某订单行中尚未配齐的预订量 */
+export interface CustomerPreorder {
+  order_id: string;
+  order_status: string;
+  line_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  quantity: number;
+  preorder_qty: number;
+  created_at: string;
+}
+
+/** 商家常购清单一行 */
+export interface MerchantReserveItem {
+  id: string;
+  variant_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  price_cents: number;
+  available_qty: number;
+  default_qty: number;
+}
+
+export interface MerchantReserveOrderLine {
+  variant_id: string;
+  title: string;
+  quantity: number;
+  reserved_qty: number;
+  preorder_qty: number;
+}
+
+export interface MerchantReserveOrderResult {
+  order_id: string;
+  grand_total_cents: number;
+  lines: MerchantReserveOrderLine[];
+}
+
+/** 后台待配货预订一行 */
+export interface AdminPreorder {
+  line_id: string;
+  order_id: string;
+  customer_id: string;
+  customer_name: string;
+  product_id: string;
+  title: string;
+  quantity: number;
+  preorder_qty: number;
+  available_qty_now: number;
+  created_at: string;
 }
 
 // ── Dashboard KPI ───────────────────────────────────────────────

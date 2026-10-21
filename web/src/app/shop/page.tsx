@@ -107,6 +107,10 @@ export default function ShopPage() {
   }
 
   function addToCart(p: StorefrontProduct) {
+    if ((p.total_stock ?? 0) === 0) {
+      showToast(`可预订（缺货）: ${p.title}，点开详情即可预订`);
+      return;
+    }
     showToast(`已加入购物车: ${p.title}`);
   }
 
@@ -210,9 +214,9 @@ export default function ShopPage() {
                         </span>
                       )}
                       {stock === 0 && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-sm font-black text-white">
-                          售罄
-                        </div>
+                        <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-black text-white">
+                          缺货可预订
+                        </span>
                       )}
                     </div>
                   </Link>
@@ -240,10 +244,11 @@ export default function ShopPage() {
                     <button
                       type="button"
                       onClick={() => addToCart(p)}
-                      disabled={stock === 0}
-                      className="mt-1.5 w-full rounded-lg bg-emerald-600 py-1.5 text-[13px] font-bold text-white transition active:scale-95 disabled:bg-gray-200 disabled:text-gray-400"
+                      className={`mt-1.5 w-full rounded-lg py-1.5 text-[13px] font-bold text-white transition active:scale-95 ${
+                        stock === 0 ? 'bg-amber-500' : 'bg-emerald-600'
+                      }`}
                     >
-                      {stock === 0 ? '已售罄' : '+ 加购'}
+                      {stock === 0 ? '预订' : '+ 加购'}
                     </button>
                   </div>
                 </div>
