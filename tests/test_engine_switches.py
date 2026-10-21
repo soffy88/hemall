@@ -41,6 +41,40 @@ def test_defaults_keep_real_engines() -> None:
     assert ext.market_maker.task_list
 
 
+async def test_spider_listing_disabled_placeholder() -> None:
+    ext = build_ext_oservi(None, Settings(engine_spider_listing_enabled=False))
+
+    assert ext.spider_listing.task_list == []
+    assert await ext.spider_listing.run_once() == []
+    assert ext.spider_listing.name == "ext-spider-listing"
+    # 没关的引擎保持真实装配
+    assert ext.competitor_spider.task_list
+
+
+def test_spider_listing_settings_defaults() -> None:
+    settings = Settings()
+    assert settings.engine_spider_listing_enabled is True
+    assert settings.spider_listing_keywords == [
+        "草莓",
+        "牛奶",
+        "鸡蛋",
+        "牛肉",
+        "大米",
+        "苹果",
+        "西红柿",
+        "食用油",
+    ]
+    assert settings.spider_listing_max_per_keyword == 5
+    assert settings.spider_listing_default_stock == 30
+    # 截图服务默认未配置: 填价段整段跳过, 不假装能填价
+    assert settings.vlm_screenshot_url == ""
+    assert settings.vlm_screenshot_token == ""
+
+    ext = build_ext_oservi(None, settings)
+    assert ext.spider_listing.task_list
+    assert ext.spider_listing.trigger == {"on_cron": "30 4 * * *"}
+
+
 def test_vlm_settings_defaults() -> None:
     settings = Settings()
     assert settings.default_vlm_provider == "ollama"

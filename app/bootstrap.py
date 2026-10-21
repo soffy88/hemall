@@ -32,8 +32,8 @@ from .ext.payout_provider import ManualPaymentGateway, ManualPayoutProvider
 from .ext.schema import ensure_ext_schema
 from .ext.spider_provider import ManualSpiderProvider
 from .ext.spider_targets import LayeredSpiderProvider
-from .ext.vlm_provider import ManualVLMProvider
 from .ext.vlm_ollama_provider import OllamaVLMProvider
+from .ext.vlm_provider import ManualVLMProvider
 from .ext.weather_provider import ManualWeatherProvider
 from .ext.wechat_provider import ManualWeChatChannelProvider
 

@@ -49,6 +49,7 @@ from .oservi import (
     build_sla_promise_engine,
     build_social_broadcast_engine,
     build_spatial_fomo_engine,
+    build_spider_listing_engine,
     build_tote_balancing_engine,
     build_weather_arbitrage_engine,
     build_wechat_cert_rotation_engine,
@@ -100,6 +101,7 @@ class ExtOservi:
     affiliate_settlement: CronSchedulerEngine
     inventory_decay: CronSchedulerEngine
     competitor_spider: CronSchedulerEngine
+    spider_listing: CronSchedulerEngine
     sla_promise: CronSchedulerEngine
     sla_compensation: CronSchedulerEngine
     wechat_cert_rotation: CronSchedulerEngine
@@ -120,6 +122,7 @@ class ExtOservi:
             self.affiliate_settlement,
             self.inventory_decay,
             self.competitor_spider,
+            self.spider_listing,
             self.sla_promise,
             self.sla_compensation,
             self.wechat_cert_rotation,
@@ -196,6 +199,10 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     if not settings.engine_spider_enabled:
         # 开关关闭: 同 market_maker, 空任务占位
         competitor_spider = _disabled_engine("ext-competitor-spider")
+    spider_listing = build_spider_listing_engine(pool, settings=settings)
+    if not settings.engine_spider_listing_enabled:
+        # 开关关闭: 同 competitor_spider, 空任务占位
+        spider_listing = _disabled_engine("ext-spider-listing")
     sla_promise = build_sla_promise_engine(pool, settings=settings)
     sla_compensation = build_sla_compensation_engine(pool, settings=settings)
     wechat_cert_rotation = build_wechat_cert_rotation_engine(pool, settings=settings)
@@ -220,6 +227,7 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         affiliate_settlement=affiliate_settlement,
         inventory_decay=inventory_decay,
         competitor_spider=competitor_spider,
+        spider_listing=spider_listing,
         sla_promise=sla_promise,
         sla_compensation=sla_compensation,
         wechat_cert_rotation=wechat_cert_rotation,

@@ -259,6 +259,28 @@ class Settings(BaseSettings):
     engine_spider_enabled: bool = True
     engine_market_maker_enabled: bool = True
 
+    # ── 蜘蛛自动上架 + VLM 截图填价 (spider_listing 引擎) ────────────
+    # 价格不再走源站价格接口 (实测三源都无价): 蜘蛛抓商品本体 (标题/图片/
+    # 介绍) 先以 draft 上架, 再由截图服务截详情页、本地 VLM 看图读价填价。
+    engine_spider_listing_enabled: bool = True
+    spider_listing_keywords: list[str] = [
+        "草莓",
+        "牛奶",
+        "鸡蛋",
+        "牛肉",
+        "大米",
+        "苹果",
+        "西红柿",
+        "食用油",
+    ]
+    spider_listing_max_per_keyword: int = 5
+    spider_listing_default_stock: int = 30
+    # 截图服务 (宿主机侧另建): GET {vlm_screenshot_url}?url=<urlencoded> 带
+    # X-Shot-Token 头 → 200 image/png。空串 = 未配置, 填价段整段跳过
+    # (上架段照常跑; 补好服务地址后下一轮 tick 自动补价)。
+    vlm_screenshot_url: str = ""
+    vlm_screenshot_token: str = ""
+
     # ── 限流 (公开端点令牌桶) ──────────────────────────────────────────
     # 前置可信反代到公网之间的层数; >0 时按 X-Forwarded-For 倒数第 N 跳取真实
     # 对端 IP 做限流键。0 = 直连 (只认 ASGI 对端)。无可信反代切勿开启 (XFF 可伪造)。

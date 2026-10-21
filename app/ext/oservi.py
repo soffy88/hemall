@@ -87,13 +87,16 @@ from .oprim import (
     ext_pay_transfer,
     ext_weather_forecast,
     spider_fetch_competitor_prices,
+    spider_fetch_products,
     vlm_assess_damage,
+    vlm_extract_price,
 )
 from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
 from .oskill import (
     SLA_COMPENSATION_CENTS,
     WAVE_SHIPPING_PRICE_CENTS,
     adjust_demand_curve_by_weather,
+    build_default_vwap_curve,
     calculate_broadcast_priority,
     calculate_decay_price,
     calculate_next_probe_price,
@@ -1723,4 +1726,490 @@ def build_wechat_cert_rotation_engine(pool: Any, settings: Settings) -> CronSche
         trigger={"on_cron": "0 */12 * * *"},
         config={"interval_seconds": 43200},
         name="ext-wechat-cert-rotation",
+    )
+
+
+# ── 蜘蛛自动上架 + VLM 截图填价 ──────────────────────────────────────
+
+#: 自动上架来源短名 (进 product.slug / variant.sku_code 幂等键)。
+_SPIDER_LISTING_SOURCES = ("suning", "off")
+
+#: 标题关键词 → 分类名映射 (按顺序优先匹配; 分类名不在库里时整条跳过)。
+#: 顺序按"具体品类先于泛品类": 蛋糕先归乳品烘焙而不是被"蛋"带去肉禽蛋,
+#: 果汁先归酒水饮料而不是时令水果。库里实际分类以 product_category 为准
+#: (种子: 蔬菜豆品/时令水果/肉禽蛋/粮油调味/乳品烘焙/冷冻速食/休闲零食/
+#: 酒水饮料/日用百货), 映射不到时归库里第一个分类。
+_SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("冷冻速食", ("速冻", "冷冻", "冰淇淋", "冰激凌", "雪糕", "汤圆", "水饺", "馄饨")),
+    (
+        "酒水饮料",
+        (
+            "白酒",
+            "啤酒",
+            "红酒",
+            "葡萄酒",
+            "饮料",
+            "可乐",
+            "雪碧",
+            "果汁",
+            "矿泉水",
+            "纯净水",
+            "苏打水",
+            "气泡水",
+            "咖啡",
+            "茶饮",
+        ),
+    ),
+    (
+        "乳品烘焙",
+        (
+            "牛奶",
+            "酸奶",
+            "奶酪",
+            "芝士",
+            "黄油",
+            "奶油",
+            "鲜奶",
+            "豆奶",
+            "豆浆",
+            "面包",
+            "蛋糕",
+            "吐司",
+            "烘焙",
+        ),
+    ),
+    (
+        "肉禽蛋",
+        (
+            "牛肉",
+            "猪肉",
+            "羊肉",
+            "鸡肉",
+            "鸭肉",
+            "鲜鱼",
+            "虾",
+            "蟹",
+            "牛排",
+            "排骨",
+            "鸡蛋",
+            "鸭蛋",
+            "鹅蛋",
+            "皮蛋",
+            "咸蛋",
+            "火腿",
+            "香肠",
+            "腊肉",
+            "海鲜",
+        ),
+    ),
+    (
+        "时令水果",
+        (
+            "苹果",
+            "草莓",
+            "香蕉",
+            "橙子",
+            "柑橘",
+            "橘子",
+            "梨",
+            "桃子",
+            "葡萄",
+            "西瓜",
+            "芒果",
+            "榴莲",
+            "蓝莓",
+            "樱桃",
+            "车厘子",
+            "猕猴桃",
+            "柠檬",
+            "柚子",
+            "水果",
+            "鲜果",
+        ),
+    ),
+    (
+        "蔬菜豆品",
+        (
+            "西红柿",
+            "番茄",
+            "土豆",
+            "黄瓜",
+            "萝卜",
+            "茄子",
+            "辣椒",
+            "豆腐",
+            "豆芽",
+            "豆皮",
+            "菌菇",
+            "蘑菇",
+            "菠菜",
+            "白菜",
+            "南瓜",
+            "蔬菜",
+            "青菜",
+            "玉米",
+            "红薯",
+            "山药",
+            "莲藕",
+        ),
+    ),
+    (
+        "粮油调味",
+        (
+            "大米",
+            "小米",
+            "面粉",
+            "食用油",
+            "橄榄油",
+            "花生油",
+            "菜籽油",
+            "酱油",
+            "陈醋",
+            "香醋",
+            "调味",
+            "五谷",
+            "杂粮",
+            "燕麦",
+            "挂面",
+            "糯米",
+            "红豆",
+            "绿豆",
+            "食盐",
+            "白糖",
+        ),
+    ),
+    (
+        "休闲零食",
+        (
+            "零食",
+            "饼干",
+            "薯片",
+            "巧克力",
+            "糖果",
+            "坚果",
+            "瓜子",
+            "辣条",
+            "果冻",
+            "膨化",
+            "蜜饯",
+            "话梅",
+            "方便面",
+            "肉脯",
+            "海苔",
+        ),
+    ),
+    (
+        "日用百货",
+        (
+            "纸巾",
+            "卫生纸",
+            "牙膏",
+            "牙刷",
+            "洗发",
+            "沐浴露",
+            "洗衣液",
+            "洗洁精",
+            "毛巾",
+            "口罩",
+            "垃圾袋",
+            "电池",
+            "湿巾",
+            "抽纸",
+        ),
+    ),
+)
+
+
+def _map_spider_listing_category(title: str, categories: list[dict[str, Any]]) -> Any:
+    """按标题关键词把外部商品映射到库里已有分类 id; 映射不到返回 None。"""
+    by_name = {str(c.get("name") or ""): c.get("id") for c in categories}
+    for cat_name, keywords in _SPIDER_LISTING_CATEGORY_RULES:
+        if cat_name in by_name and any(kw in title for kw in keywords):
+            return by_name[cat_name]
+    return None
+
+
+def build_spider_listing_engine(
+    pool: Any,
+    *,
+    settings: Settings,
+    spider_provider: str = "layered",
+) -> CronSchedulerEngine:
+    """蜘蛛自动上架 + VLM 截图填价引擎 (on_cron, 每日 04:30)。
+
+    Soffy 指令: 价格不再走源站价格接口 (苏宁价格 JSONP 只回信封、京东
+    到家 JS 壳、OFP 价格字段覆盖率近零——三源实测都无价)。改为两段:
+
+      填价段 (先行, 补历史未定价): 未定价集合 = slug LIKE 'ext-%' 且无
+      active 批次的商品。逐个拿 variant option_values 里的 detail_url
+      调截图服务 (settings.vlm_screenshot_url, GET ?url= 带 X-Shot-Token
+      → PNG), oprim.vlm_extract_price 让本地 VLM 看截图读价; 校验
+      (非空、0.01<=价<=99999、confidence>=0.5) 通过后一个事务里建
+      inventory_batch (active 库位按商品序轮转、默认库存、成本=售价
+      60%、72h vwap 消化曲线、media=商品图) + product 翻 published +
+      price_benchmark 落一行 (source_type='spider_vlm')。
+      vlm_screenshot_url 未配置 (空串) 时整段跳过, tick 里
+      skipped_no_screenshot=True 留痕, 等服务配好下一轮自动补价。
+
+      上架段: 遍历 settings.spider_listing_keywords, 每词调
+      oprim.spider_fetch_products 抓商品本体 (标题/图片/介绍/详情页),
+      取前 spider_listing_max_per_keyword 个未上架新品。幂等键
+      product.slug = "ext-{source}-{source_id}" (source: suning/off),
+      variant sku_code = "EXT-{source}-{source_id}"; option_values 记
+      {"来源", "detail_url", "source_id", "image_url"} 供填价段回读;
+      reference_price_cents 留 NULL (未定价不用 0 冒充); description =
+      介绍 + "\\n来源:{store} {detail_url}"; 分类按标题关键词映射既有
+      分类名, 映射不到归第一个分类。
+
+    状态选择 (storefront 行为核查结论): queries.list_storefront_products
+    与 get_storefront_product 都硬性要求 status='published' 且
+    total_stock>0 (存在有可用量的 active 批次), 加购/结算也只认批次——
+    无批次商品在前台既不展示也买不了 (天然"已建档不可购买")。因此新品
+    直接以 draft 建档, 只是多一层保险: 后台/报表口径里未定价商品不会
+    混进 published 集合; 填价建批次后才翻 published 正式开卖。
+
+    单品失败 try/except 计数不中断整轮; tick 返回
+    {"listed", "priced", "skipped_no_screenshot", "failed"}。
+    """
+
+    async def _price_one(row: dict[str, Any], location_id: Any, stats: dict[str, Any]) -> None:
+        import json
+
+        import httpx
+        from obase.uuid7 import uuid7
+
+        option_values = row.get("option_values") or {}
+        if isinstance(option_values, str):
+            try:
+                option_values = json.loads(option_values)
+            except (json.JSONDecodeError, ValueError):
+                option_values = {}
+        detail_url = str(option_values.get("detail_url") or "")
+        image_url = str(option_values.get("image_url") or "")
+        store = str(option_values.get("来源") or "")
+        if not detail_url:
+            raise ValueError("spider listing: variant option_values missing detail_url")
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(
+                settings.vlm_screenshot_url,
+                params={"url": detail_url},
+                headers={"X-Shot-Token": settings.vlm_screenshot_token},
+            )
+            resp.raise_for_status()
+            png = resp.content
+        verdict = await vlm_extract_price(settings.default_vlm_provider, image_bytes=png)
+        price_yuan = verdict.get("price_yuan")
+        confidence = float(verdict.get("confidence") or 0.0)
+        if price_yuan is None or not (0.01 <= float(price_yuan) <= 99999) or confidence < 0.5:
+            raise ValueError(f"spider listing: vlm price not usable: {verdict}")
+
+        retail = int(round(float(price_yuan) * 100))
+        cost = int(round(retail * 0.6))
+        stock_qty = int(settings.spider_listing_default_stock)
+        batch_no = (
+            f"EXT-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{str(uuid7()).replace('-', '')[:8]}"
+        )
+        media_json = json.dumps([image_url] if image_url else [])
+        curve_json = json.dumps(build_default_vwap_curve(stock_qty))
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    'INSERT INTO "inventory_batch" '
+                    "(id, variant_id, location_id, batch_no, video_url, "
+                    "cost_price_cents, retail_price_cents, stock_qty, currency, "
+                    "media_assets, shelf_image_url, vwap_target_curve, status) "
+                    "VALUES ($1, $2, $3, $4, '', $5, $6, $7, 'CNY', "
+                    "$8::jsonb, $8::jsonb, $9::jsonb, 'active')",
+                    uuid7(),
+                    row["variant_id"],
+                    location_id,
+                    batch_no,
+                    cost,
+                    retail,
+                    stock_qty,
+                    media_json,
+                    curve_json,
+                )
+                await conn.execute(
+                    "UPDATE \"product\" SET status = 'published' WHERE id = $1",
+                    row["product_id"],
+                )
+                await conn.execute(
+                    'INSERT INTO "price_benchmark" '
+                    "(id, variant_id, raw_item_name, source_type, competitor_name, "
+                    " raw_price_cents, raw_unit, normalized_price_per_unit) "
+                    "VALUES ($1, $2, $3, 'spider_vlm', $4, $5, 'item', NULL)",
+                    uuid7(),
+                    row["variant_id"],
+                    str(row.get("title") or "")[:128],
+                    store[:64],
+                    retail,
+                )
+        stats["priced"] += 1
+
+    async def _price_pending(stats: dict[str, Any]) -> None:
+        rows = await db_query_many(
+            pool,
+            sql=(
+                "SELECT p.id AS product_id, p.title AS title, "
+                "v.id AS variant_id, v.option_values AS option_values "
+                'FROM "product" p '
+                'JOIN "product_variant" v ON v.product_id = p.id '
+                "AND v.status = 'active' AND v.deleted_at IS NULL "
+                "WHERE p.deleted_at IS NULL AND p.slug LIKE 'ext-%' "
+                "AND NOT EXISTS ("
+                'SELECT 1 FROM "inventory_batch" b '
+                "WHERE b.variant_id = v.id AND b.status = 'active' "
+                "AND b.deleted_at IS NULL"
+                ") "
+                "ORDER BY p.created_at"
+            ),
+        )
+        if not rows:
+            return
+        locations = await db_query_many(
+            pool,
+            sql=("SELECT id FROM \"stock_location\" WHERE status = 'active' ORDER BY created_at"),
+        )
+        if not locations:
+            stats["failed"] += len(rows)
+            logger.warning(
+                "spider listing: %d unpriced products but no active stock_location",
+                len(rows),
+            )
+            return
+        for idx, row in enumerate(rows):
+            try:
+                await _price_one(row, locations[idx % len(locations)]["id"], stats)
+            except Exception as exc:  # noqa: BLE001 - 单品填价失败不中断整轮
+                stats["failed"] += 1
+                logger.warning(
+                    "spider listing price failed product=%s: %s",
+                    row.get("product_id"),
+                    exc,
+                )
+
+    async def _create_listing(
+        item: dict[str, Any],
+        *,
+        slug: str,
+        categories: list[dict[str, Any]],
+        fallback_category_id: Any,
+    ) -> None:
+        import json
+
+        source = str(item.get("source") or "")
+        source_id = str(item.get("source_id") or "")
+        title = str(item.get("item") or "").strip()[:120]
+        store = str(item.get("store") or "")
+        detail_url = str(item.get("detail_url") or "")
+        image_url = str(item.get("image_url") or "")
+        intro = str(item.get("description") or "").strip()
+        description = (f"{intro}\n" if intro else "") + f"来源：{store} {detail_url}"
+        category_id = _map_spider_listing_category(title, categories) or fallback_category_id
+        option_values = {
+            "来源": store,
+            "detail_url": detail_url,
+            "source_id": source_id,
+            "image_url": image_url,
+        }
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                pid = await conn.fetchval(
+                    'INSERT INTO "product" (id, title, slug, description, category_id, status) '
+                    "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'draft') RETURNING id",
+                    title,
+                    slug,
+                    description,
+                    category_id,
+                )
+                await conn.fetchval(
+                    'INSERT INTO "product_variant" (id, product_id, sku_code, option_values, '
+                    "reference_price_cents, status) "
+                    "VALUES (gen_random_uuid(), $1, $2, $3::jsonb, NULL, 'active') RETURNING id",
+                    pid,
+                    f"EXT-{source}-{source_id}"[:128],
+                    json.dumps(option_values, ensure_ascii=False),
+                )
+
+    async def _list_new(stats: dict[str, Any]) -> None:
+        categories = await db_query_many(
+            pool,
+            sql=(
+                'SELECT id, name FROM "product_category" '
+                "WHERE deleted_at IS NULL ORDER BY created_at"
+            ),
+        )
+        fallback_category_id = categories[0]["id"] if categories else None
+        for keyword in settings.spider_listing_keywords:
+            try:
+                products = await spider_fetch_products(spider_provider, keywords=[keyword])
+            except Exception as exc:  # noqa: BLE001 - 单关键词抓取失败不中断整轮
+                stats["failed"] += 1
+                logger.warning("spider listing fetch failed keyword=%s: %s", keyword, exc)
+                continue
+            taken = 0
+            for item in products:
+                if taken >= settings.spider_listing_max_per_keyword:
+                    break
+                source = str(item.get("source") or "")
+                source_id = str(item.get("source_id") or "").strip()
+                title = str(item.get("item") or "").strip()
+                if source not in _SPIDER_LISTING_SOURCES or not source_id or not title:
+                    continue
+                slug = f"ext-{source}-{source_id}"[:128]
+                existing = await db_query_one(
+                    pool,
+                    sql='SELECT id FROM "product" WHERE slug = $1',
+                    params=(slug,),
+                )
+                if existing:
+                    continue
+                try:
+                    await _create_listing(
+                        item,
+                        slug=slug,
+                        categories=categories,
+                        fallback_category_id=fallback_category_id,
+                    )
+                    stats["listed"] += 1
+                    taken += 1
+                except Exception as exc:  # noqa: BLE001 - 单品上架失败不中断整轮
+                    stats["failed"] += 1
+                    logger.warning("spider listing create failed slug=%s: %s", slug, exc)
+
+    async def spider_listing_tick(**_: Any) -> dict[str, Any]:
+        stats: dict[str, Any] = {
+            "listed": 0,
+            "priced": 0,
+            "skipped_no_screenshot": False,
+            "failed": 0,
+        }
+        # 填价段先行: 先把历史未定价商品补上价开卖, 再抓新品建档。
+        if settings.vlm_screenshot_url:
+            try:
+                await _price_pending(stats)
+            except Exception as exc:  # noqa: BLE001 - 填价段整体失败不拖垮上架段
+                stats["failed"] += 1
+                logger.warning("spider listing pricing phase failed: %s", exc)
+        else:
+            stats["skipped_no_screenshot"] = True
+        await _list_new(stats)
+        return stats
+
+    spider_listing_tick.__name__ = "spider_listing_tick"
+
+    async def spider_listing_tick_logged(**_: Any) -> dict[str, Any]:
+        result = await spider_listing_tick()
+        logger.info("spider listing engine tick: %s", result)
+        return result
+
+    spider_listing_tick_logged.__name__ = "spider_listing_tick_logged"
+
+    return CronSchedulerEngine(
+        tasks=[spider_listing_tick_logged],
+        trigger={"on_cron": "30 4 * * *"},
+        config={"interval_seconds": 86400},
+        name="ext-spider-listing",
     )

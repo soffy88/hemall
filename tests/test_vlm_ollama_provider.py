@@ -136,18 +136,14 @@ class TestIdentifyProduct:
             await _provider().identify_product(image_bytes=b"x")
 
     async def test_empty_title_raises(self) -> None:
-        _FakeAsyncClient.next_post_response = _chat(
-            json.dumps({"title": "", "confidence": 0.1})
-        )
+        _FakeAsyncClient.next_post_response = _chat(json.dumps({"title": "", "confidence": 0.1}))
 
         with pytest.raises(ValueError):
             await _provider().identify_product(image_bytes=b"x")
 
     async def test_keywords_string_coerced_and_confidence_clamped(self) -> None:
         _FakeAsyncClient.next_post_response = _chat(
-            json.dumps(
-                {"title": "黄瓜", "keywords": "黄瓜，蔬菜、鲜蔬", "confidence": 1.4}
-            )
+            json.dumps({"title": "黄瓜", "keywords": "黄瓜，蔬菜、鲜蔬", "confidence": 1.4})
         )
 
         result = await _provider().identify_product(image_bytes=b"x")
@@ -174,9 +170,7 @@ class TestAssessDamage:
         img = tmp_path / "evidence.jpg"
         img.write_bytes(b"evidence-bytes")
         _FakeAsyncClient.next_post_response = _chat(
-            json.dumps(
-                {"damage_type": "破损", "severity": 1.7, "fraud_probability": 0.05}
-            )
+            json.dumps({"damage_type": "破损", "severity": 1.7, "fraud_probability": 0.05})
         )
 
         result = await _provider().assess_damage(
@@ -201,9 +195,7 @@ class TestAssessDamage:
     async def test_http_url_evidence_downloaded(self) -> None:
         _FakeAsyncClient.next_get_response = _FakeResponse(content=b"remote-img")
         _FakeAsyncClient.next_post_response = _chat(
-            json.dumps(
-                {"damage_type": "none", "severity": 0.0, "fraud_probability": 0.0}
-            )
+            json.dumps({"damage_type": "none", "severity": 0.0, "fraud_probability": 0.0})
         )
 
         result = await _provider().assess_damage(
@@ -215,15 +207,11 @@ class TestAssessDamage:
         assert sent == [base64.b64encode(b"remote-img").decode("ascii")]
 
     async def test_media_path_maps_under_output_root(self, tmp_path) -> None:
-        media_file = (
-            tmp_path / "ext_bespoke" / "agent_ingest" / "agent_ingest" / "u1" / "e.jpg"
-        )
+        media_file = tmp_path / "ext_bespoke" / "agent_ingest" / "agent_ingest" / "u1" / "e.jpg"
         media_file.parent.mkdir(parents=True)
         media_file.write_bytes(b"media-img")
         _FakeAsyncClient.next_post_response = _chat(
-            json.dumps(
-                {"damage_type": "挤压变形", "severity": 0.4, "fraud_probability": 0.1}
-            )
+            json.dumps({"damage_type": "挤压变形", "severity": 0.4, "fraud_probability": 0.1})
         )
 
         provider = _provider(output_root=tmp_path)
@@ -235,26 +223,103 @@ class TestAssessDamage:
         assert result["severity"] == pytest.approx(0.4)
 
 
+class TestExtractPrice:
+    async def test_parses_numeric_price(self) -> None:
+        _FakeAsyncClient.next_post_response = _chat(
+            json.dumps({"price_yuan": 29.9, "price_text": "¥29.90", "confidence": 0.92})
+        )
+
+        result = await _provider().extract_price(image_bytes=b"shot")
+
+        assert result == {
+            "price_yuan": 29.9,
+            "price_text": "¥29.90",
+            "confidence": pytest.approx(0.92),
+        }
+
+    async def test_parses_string_price_with_symbols(self) -> None:
+        _FakeAsyncClient.next_post_response = _chat(
+            json.dumps({"price_yuan": "¥1,299.00", "price_text": "¥1299", "confidence": 0.8})
+        )
+
+        result = await _provider().extract_price(image_bytes=b"shot")
+        assert result["price_yuan"] == 1299.0
+
+    async def test_no_price_returns_none_without_raising(self) -> None:
+        _FakeAsyncClient.next_post_response = _chat(
+            json.dumps({"price_yuan": None, "price_text": "", "confidence": 0.15})
+        )
+
+        result = await _provider().extract_price(image_bytes=b"shot")
+        assert result["price_yuan"] is None
+        assert result["confidence"] == pytest.approx(0.15)
+
+    async def test_garbage_confidence_degrades_to_zero(self) -> None:
+        _FakeAsyncClient.next_post_response = _chat(
+            json.dumps({"price_yuan": 10, "price_text": "¥10", "confidence": "高"})
+        )
+
+        result = await _provider().extract_price(image_bytes=b"shot")
+        assert result["price_yuan"] == 10.0
+        assert result["confidence"] == 0.0
+
+    async def test_network_error_raises(self) -> None:
+        _FakeAsyncClient.next_post_error = httpx.ConnectError("down")
+
+        with pytest.raises(httpx.ConnectError):
+            await _provider().extract_price(image_bytes=b"shot")
+
+    async def test_empty_image_raises(self) -> None:
+        with pytest.raises(ValueError):
+            await _provider().extract_price(image_bytes=b"")
+
+
 class TestOprimRouting:
     async def test_oprim_routes_through_registry(self) -> None:
         from obase.provider_registry import ProviderRegistry
 
-        sentinel = {"title": "测试商品", "category_hint": "", "description": "",
-                    "keywords": [], "confidence": 0.5}
+        sentinel = {
+            "title": "测试商品",
+            "category_hint": "",
+            "description": "",
+            "keywords": [],
+            "confidence": 0.5,
+        }
 
         class _FakeVLM:
             async def identify_product(self, *, image_bytes: bytes) -> dict[str, Any]:
                 return dict(sentinel)
 
-            async def same_product(
-                self, *, image_a: bytes, image_b: bytes
-            ) -> dict[str, Any]:
+            async def same_product(self, *, image_a: bytes, image_b: bytes) -> dict[str, Any]:
                 return {"same": True, "confidence": 1.0, "reason": "fake"}
 
-        ProviderRegistry.get().register_generic(
-            "vlm", "unit-test", _FakeVLM(), replace=True
-        )
+        ProviderRegistry.get().register_generic("vlm", "unit-test", _FakeVLM(), replace=True)
 
         assert await oprim.vlm_identify_product("unit-test", image_bytes=b"x") == sentinel
         verdict = await oprim.vlm_same_product("unit-test", image_a=b"a", image_b=b"b")
         assert verdict["same"] is True
+
+    async def test_oprim_extract_price_routes_through_registry(self) -> None:
+        from obase.provider_registry import ProviderRegistry
+
+        class _FakeVLM:
+            async def extract_price(self, *, image_bytes: bytes) -> dict[str, Any]:
+                assert image_bytes == b"png"
+                return {"price_yuan": 12.5, "price_text": "¥12.5", "confidence": 0.9}
+
+        ProviderRegistry.get().register_generic("vlm", "unit-test-price", _FakeVLM(), replace=True)
+
+        result = await oprim.vlm_extract_price("unit-test-price", image_bytes=b"png")
+        assert result["price_yuan"] == 12.5
+
+    async def test_oprim_spider_fetch_products_routes_through_registry(self) -> None:
+        from obase.provider_registry import ProviderRegistry
+
+        class _FakeSpider:
+            async def fetch_products(self, *, keywords: list[str]) -> list[dict[str, Any]]:
+                return [{"item": f"kw:{keywords[0]}", "source_id": "1"}]
+
+        ProviderRegistry.get().register_generic("spider", "unit-test", _FakeSpider(), replace=True)
+
+        items = await oprim.spider_fetch_products("unit-test", keywords=["草莓"])
+        assert items[0]["item"] == "kw:草莓"

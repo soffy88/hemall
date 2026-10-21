@@ -855,19 +855,11 @@ def _normalize_title(title: str) -> str:
 
 
 def _default_vwap_curve_json(stock_qty: int) -> str:
-    """拍照上架批次的默认做市曲线: 72 小时线性消化 stock_qty。
+    """拍照上架批次的默认做市曲线 (JSON 串)。曲线本体在 oskill
+    build_default_vwap_curve, 与蜘蛛自动上架共用同一条 72h 消化曲线。"""
+    from .oskill import build_default_vwap_curve
 
-    格式与 oskill.calculate_vwap_deviation 的契约一致
-    ({"expected_cumulative": [按小时累计销量], "stddev": 正数}), 让新批次
-    从出生就被 market_maker 引擎联动调价。
-    """
-    qty = max(int(stock_qty), 0)
-    return json.dumps(
-        {
-            "expected_cumulative": [round(qty * (i + 1) / 72) for i in range(72)],
-            "stddev": max(2.0, qty * 0.15),
-        }
-    )
+    return json.dumps(build_default_vwap_curve(stock_qty))
 
 
 def _row_value(row: Any, key: str) -> Any:
@@ -934,7 +926,7 @@ def _read_ingest_media(out_root: Path, ref: str) -> bytes | None:
 
 async def _identify_uploaded_image(
     image_bytes: bytes,
-) -> "tuple[dict[str, Any] | None, str]":
+) -> tuple[dict[str, Any] | None, str]:
     """调当前默认 VLM provider 识别上传图; 返回 (识别结果|None, provider 名)。
 
     任何失败 (provider 无此能力/模型不可达/输出不可解析) 都返回 (None, name),
@@ -960,7 +952,7 @@ async def _match_existing_product(
     new_image: bytes,
     identified_title: str,
     provider: str,
-) -> "tuple[str, str, str, str, float | None] | None":
+) -> tuple[str, str, str, str, float | None] | None:
     """以图更新匹配: 在 published 商品里找"同一件商品"。
 
     先按标题归一化 (去空格/标点后相等或互含) 收候选 (≤5 个), 再逐个判定:
@@ -983,12 +975,8 @@ async def _match_existing_product(
     for row in rows:
         ptitle = str(_row_value(row, "title") or "")
         norm_old = _normalize_title(ptitle)
-        if norm_old and (
-            norm_old == norm_new or norm_old in norm_new or norm_new in norm_old
-        ):
-            candidates.append(
-                (str(_row_value(row, "id")), ptitle, norm_old == norm_new)
-            )
+        if norm_old and (norm_old == norm_new or norm_old in norm_new or norm_new in norm_old):
+            candidates.append((str(_row_value(row, "id")), ptitle, norm_old == norm_new))
         if len(candidates) >= 5:
             break
 
@@ -1010,18 +998,14 @@ async def _match_existing_product(
             "active",
         )
         image_ref = _first_media_ref(batch) if batch is not None else None
-        candidate_image = (
-            _read_ingest_media(out_root, image_ref) if image_ref else None
-        )
+        candidate_image = _read_ingest_media(out_root, image_ref) if image_ref else None
         if candidate_image:
             try:
                 verdict = await oprim.vlm_same_product(
                     provider, image_a=new_image, image_b=candidate_image
                 )
             except Exception as exc:  # noqa: BLE001 - 比对失败按未命中, 继续下个候选
-                logger.warning(
-                    "ingest VLM same_product failed (skip candidate): %s", exc
-                )
+                logger.warning("ingest VLM same_product failed (skip candidate): %s", exc)
                 continue
             confidence = float(verdict.get("confidence") or 0.0)
             if verdict.get("same") and confidence >= 0.7:
@@ -1145,15 +1129,12 @@ async def ingest_media(
             try:
                 async with pool.acquire() as conn:
                     categories = await conn.fetch(
-                        'SELECT slug, name FROM "product_category" '
-                        "WHERE deleted_at IS NULL"
+                        'SELECT slug, name FROM "product_category" WHERE deleted_at IS NULL'
                     )
                     hint = str(ident.get("category_hint") or "").strip()
                     for row in categories:
                         cat_name = str(_row_value(row, "name") or "")
-                        if hint and cat_name and (
-                            hint in cat_name or cat_name in hint
-                        ):
+                        if hint and cat_name and (hint in cat_name or cat_name in hint):
                             effective_category_slug = str(_row_value(row, "slug"))
                             break
                     if not resolved_location_id:
@@ -1174,9 +1155,7 @@ async def ingest_media(
                             provider=vlm_provider,
                         )
             except Exception as exc:  # noqa: BLE001 - 匹配是增强路径, 失败回落新建
-                logger.warning(
-                    "ingest match pre-phase failed (fallback to create): %s", exc
-                )
+                logger.warning("ingest match pre-phase failed (fallback to create): %s", exc)
                 matched = None
 
     # ── 以图更新: 命中同一商品 → 只给其 active variant 补一个新批次 ──
@@ -1226,7 +1205,9 @@ async def ingest_media(
             "matched": True,
             "match_via": match_via,
             "match_confidence": match_confidence,
-            "hint": "VLM 已识别为同一商品, 本次照片作为新批次入库 (含做市曲线); 如需改价请在后台调整。",
+            "hint": (
+                "VLM 已识别为同一商品, 本次照片作为新批次入库 (含做市曲线); 如需改价请在后台调整。"
+            ),
         }
 
     async with pool.acquire() as conn:

@@ -9,6 +9,8 @@ images: [base64], stream=false)。三个能力:
   - same_product(image_a, image_b): 双图比对 → 是否同一件商品 (以图更新用)
   - assess_damage(evidence_img, original_batch_video): 与 ManualVLMProvider
     同签名同返回形状的判损 (客诉证据图)
+  - extract_price(image_bytes): 详情页截图读价 → 售价原文 + 数值 + 置信度
+    (蜘蛛上架后 VLM 填价用; 图中无价返回 price_yuan=None, 不抛异常)
 
 纪律: 模型不可达 / 输出不可解析 / 证据图读不到一律抛异常, 绝不伪造结论——
 调用方负责降级 (ingest 降级文件名推导; 判损链路由上层感知失败)。CPU 推理
@@ -55,7 +57,34 @@ _DAMAGE_PROMPT = (
     "(翻拍屏幕/图片与实物明显不符等才给高值, 正常实拍给低值)}。"
 )
 
+_EXTRACT_PRICE_PROMPT = (
+    "这是电商商品详情页的截图。找出这件商品当前的售价 (人民币, 通常带 ¥ 或 "
+    "￥ 符号; 取主售价/到手价, 不要划线原价、不要运费)。只输出一个 JSON "
+    "对象, 不要输出任何其他文字, 不要用 markdown 代码块。格式: "
+    '{"price_yuan": 售价数字(如 29.9, 找不到填 null), '
+    '"price_text": "页面上看到的价格原文(如 ¥29.90, 找不到填空字符串)", '
+    '"confidence": 0.0到1.0之间的置信度}。'
+    "页面上确实没有价格时 price_yuan 填 null、confidence 填低值。"
+)
+
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$", re.MULTILINE)
+
+
+def _parse_price_yuan(value: Any) -> float | None:
+    """把模型给的价格字段宽容解析成 float; 解析不出/非正数返回 None (无价)。"""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        price = float(value)
+    else:
+        text = (
+            str(value).replace("¥", "").replace("￥", "").replace(",", "").replace("元", "").strip()
+        )
+        try:
+            price = float(text)
+        except ValueError:
+            return None
+    return price if price > 0 else None
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -115,9 +144,7 @@ class OllamaVLMProvider:
                 {
                     "role": "user",
                     "content": prompt,
-                    "images": [
-                        base64.b64encode(img).decode("ascii") for img in images
-                    ],
+                    "images": [base64.b64encode(img).decode("ascii") for img in images],
                 }
             ],
             "options": {"temperature": 0.1},
@@ -146,9 +173,7 @@ class OllamaVLMProvider:
             raise ValueError("VLM identify_product returned empty title")
         keywords_raw = result.get("keywords") or []
         if isinstance(keywords_raw, str):
-            keywords = [
-                k.strip() for k in re.split(r"[,，、]", keywords_raw) if k.strip()
-            ]
+            keywords = [k.strip() for k in re.split(r"[,，、]", keywords_raw) if k.strip()]
         elif isinstance(keywords_raw, list):
             keywords = [str(k).strip() for k in keywords_raw if str(k).strip()]
         else:
@@ -159,6 +184,26 @@ class OllamaVLMProvider:
             "description": str(result.get("description") or "").strip(),
             "keywords": keywords,
             "confidence": _clamp01(result.get("confidence", 0.0), "confidence"),
+        }
+
+    async def extract_price(self, *, image_bytes: bytes) -> dict[str, Any]:
+        """从商品详情页截图读售价 → {price_yuan, price_text, confidence}。
+
+        图中找不到价格是正常业务结果, 返回 price_yuan=None 不抛异常;
+        只有图为空 / 模型不可达 / 输出整体不可解析才抛 (调用方据此计数
+        失败并下轮重试), 绝不猜一个价格返回。
+        """
+        if not image_bytes:
+            raise ValueError("extract_price: empty image_bytes")
+        result = await self._chat_json(_EXTRACT_PRICE_PROMPT, [image_bytes])
+        try:
+            confidence = _clamp01(result.get("confidence", 0.0), "confidence")
+        except ValueError:
+            confidence = 0.0
+        return {
+            "price_yuan": _parse_price_yuan(result.get("price_yuan")),
+            "price_text": str(result.get("price_text") or "").strip(),
+            "confidence": confidence,
         }
 
     async def same_product(self, *, image_a: bytes, image_b: bytes) -> dict[str, Any]:
@@ -212,9 +257,7 @@ class OllamaVLMProvider:
                 return resp.content
         path = self._resolve_local_path(ref)
         if path is None or not path.is_file():
-            raise FileNotFoundError(
-                f"assess_damage: evidence image not readable: {ref}"
-            )
+            raise FileNotFoundError(f"assess_damage: evidence image not readable: {ref}")
         return path.read_bytes()
 
     def _resolve_local_path(self, ref: str) -> Path | None:
@@ -222,12 +265,7 @@ class OllamaVLMProvider:
         if ref.startswith("/media/agent_ingest/"):
             if self._output_root is None:
                 return None
-            base = (
-                self._output_root
-                / "ext_bespoke"
-                / "agent_ingest"
-                / "agent_ingest"
-            )
+            base = self._output_root / "ext_bespoke" / "agent_ingest" / "agent_ingest"
             return self._contained(base, ref[len("/media/agent_ingest/") :])
         if ref.startswith("/media/"):
             if self._output_root is None:

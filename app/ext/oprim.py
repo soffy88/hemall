@@ -238,9 +238,7 @@ async def vlm_identify_product(provider: str, *, image_bytes: bytes) -> dict[str
     return await p.identify_product(image_bytes=image_bytes)
 
 
-async def vlm_same_product(
-    provider: str, *, image_a: bytes, image_b: bytes
-) -> dict[str, Any]:
+async def vlm_same_product(provider: str, *, image_a: bytes, image_b: bytes) -> dict[str, Any]:
     """调用多模态大模型判断两张图是否同一件商品，返回 {same, confidence, reason}。
 
     以图更新匹配用；provider 要求同 vlm_identify_product。
@@ -249,6 +247,19 @@ async def vlm_same_product(
 
     p = ProviderRegistry.get().generic("vlm", provider)
     return await p.same_product(image_a=image_a, image_b=image_b)
+
+
+async def vlm_extract_price(provider: str, *, image_bytes: bytes) -> dict[str, Any]:
+    """调用多模态大模型从详情页截图读售价，返回 {price_yuan, price_text, confidence}。
+
+    蜘蛛自动上架的填价段用；provider 要求同 vlm_identify_product (须是
+    实现了 extract_price 的真模型 provider，如 "ollama")。图中无价时
+    price_yuan=None (正常返回)，模型不可达/输出不可解析才抛异常。
+    """
+    from obase.provider_registry import ProviderRegistry
+
+    p = ProviderRegistry.get().generic("vlm", provider)
+    return await p.extract_price(image_bytes=image_bytes)
 
 
 async def cv_parse_intake_stream(provider: str, *, video_stream: bytes) -> dict[str, Any]:
@@ -277,6 +288,19 @@ async def spider_fetch_competitor_prices(
 
     p = ProviderRegistry.get().generic("spider", provider)
     return await p.fetch_competitor_prices(lat=lat, lon=lon, radius_km=radius_km, keywords=keywords)
+
+
+async def spider_fetch_products(provider: str, *, keywords: list[str]) -> list[dict[str, Any]]:
+    """抓取商品本体 (标题/图片/介绍/详情页) 供蜘蛛自动上架, 刻意不带价格。
+
+    价格不走源站接口 (实测无价): 先上架, 再由 spider_listing 引擎截图
+    详情页 + 本地 VLM 读价补齐。provider 须实现 fetch_products (如
+    "layered"); "manual" 内存桩没有这个能力, 会抛 AttributeError。
+    """
+    from obase.provider_registry import ProviderRegistry
+
+    p = ProviderRegistry.get().generic("spider", provider)
+    return await p.fetch_products(keywords=keywords)
 
 
 async def ext_douyin_sync_inventory(

@@ -115,9 +115,7 @@ class TestSameProductUpdatePath:
         monkeypatch.setattr(
             oprim, "vlm_identify_product", AsyncMock(return_value=dict(_IDENTIFY_OK))
         )
-        same_mock = AsyncMock(
-            return_value={"same": True, "confidence": 0.88, "reason": "包装一致"}
-        )
+        same_mock = AsyncMock(return_value={"same": True, "confidence": 0.88, "reason": "包装一致"})
         monkeypatch.setattr(oprim, "vlm_same_product", same_mock)
 
         # 候选旧图先落盘 (映射: out_root/agent_ingest/<user>/<file>)

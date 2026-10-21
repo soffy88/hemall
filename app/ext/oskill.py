@@ -500,6 +500,21 @@ _MARKET_MAKER_MAX_MARKUP = 0.2
 _MARKET_MAKER_MAX_MARKDOWN = -0.3
 
 
+def build_default_vwap_curve(stock_qty: int) -> dict[str, Any]:
+    """新批次的默认做市消化曲线: 72 小时线性消化 stock_qty。
+
+    格式与 calculate_vwap_deviation 的契约一致 ({"expected_cumulative":
+    [按小时累计销量], "stddev": 正数})。拍照上架 (agent_gateway) 与蜘蛛
+    自动上架 (oservi spider_listing) 共用同一条默认曲线, 新批次从出生
+    就被 market_maker 引擎联动调价。
+    """
+    qty = max(int(stock_qty), 0)
+    return {
+        "expected_cumulative": [round(qty * (i + 1) / 72) for i in range(72)],
+        "stddev": max(2.0, qty * 0.15),
+    }
+
+
 def calculate_vwap_deviation(
     current_sales: int, *, target_curve: dict[str, Any], elapsed_hours: int
 ) -> float:
