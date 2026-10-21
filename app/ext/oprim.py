@@ -226,6 +226,31 @@ async def vlm_assess_damage(
     )
 
 
+async def vlm_identify_product(provider: str, *, image_bytes: bytes) -> dict[str, Any]:
+    """调用多模态大模型识别单张商品图，返回商品名/品类/描述/关键词/置信度 (拍照识货)。
+
+    provider 须实现了 identify_product 的真模型实现 (如 "ollama")；"manual"
+    内存桩没有这个能力，会抛 AttributeError，调用方据此降级。
+    """
+    from obase.provider_registry import ProviderRegistry
+
+    p = ProviderRegistry.get().generic("vlm", provider)
+    return await p.identify_product(image_bytes=image_bytes)
+
+
+async def vlm_same_product(
+    provider: str, *, image_a: bytes, image_b: bytes
+) -> dict[str, Any]:
+    """调用多模态大模型判断两张图是否同一件商品，返回 {same, confidence, reason}。
+
+    以图更新匹配用；provider 要求同 vlm_identify_product。
+    """
+    from obase.provider_registry import ProviderRegistry
+
+    p = ProviderRegistry.get().generic("vlm", provider)
+    return await p.same_product(image_a=image_a, image_b=image_b)
+
+
 async def cv_parse_intake_stream(provider: str, *, video_stream: bytes) -> dict[str, Any]:
     """接收微仓顶棚摄像头数据，执行 OCR 和物体追踪，定位批次货架位。"""
     from obase.provider_registry import ProviderRegistry

@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from datetime import UTC, datetime
@@ -28,6 +30,8 @@ from fastapi import HTTPException, UploadFile
 
 from ..security.op_roles import assert_command_kind_role, assert_op_role
 from .registry import all_endpoint_specs as ext_all_endpoint_specs
+
+logger = logging.getLogger("hemall.ext.agent_gateway")
 
 # ── 工具发现 ──────────────────────────────────────────────────────────
 
@@ -845,6 +849,223 @@ def _sanitize_upload_filename(name: str) -> str:
     return f"{stem[:80]}{suffix}"
 
 
+def _normalize_title(title: str) -> str:
+    """标题归一化 (以图更新匹配用): 小写 + 只留字母数字 (含中文), 去空格/标点。"""
+    return "".join(ch for ch in title.lower() if ch.isalnum())
+
+
+def _default_vwap_curve_json(stock_qty: int) -> str:
+    """拍照上架批次的默认做市曲线: 72 小时线性消化 stock_qty。
+
+    格式与 oskill.calculate_vwap_deviation 的契约一致
+    ({"expected_cumulative": [按小时累计销量], "stddev": 正数}), 让新批次
+    从出生就被 market_maker 引擎联动调价。
+    """
+    qty = max(int(stock_qty), 0)
+    return json.dumps(
+        {
+            "expected_cumulative": [round(qty * (i + 1) / 72) for i in range(72)],
+            "stddev": max(2.0, qty * 0.15),
+        }
+    )
+
+
+def _row_value(row: Any, key: str) -> Any:
+    """兼容 asyncpg Record / dict 的取值; 列缺失按 None 处理。"""
+    try:
+        return row[key]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _media_ref_from_value(value: Any) -> str | None:
+    """从 shelf_image_url / media_assets 的值里取第一个媒体引用。
+
+    两列都可能是 JSON 数组字符串 (传货链路写的是 '["<url>"]'), 也可能裸 URL。
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            ref = _media_ref_from_value(item)
+            if ref:
+                return ref
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.startswith("["):
+            try:
+                return _media_ref_from_value(json.loads(text))
+            except (json.JSONDecodeError, ValueError):
+                return None
+        return text
+    return None
+
+
+def _first_media_ref(row: Any) -> str | None:
+    """从批次行取首图引用: shelf_image_url 优先, 其次 media_assets 首元素。"""
+    for key in ("shelf_image_url", "media_assets"):
+        ref = _media_ref_from_value(_row_value(row, key))
+        if ref:
+            return ref
+    return None
+
+
+def _read_ingest_media(out_root: Path, ref: str) -> bytes | None:
+    """把 /media/agent_ingest/<user>/<file> 映射回 out_root 下文件并读 bytes。
+
+    映射与 app.main 的 StaticFiles 挂载一致 (ingest 的 out_root 就是
+    <output_root>/ext_bespoke/agent_ingest, 文件在其 agent_ingest/ 子目录)。
+    读不到 (外部 URL/文件已删/路径越界) 返回 None, 调用方按"候选无图"处理。
+    """
+    if not ref.startswith("/media/agent_ingest/"):
+        return None
+    base = (out_root / "agent_ingest").resolve()
+    candidate = (base / ref[len("/media/agent_ingest/") :]).resolve()
+    if not candidate.is_relative_to(base) or not candidate.is_file():
+        return None
+    try:
+        return candidate.read_bytes()
+    except OSError:
+        return None
+
+
+async def _identify_uploaded_image(
+    image_bytes: bytes,
+) -> "tuple[dict[str, Any] | None, str]":
+    """调当前默认 VLM provider 识别上传图; 返回 (识别结果|None, provider 名)。
+
+    任何失败 (provider 无此能力/模型不可达/输出不可解析) 都返回 (None, name),
+    由 ingest_media 降级到文件名推导——识别是增强, 不是上架前置条件。
+    """
+    provider = "ollama"
+    try:
+        from ..deps import get_settings
+        from . import oprim
+
+        provider = get_settings().default_vlm_provider
+        result = await oprim.vlm_identify_product(provider, image_bytes=image_bytes)
+        return result, provider
+    except Exception as exc:  # noqa: BLE001 - 识别失败必须降级, 不能阻断上架
+        logger.warning("ingest VLM identify failed (degraded): %s", exc)
+        return None, provider
+
+
+async def _match_existing_product(
+    conn: Any,
+    *,
+    out_root: Path,
+    new_image: bytes,
+    identified_title: str,
+    provider: str,
+) -> "tuple[str, str, str, str, float | None] | None":
+    """以图更新匹配: 在 published 商品里找"同一件商品"。
+
+    先按标题归一化 (去空格/标点后相等或互含) 收候选 (≤5 个), 再逐个判定:
+      - 候选最近 active 批次有图 → VLM same_product, same 且置信度 ≥0.7 命中;
+      - 候选无图 → 标题归一化完全相等也可命中 (match_via="title_exact")。
+    命中返回 (product_id, variant_id, product_title, match_via, confidence)。
+    """
+    from . import oprim
+
+    norm_new = _normalize_title(identified_title)
+    if not norm_new:
+        return None
+    rows = await conn.fetch(
+        'SELECT id, title FROM "product" '
+        "WHERE status = $1 AND deleted_at IS NULL "
+        "ORDER BY created_at DESC LIMIT 500",
+        "published",
+    )
+    candidates: list[tuple[str, str, bool]] = []
+    for row in rows:
+        ptitle = str(_row_value(row, "title") or "")
+        norm_old = _normalize_title(ptitle)
+        if norm_old and (
+            norm_old == norm_new or norm_old in norm_new or norm_new in norm_old
+        ):
+            candidates.append(
+                (str(_row_value(row, "id")), ptitle, norm_old == norm_new)
+            )
+        if len(candidates) >= 5:
+            break
+
+    for product_id, ptitle, exact in candidates:
+        variant_id = await conn.fetchval(
+            'SELECT id FROM "product_variant" '
+            "WHERE product_id = $1 AND status = $2 AND deleted_at IS NULL "
+            "ORDER BY created_at LIMIT 1",
+            product_id,
+            "active",
+        )
+        if not variant_id:
+            continue
+        batch = await conn.fetchrow(
+            'SELECT shelf_image_url, media_assets FROM "inventory_batch" '
+            "WHERE variant_id = $1 AND status = $2 AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 1",
+            variant_id,
+            "active",
+        )
+        image_ref = _first_media_ref(batch) if batch is not None else None
+        candidate_image = (
+            _read_ingest_media(out_root, image_ref) if image_ref else None
+        )
+        if candidate_image:
+            try:
+                verdict = await oprim.vlm_same_product(
+                    provider, image_a=new_image, image_b=candidate_image
+                )
+            except Exception as exc:  # noqa: BLE001 - 比对失败按未命中, 继续下个候选
+                logger.warning(
+                    "ingest VLM same_product failed (skip candidate): %s", exc
+                )
+                continue
+            confidence = float(verdict.get("confidence") or 0.0)
+            if verdict.get("same") and confidence >= 0.7:
+                return product_id, str(variant_id), ptitle, "vlm_same_product", confidence
+        elif exact:
+            return product_id, str(variant_id), ptitle, "title_exact", None
+    return None
+
+
+async def _insert_ingest_batch(
+    conn: Any,
+    *,
+    variant_id: Any,
+    location_id: Any,
+    batch_no: str,
+    media_url: str,
+    is_video: bool,
+    cost: int,
+    retail: int,
+    stock_qty: int,
+) -> Any:
+    """插入传货批次 (新建/以图更新共用): 带默认 vwap 做市曲线, 出生即被联动。"""
+    return await conn.fetchval(
+        (
+            'INSERT INTO "inventory_batch" '
+            "(id, variant_id, location_id, batch_no, video_url, "
+            "cost_price_cents, retail_price_cents, stock_qty, currency, media_assets, "
+            "shelf_image_url, vwap_target_curve, status) "
+            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'CNY', "
+            "$8::jsonb, $8::jsonb, $9::jsonb, 'active') "
+            "RETURNING id"
+        ),
+        variant_id,
+        location_id,
+        batch_no,
+        media_url if is_video else "",
+        cost,
+        retail,
+        stock_qty,
+        f'["{media_url}"]',
+        _default_vwap_curve_json(stock_qty),
+    )
+
+
 async def ingest_media(
     file: UploadFile,
     *,
@@ -856,12 +1077,16 @@ async def ingest_media(
     stock_qty: int = 30,
     category_slug: str = "daily",
 ) -> dict[str, Any]:
-    """视频/图片传货: 保存实景文件 → 生成商品草稿 → 自动上架。
+    """视频/图片传货: 保存实景文件 → (图片先 VLM 识货) → 自动上架/以图更新。
 
-    流程 (MVP, LLM/VLM 就绪后可升级为自动识别):
+    流程:
       1. 保存上传文件到 <out_root>/agent_ingest/<user>/<ts>_<filename>
-      2. 商品名 = 文件名清洗 (如 "丹东草莓实拍.mp4" → "丹东草莓")
-      3. 自动创建 product (published) + variant + inventory_batch
+      2. 图片先调默认 VLM provider 识货 (商品名/品类/描述); 成功用识别
+         结果, 失败降级为文件名清洗 (如 "丹东草莓实拍.mp4" → "丹东草莓");
+         视频不识别, 直接走文件名推导。识别成功时再做以图更新匹配
+         (标题候选 + VLM 双图比对/标题全等), 命中同一商品只补新批次。
+      3. 未命中才新建 product (published) + variant + inventory_batch;
+         两种路径的新批次都带默认 vwap 做市曲线
          - 图片 = 媒体文件本身 (video_url 填上传文件, 前端可播放)
          - 售价 = 参数或默认 (成本 + 毛利)
       4. 返回商品 ID + 草稿信息
@@ -900,12 +1125,115 @@ async def ingest_media(
     media_url = f"/media/agent_ingest/{user_ref}/{dest.name}"
     cost = int((retail_price_cents or 1000) * 0.6)
     retail = retail_price_cents or 1299
+    description = f"手机实景传货 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')} 上传, 实拍直供。"
+    effective_category_slug = category_slug
+
+    # ── VLM 拍照识货 + 以图更新匹配 (仅图片; 全程可降级, 不阻断上架) ──
+    recognition = "skipped_video" if is_video else "unavailable"
+    identified_title: str | None = None
+    matched: tuple[str, str, str, str, float | None] | None = None
+    resolved_location_id = location_id
+    if not is_video:
+        ident, vlm_provider = await _identify_uploaded_image(content)
+        if ident is not None:
+            recognition = vlm_provider
+            identified_title = str(ident.get("title") or "").strip()[:80] or None
+            if identified_title:
+                title = identified_title
+            if str(ident.get("description") or "").strip():
+                description = str(ident["description"]).strip()[:500]
+            try:
+                async with pool.acquire() as conn:
+                    categories = await conn.fetch(
+                        'SELECT slug, name FROM "product_category" '
+                        "WHERE deleted_at IS NULL"
+                    )
+                    hint = str(ident.get("category_hint") or "").strip()
+                    for row in categories:
+                        cat_name = str(_row_value(row, "name") or "")
+                        if hint and cat_name and (
+                            hint in cat_name or cat_name in hint
+                        ):
+                            effective_category_slug = str(_row_value(row, "slug"))
+                            break
+                    if not resolved_location_id:
+                        resolved_location_id = (
+                            await conn.fetchval(
+                                'SELECT id FROM "stock_location" WHERE status = $1 '
+                                "ORDER BY created_at LIMIT 1",
+                                "active",
+                            )
+                            or ""
+                        )
+                    if identified_title:
+                        matched = await _match_existing_product(
+                            conn,
+                            out_root=out_root,
+                            new_image=content,
+                            identified_title=identified_title,
+                            provider=vlm_provider,
+                        )
+            except Exception as exc:  # noqa: BLE001 - 匹配是增强路径, 失败回落新建
+                logger.warning(
+                    "ingest match pre-phase failed (fallback to create): %s", exc
+                )
+                matched = None
+
+    # ── 以图更新: 命中同一商品 → 只给其 active variant 补一个新批次 ──
+    if matched is not None:
+        m_pid, m_vid, m_title, match_via, match_confidence = matched
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if not resolved_location_id:
+                    resolved_location_id = await conn.fetchval(
+                        'SELECT id FROM "stock_location" WHERE status = $1 '
+                        "ORDER BY created_at LIMIT 1",
+                        "active",
+                    )
+                if not resolved_location_id:
+                    raise HTTPException(
+                        400,
+                        "系统没有可用仓位 (stock_location)，请先创建仓位再上架",
+                    )
+                batch_no = f"AGT-{ts}-{uuid.uuid4().hex[:8]}"
+                batch_id = await _insert_ingest_batch(
+                    conn,
+                    variant_id=m_vid,
+                    location_id=resolved_location_id,
+                    batch_no=batch_no,
+                    media_url=media_url,
+                    is_video=False,
+                    cost=cost,
+                    retail=retail,
+                    stock_qty=stock_qty,
+                )
+        return {
+            "status": "updated",
+            "title": m_title,
+            "product_id": m_pid,
+            "matched_product_id": m_pid,
+            "variant_id": m_vid,
+            "batch_id": str(batch_id),
+            "location_id": str(resolved_location_id),
+            "retail_price_cents": retail,
+            "cost_price_cents": cost,
+            "stock_qty": stock_qty,
+            "media_url": media_url,
+            "media_type": "image",
+            "saved_path": str(dest),
+            "recognition": recognition,
+            "identified_title": identified_title,
+            "matched": True,
+            "match_via": match_via,
+            "match_confidence": match_confidence,
+            "hint": "VLM 已识别为同一商品, 本次照片作为新批次入库 (含做市曲线); 如需改价请在后台调整。",
+        }
 
     async with pool.acquire() as conn:
         async with conn.transaction():
             cat_id = await conn.fetchval(
                 'SELECT id FROM "product_category" WHERE slug = $1 AND deleted_at IS NULL',
-                category_slug,
+                effective_category_slug,
             )
             # 分类缺失时归入日用百货
             if cat_id is None:
@@ -933,7 +1261,7 @@ async def ingest_media(
                 "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'published') RETURNING id",
                 title,
                 unique_slug,
-                f"手机实景传货 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')} 上传, 实拍直供。",
+                description,
                 cat_id,
             )
             vid = await conn.fetchval(
@@ -946,24 +1274,16 @@ async def ingest_media(
                 int(retail * 1.2),
             )
             batch_no = f"AGT-{ts}-{uuid.uuid4().hex[:8]}"
-            await conn.fetchval(
-                (
-                    'INSERT INTO "inventory_batch" '
-                    "(id, variant_id, location_id, batch_no, video_url, "
-                    "cost_price_cents, retail_price_cents, stock_qty, currency, media_assets, "
-                    "shelf_image_url, status) "
-                    "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'CNY', "
-                    "$8::jsonb, $8::jsonb, 'active') "
-                    "RETURNING id"
-                ),
-                vid,
-                location_id,
-                batch_no,
-                media_url if is_video else "",
-                cost,
-                retail,
-                stock_qty,
-                f'["{media_url}"]',
+            batch_id = await _insert_ingest_batch(
+                conn,
+                variant_id=vid,
+                location_id=location_id,
+                batch_no=batch_no,
+                media_url=media_url,
+                is_video=is_video,
+                cost=cost,
+                retail=retail,
+                stock_qty=stock_qty,
             )
 
     return {
@@ -971,6 +1291,7 @@ async def ingest_media(
         "title": title,
         "product_id": str(pid),
         "variant_id": str(vid),
+        "batch_id": str(batch_id),
         "location_id": str(location_id),
         "retail_price_cents": retail,
         "cost_price_cents": cost,
@@ -978,5 +1299,12 @@ async def ingest_media(
         "media_url": media_url,
         "media_type": "video" if is_video else "image",
         "saved_path": str(dest),
-        "hint": "LLM/VLM 就绪后可自动识别商品名/分类/价格; 当前使用文件名推导, 可在后台修改。",
+        "recognition": recognition,
+        "identified_title": identified_title,
+        "matched": False,
+        "hint": (
+            "已通过 VLM 识别自动上架 (含做市曲线); 识别有误可在后台修改名称/分类。"
+            if identified_title
+            else "本次未用上 VLM 识别 (视频或识别不可用), 按文件名推导上架; 可在后台修改。"
+        ),
     }

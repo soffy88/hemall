@@ -246,6 +246,18 @@ class Settings(BaseSettings):
     default_tax_provider: str = "flat"
     # FlatRateTaxProvider 必填 rate_percent (无凭据 fallback 的固定税率)
     flat_tax_rate_percent: float = 10.0
+    # VLM 视觉 provider (拍照识货/以图比对/判损): "manual" (内存桩) /
+    # "ollama" (宿主机本地 MiniCPM-V 真模型)。规范名须与 bootstrap 注册名一致。
+    default_vlm_provider: str = "ollama"
+    vlm_ollama_base_url: str = "http://172.17.0.1:11434"
+    vlm_ollama_model: str = "minicpm-v47-1b-local:latest"
+    vlm_ollama_timeout_s: float = 120.0
+
+    # ── ext 引擎开关 (oservi_lifecycle 装配) ──────────────────────────
+    # False 时对应引擎以空任务占位装配: ExtOservi 字段与 start/stop/health
+    # 接口不变, 只是不跑业务 tick。默认 True = 历史行为。
+    engine_spider_enabled: bool = True
+    engine_market_maker_enabled: bool = True
 
     # ── 限流 (公开端点令牌桶) ──────────────────────────────────────────
     # 前置可信反代到公网之间的层数; >0 时按 X-Forwarded-For 倒数第 N 跳取真实

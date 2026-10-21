@@ -143,6 +143,17 @@ class ExtOservi:
             task.cancel()
 
 
+def _disabled_engine(name: str) -> CronSchedulerEngine:
+    """引擎开关关闭时的空任务占位: 保持 ExtOservi 字段类型与
+    start/stop/health/run_once 接口不变, run_once 恒返回 [], 不跑业务 tick。"""
+    return CronSchedulerEngine(
+        tasks=[],
+        trigger={},
+        config={"interval_seconds": 3600, "disabled": True},
+        name=name,
+    )
+
+
 def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     """装配全部 SPEC §5 引擎 (v1.0 六个 + v2.0 全自动仲裁)。不在这里启动常驻
     调度，调用方按需 start_cron_engines() (方便测试期只装配不启动)。
@@ -159,6 +170,9 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     node_host_settlement = build_node_host_settlement_engine(pool, settings=settings)
     autonomous_triage = build_autonomous_triage_engine(pool, settings=settings)
     market_maker = build_market_maker_engine(pool, broadcast_engine=batch_broadcast)
+    if not settings.engine_market_maker_enabled:
+        # 开关关闭: 只把 ExtOservi 里的字段换成空任务占位, builder 本身不动
+        market_maker = _disabled_engine("ext-market-maker")
     tote_balancing = build_tote_balancing_engine(
         pool, notification_provider=settings.default_notification_provider
     )
@@ -179,6 +193,9 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     affiliate_settlement = build_affiliate_settlement_engine(pool)
     inventory_decay = build_inventory_decay_engine(pool, settings=settings)
     competitor_spider = build_competitor_spider_engine(pool)
+    if not settings.engine_spider_enabled:
+        # 开关关闭: 同 market_maker, 空任务占位
+        competitor_spider = _disabled_engine("ext-competitor-spider")
     sla_promise = build_sla_promise_engine(pool, settings=settings)
     sla_compensation = build_sla_compensation_engine(pool, settings=settings)
     wechat_cert_rotation = build_wechat_cert_rotation_engine(pool, settings=settings)

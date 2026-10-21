@@ -996,8 +996,10 @@ async def agent_ingest(
 ):
     """视频/图片传货: 手机实拍 → 自动上架。
 
-    multipart/form-data: file=视频文件, 可选 location_id/retail_price_cents/
-    stock_qty/category_slug。文件名清洗成商品名，媒体文件即商品图/视频。
+    multipart/form-data: file=图片/视频文件, 可选 location_id/
+    retail_price_cents/stock_qty/category_slug。图片先经 VLM 识货 (识别名/
+    品类; 命中已有商品则以图更新、只补新批次), 识别不可用时降级为文件名
+    清洗成商品名; 媒体文件即商品图/视频。
     """
 
     return await ingest_media(

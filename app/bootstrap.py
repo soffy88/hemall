@@ -33,6 +33,7 @@ from .ext.schema import ensure_ext_schema
 from .ext.spider_provider import ManualSpiderProvider
 from .ext.spider_targets import LayeredSpiderProvider
 from .ext.vlm_provider import ManualVLMProvider
+from .ext.vlm_ollama_provider import OllamaVLMProvider
 from .ext.weather_provider import ManualWeatherProvider
 from .ext.wechat_provider import ManualWeChatChannelProvider
 
@@ -67,6 +68,19 @@ def register_providers(settings: Settings) -> None:
         reg.register_generic("payment_gateway", "manual", ManualPaymentGateway(), replace=True)
     reg.register_generic("weather", "manual", ManualWeatherProvider(), replace=True)
     reg.register_generic("vlm", "manual", ManualVLMProvider(), replace=True)
+    # VLM 真模型: 宿主机 Ollama 上的 MiniCPM-V (拍照识货/以图比对/判损)。
+    # 注册本身不发请求; 模型不可达时调用方按异常降级, 不影响启动。
+    reg.register_generic(
+        "vlm",
+        "ollama",
+        OllamaVLMProvider(
+            base_url=settings.vlm_ollama_base_url,
+            model=settings.vlm_ollama_model,
+            timeout_s=settings.vlm_ollama_timeout_s,
+            output_root=settings.output_root,
+        ),
+        replace=True,
+    )
     reg.register_generic("cv", "manual", ManualCVProvider(), replace=True)
     reg.register_generic("llm", "manual", ManualLLMProvider(), replace=True)
     reg.register_generic("wechat_channel", "manual", ManualWeChatChannelProvider(), replace=True)
