@@ -167,6 +167,10 @@ ALTER TABLE customer
     ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE cart_line_item
     ADD COLUMN IF NOT EXISTS variant_id UUID;
+-- 本行对批次 reserved_qty 计数器的占位量（仅 omodul 加购/改量产生，
+-- 预订回退行恒 0）；结算时按此转正，避免双重占位。
+ALTER TABLE cart_line_item
+    ADD COLUMN IF NOT EXISTS reserved_qty INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE cart_line_item
     ALTER COLUMN batch_id DROP NOT NULL;
 ALTER TABLE order_line_item
