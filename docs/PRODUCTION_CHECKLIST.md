@@ -39,6 +39,7 @@ curl -fsS https://<host>/health/ready | jq .    # 必须 status=healthy
 | `HEMALL_WECHAT_PAY_PRIVATE_KEY_FILE` | `wechat_pay_private_key_path` | `/run/secrets/wechat_private_key` | wechat 必填 |
 | `HEMALL_WECHAT_PAY_API_V3_KEY_FILE` | `wechat_pay_api_v3_key` | `/run/secrets/wechat_api_v3_key` | wechat 必填 |
 | `HEMALL_WECHAT_PAY_PLATFORM_CERT_FILE` | `wechat_pay_platform_cert_path` | `/run/secrets/wechat_platform_cert` | wechat 必填 |
+| `HEMALL_WECHAT_MP_APP_SECRET_FILE` | `wechat_mp_app_secret` | `/run/secrets/wechat_mp_app_secret` | 小程序登录必填 |
 | `HEMALL_STRIPE_SECRET_KEY_FILE` | `stripe_secret_key` | `/run/secrets/stripe_secret_key` | stripe 必填 |
 | `HEMALL_STRIPE_WEBHOOK_SECRET_FILE` | `stripe_webhook_secret` | `/run/secrets/stripe_webhook_secret` | stripe 必填 |
 | `HEMALL_ALIPAY_PRIVATE_KEY_FILE` | `alipay_private_key_path` | `/run/secrets/alipay_private_key` | alipay 必填 |
@@ -128,6 +129,8 @@ TOTP**，否则进不了 `/admin`——这是硬拦截，不是提示。
 | `HEMALL_WECHAT_PAY_PLATFORM_CERT_FILE` | 平台证书公钥路径 |
 | `HEMALL_WECHAT_PAY_NOTIFY_URL` | **回调地址**，如 `https://mall.sxueji.com/api/payments/wechat/notify` |
 | `HEMALL_WECHAT_PLATFORM_CERT_STORE` | 轮换落盘路径，默认 `var/wechat_platform_cert.json` |
+| `HEMALL_WECHAT_MP_APP_ID` | 小程序 AppID（微信登录 jscode2session 用；小程序 JSAPI 支付时 `HEMALL_WECHAT_PAY_APPID` 也应填它） |
+| `HEMALL_WECHAT_MP_APP_SECRET_FILE` | 小程序 AppSecret 文件（微信登录用；未配置时 wechat-login/bind 返回 503） |
 
 平台证书由轮换引擎每 12h 拉 `/v3/certificates` 热更新并写 store 文件，重启后
 继续用——不需要人工换证书。
