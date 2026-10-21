@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -100,6 +100,14 @@ class SetSafetyThresholdRequest(BaseModel):
     location_id: str
     threshold: int = Field(..., ge=0, description="安全库存阈值")
     alert_email: str | None = None
+
+
+class UpdateInspectionRequest(BaseModel):
+    """批次质检状态变更请求。"""
+
+    inspection_status: Literal["passed", "failed", "pending"] = Field(
+        ..., description="质检状态: passed 通过 / failed 不通过 / pending 待检"
+    )
 
 
 # ── API 端点 ───────────────────────────────────────────────────────
@@ -300,3 +308,68 @@ async def set_safety_threshold(
         "location_id": body.location_id,
         "threshold": body.threshold,
     }
+
+
+@router.get("/batches")
+async def list_batches(
+    inspection_status: str | None = Query(None, description="按质检状态过滤"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    pool: Any = Depends(get_pool),
+) -> list[dict[str, Any]]:
+    """批次列表（后台质检用）：含商品/变体/仓位名称与质检状态，新批次在前。"""
+    clauses = ["b.deleted_at IS NULL"]
+    params: list[Any] = []
+    if inspection_status is not None:
+        params.append(inspection_status)
+        clauses.append(f"b.inspection_status = ${len(params)}")
+    params.append(limit)
+    limit_idx = len(params)
+    params.append(offset)
+    offset_idx = len(params)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT b.id, b.batch_no, b.variant_id, pv.product_id,
+                   p.title AS product_title, pv.sku_code,
+                   b.location_id, sl.name AS location_name,
+                   b.stock_qty, b.reserved_qty,
+                   GREATEST(b.stock_qty - b.reserved_qty, 0) AS available_qty,
+                   b.status, b.inspection_status, b.created_at
+            FROM inventory_batch b
+            JOIN product_variant pv ON pv.id = b.variant_id
+            JOIN product p ON p.id = pv.product_id
+            LEFT JOIN stock_location sl ON sl.id = b.location_id
+            WHERE {" AND ".join(clauses)}
+            ORDER BY b.created_at DESC
+            LIMIT ${limit_idx} OFFSET ${offset_idx}
+            """,
+            *params,
+        )
+    return [dict(r) for r in rows]
+
+
+@router.patch("/batches/{batch_id}/inspection")
+async def update_batch_inspection(
+    batch_id: str,
+    body: UpdateInspectionRequest,
+    pool: Any = Depends(get_pool),
+) -> dict[str, Any]:
+    """变更批次质检状态（质检门的人工通道，此前全系统无任何写入口）。
+
+    待检（pending）批次通过后即可正常售卖与配货；置 failed 后加购与
+    结算都拒绝；不存在 404，软删批次拒绝变更。
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT deleted_at FROM inventory_batch WHERE id = $1", batch_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        if row["deleted_at"] is not None:
+            raise HTTPException(status_code=400, detail="batch is deleted")
+        updated = await conn.fetchrow(
+            "UPDATE inventory_batch SET inspection_status = $1, updated_at = NOW() "
+            "WHERE id = $2 RETURNING id, inspection_status",
+            body.inspection_status,
+            batch_id,
+        )
+    return {"id": str(updated["id"]), "inspection_status": updated["inspection_status"]}

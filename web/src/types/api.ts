@@ -319,6 +319,24 @@ export interface MerchantReserveOrderResult {
   lines: MerchantReserveOrderLine[];
 }
 
+/** 库存批次（后台质检列表一行） */
+export interface InventoryBatch {
+  id: string;
+  batch_no: string;
+  product_id: string;
+  product_title: string;
+  variant_id: string;
+  sku_code: string | null;
+  location_id: string;
+  location_name: string | null;
+  stock_qty: number;
+  reserved_qty: number;
+  available_qty: number;
+  status: string;
+  inspection_status: 'pending' | 'passed' | 'failed' | string;
+  created_at: string;
+}
+
 /** 后台待配货预订一行 */
 export interface AdminPreorder {
   line_id: string;

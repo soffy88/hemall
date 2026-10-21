@@ -282,6 +282,27 @@ async def _pick_best_batch(conn: Any, variant_id: Any, *, for_update: bool = Fal
     )
 
 
+async def _pick_pending_batch(conn: Any, variant_id: Any) -> Any | None:
+    """挑变体的待质检批次：active + inspection pending 里可用量最大，并列取最早创建。
+
+    待检批次尚不可售（可用量按 0 计），但预订语义下加购应直接落绑该
+    批次的行：结算时全额转 preorder_qty，日后质检通过即可配货锁定。
+    无待检批次返回 None。
+    """
+    return await conn.fetchrow(
+        """
+        SELECT id, location_id, stock_qty, reserved_qty, retail_price_cents,
+               status, inspection_status, deleted_at
+        FROM inventory_batch
+        WHERE variant_id = $1 AND deleted_at IS NULL
+          AND status = 'active' AND inspection_status = 'pending'
+        ORDER BY GREATEST(stock_qty - reserved_qty, 0) DESC, created_at ASC
+        LIMIT 1
+        """,
+        variant_id,
+    )
+
+
 def _batch_available(batch: Any | None) -> int:
     """批次当前可配货量：不可售（状态/质检未过/已删）一律 0。"""
     if batch is None:
@@ -522,15 +543,18 @@ async def add_line_item(
     request: Request,
     principal: dict[str, Any] | None = Depends(_optional_customer),
 ):
-    """加购即预订：有货走 omodul 原路；超库存/无批次时路由层直落预订行。
+    """加购即预订：有货走 omodul 原路；超库存/待质检/无批次时路由层直落预订行。
 
-    - 传 batch_id：先走 omodul（防超卖 + 加购即预留）；omodul 仅因
-      insufficient stock 拒绝时不报错，改走路由层直插/合并（结算时拆
-      现货锁定 + preorder_qty 缺口），其余失败（批次不可售/不存在等）
-      保持原 400 语义。
+    - 传 batch_id：先走 omodul（防超卖 + 加购即预留）；omodul 因
+      insufficient stock 拒绝、或批次 active 但质检待检（pending）被判
+      not sellable 时不报错，改走路由层直插/合并（结算时拆现货锁定 +
+      preorder_qty 缺口，待检批次可用量为 0 即全额预订）；质检 failed、
+      批次非 active、批次不存在等其余失败保持原 400 语义。
     - 只传 variant_id：先按最佳批次规则挑可售批次转 batch_id 走原路；
-      变体完全无可售批次时直插只绑变体的行（batch_id 空），单价取变体
-      reference_price_cents，为空则 400「暂无价格，无法预订」。
+      无可售批次但有待检批次时直插绑该批次的预订行（单价取批次零售
+      价）；批次全部质检 failed 时 400；完全无批次时直插只绑变体的
+      行（batch_id 空），单价取变体 reference_price_cents，为空则
+      400「暂无价格，无法预订」。
     """
     customer_id = await _authorize_cart(request, body.cart_id, principal)
     if body.quantity <= 0:
@@ -541,6 +565,8 @@ async def add_line_item(
 
     batch_id = body.batch_id
     variant_row = None
+    pending_batch = None
+    variant_all_failed = False
     if batch_id is None:
         async with pool.acquire() as conn:
             variant_row = await conn.fetchrow(
@@ -555,11 +581,35 @@ async def add_line_item(
             if variant_row is None:
                 raise HTTPException(404, "variant not found")
             best = await _pick_best_batch(conn, body.variant_id)
+            if best is None:
+                pending_batch = await _pick_pending_batch(conn, body.variant_id)
+                if pending_batch is None:
+                    counts = await conn.fetchrow(
+                        "SELECT count(*) AS total, "
+                        "count(*) FILTER (WHERE inspection_status = 'failed') AS failed "
+                        "FROM inventory_batch "
+                        "WHERE variant_id = $1 AND deleted_at IS NULL",
+                        body.variant_id,
+                    )
+                    variant_all_failed = bool(
+                        counts and counts["total"] > 0 and counts["failed"] == counts["total"]
+                    )
         if best is not None:
             batch_id = str(best["id"])
 
     response: dict[str, Any] | None = None
-    if batch_id is not None:
+    if pending_batch is not None:
+        # 变体无可售批次但有待检批次：绑待检批次落预订行（不走 omodul，
+        # 它必然以 not sellable 拒绝）；结算时全额转 preorder_qty。
+        response = await _route_add_line_item(
+            pool,
+            cart_id=body.cart_id,
+            batch_id=pending_batch["id"],
+            variant_id=body.variant_id,
+            quantity=body.quantity,
+            unit_price_cents=int(pending_batch["retail_price_cents"]),
+        )
+    elif batch_id is not None:
         from omodul.add_line_item_to_cart import (
             AddLineItemConfig,
             AddLineItemInput,
@@ -576,15 +626,27 @@ async def add_line_item(
                 "line_item_id": result["line_item_id"],
                 "new_quantity": result["quantity"],
             }
-        elif "insufficient stock" in str(result["error"]["message"]):
+        else:
+            message = str(result["error"]["message"])
             async with pool.acquire() as conn:
                 batch_row = await conn.fetchrow(
-                    "SELECT variant_id, retail_price_cents FROM inventory_batch "
-                    "WHERE id = $1 AND deleted_at IS NULL",
+                    "SELECT variant_id, retail_price_cents, status, inspection_status "
+                    "FROM inventory_batch WHERE id = $1 AND deleted_at IS NULL",
                     batch_id,
                 )
-            if batch_row is None:
-                raise HTTPException(400, result["error"]["message"])
+            # 能转预订的失败只有两类：passed 批次现货不足；active 批次
+            # 质检待检（pending）。质检 failed、批次非 active、批次不
+            # 存在都维持 omodul 原 400 语义，不放行。
+            preorderable = batch_row is not None and (
+                "insufficient stock" in message
+                or (
+                    "is not sellable" in message
+                    and batch_row["status"] == "active"
+                    and batch_row["inspection_status"] == "pending"
+                )
+            )
+            if not preorderable:
+                raise HTTPException(400, message)
             response = await _route_add_line_item(
                 pool,
                 cart_id=body.cart_id,
@@ -593,9 +655,10 @@ async def add_line_item(
                 quantity=body.quantity,
                 unit_price_cents=int(batch_row["retail_price_cents"]),
             )
-        else:
-            raise HTTPException(400, result["error"]["message"])
     else:
+        # 变体批次全部质检 failed：不放行预订。
+        if variant_all_failed:
+            raise HTTPException(400, "该商品质检未通过，无法预订")
         # 变体完全无可售批次：只绑变体的预订行，单价取变体参考价。
         reference_price = variant_row["reference_price_cents"] if variant_row else None
         if reference_price is None:
