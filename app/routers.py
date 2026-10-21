@@ -229,6 +229,59 @@ async def admin_list_customers(
     return await queries.list_customers(_pool(request), limit=limit, offset=offset)
 
 
+class SetMerchantRequest(BaseModel):
+    is_merchant: bool
+
+
+@admin_read_router.patch("/customers/{customer_id}/merchant")
+async def admin_set_customer_merchant(
+    customer_id: str,
+    body: SetMerchantRequest,
+    request: Request,
+    _=Depends(_require_admin),
+):
+    """开通/关闭客户的商家身份（商家预订清单与一键预订的门禁标记）。"""
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE "customer" SET is_merchant = $1, updated_at = NOW()
+            WHERE id = $2 AND deleted_at IS NULL
+            RETURNING id, is_merchant
+            """,
+            body.is_merchant,
+            customer_id,
+        )
+    if row is None:
+        raise HTTPException(404, "customer not found")
+    return {"id": str(row["id"]), "is_merchant": bool(row["is_merchant"])}
+
+
+@admin_read_router.get("/preorders")
+async def admin_list_preorders(
+    request: Request,
+    _=Depends(_require_admin),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """配货队列：preorder_qty > 0 的订单行，最早优先。"""
+    return await queries.list_admin_preorders(_pool(request), limit=limit)
+
+
+@admin_read_router.post("/preorders/{line_id}/allocate")
+async def admin_allocate_preorder(
+    line_id: str,
+    request: Request,
+    _=Depends(_require_admin),
+):
+    """给一行预订配货：从现有可用库存锁定，扣减 preorder_qty。"""
+    from .storefront import allocate_preorder_line
+
+    result = await allocate_preorder_line(_pool(request), line_id)
+    if result is None:
+        raise HTTPException(404, "order line not found")
+    return result
+
+
 @admin_read_router.get("/dashboard/kpis")
 async def admin_dashboard_kpis(request: Request, _=Depends(_require_admin)):
     return await queries.get_dashboard_kpis(_pool(request))

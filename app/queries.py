@@ -172,12 +172,11 @@ async def list_storefront_products(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
-    """商城公开商品列表：仅返回有库存的活跃商品。"""
+    """商城公开商品列表：返回在售商品（含 0 库存——无货也可预订）。"""
     async with pool.acquire() as conn:
         where_clauses = [
             "p.deleted_at IS NULL",
             "p.status = 'published'",
-            "COALESCE(variants.total_stock, 0) > 0",
         ]
         params: list[Any] = []
 
@@ -254,7 +253,7 @@ async def list_storefront_products(
 
 
 async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
-    """商城商品详情：仅返回有库存的活跃商品。"""
+    """商城商品详情：返回在售商品（含 0 库存——无货也可预订）。"""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -302,10 +301,7 @@ async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
         )
         if row is None:
             return None
-        result = _row_to_dict(row)
-        if result.get("total_stock", 0) <= 0:
-            return None
-        return result
+        return _row_to_dict(row)
 
 
 async def list_orders(
@@ -438,7 +434,7 @@ async def list_customers(
         rows = await conn.fetch(
             """
             SELECT c.id, c.email, c.phone, c.name, c.customer_group_id,
-                   c.status, c.created_at, c.updated_at,
+                   c.is_merchant, c.status, c.created_at, c.updated_at,
                    COUNT(co.id)::int AS order_count,
                    COALESCE(SUM(co.grand_total_cents), 0)::int AS total_spent_cents
             FROM customer c
@@ -460,7 +456,7 @@ async def get_customer(pool: Any, customer_id: str) -> dict | None:
         row = await conn.fetchrow(
             """
             SELECT c.id, c.email, c.phone, c.name, c.customer_group_id,
-                   c.status, c.created_at, c.updated_at,
+                   c.is_merchant, c.status, c.created_at, c.updated_at,
                    COUNT(co.id)::int AS order_count,
                    COALESCE(SUM(co.grand_total_cents), 0)::int AS total_spent_cents
             FROM customer c
@@ -490,7 +486,9 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                 SELECT jsonb_agg(jsonb_build_object(
                     'id', oli.id,
                     'batch_id', oli.batch_id,
+                    'variant_id', pv.id,
                     'quantity', oli.quantity,
+                    'preorder_qty', oli.preorder_qty,
                     'unit_price_cents', oli.unit_price_cents,
                     'line_total_cents', oli.line_total_cents,
                     'product_title', prod.title,
@@ -499,7 +497,7 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                 )) AS line_items
                 FROM order_line_item oli
                 LEFT JOIN inventory_batch ib ON oli.batch_id = ib.id
-                LEFT JOIN product_variant pv ON ib.variant_id = pv.id
+                LEFT JOIN product_variant pv ON pv.id = COALESCE(oli.variant_id, ib.variant_id)
                 LEFT JOIN product prod ON pv.product_id = prod.id
                 WHERE oli.order_id = o.id
             ) items ON true
@@ -552,17 +550,23 @@ async def get_cart(pool: Any, cart_id: str) -> dict | None:
                 SELECT jsonb_agg(jsonb_build_object(
                     'id', cli.id,
                     'batch_id', cli.batch_id,
+                    'variant_id', pv.id,
                     'quantity', cli.quantity,
                     'unit_price_cents', cli.unit_price_cents,
                     'line_total_cents', cli.line_total_cents,
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values,
-                    'available_qty', ib.stock_qty - ib.reserved_qty + cli.quantity
+                    'available_qty', CASE WHEN ib.id IS NOT NULL AND ib.status = 'active'
+                        AND ib.inspection_status = 'passed'
+                        THEN GREATEST(ib.stock_qty - ib.reserved_qty, 0) ELSE 0 END,
+                    'preorder_qty_preview', GREATEST(cli.quantity - (CASE WHEN ib.id IS NOT NULL
+                        AND ib.status = 'active' AND ib.inspection_status = 'passed'
+                        THEN GREATEST(ib.stock_qty - ib.reserved_qty, 0) ELSE 0 END), 0)
                 )) AS line_items
                 FROM cart_line_item cli
                 LEFT JOIN inventory_batch ib ON cli.batch_id = ib.id
-                LEFT JOIN product_variant pv ON ib.variant_id = pv.id
+                LEFT JOIN product_variant pv ON pv.id = COALESCE(cli.variant_id, ib.variant_id)
                 LEFT JOIN product prod ON pv.product_id = prod.id
                 WHERE cli.cart_id = c.id AND cli.deleted_at IS NULL
             ) items ON true
@@ -1153,3 +1157,98 @@ def _row_to_dict(row: Any) -> dict:
             except (json.JSONDecodeError, TypeError):
                 pass
     return d
+
+
+def _resolve_image_url(option_values: Any, media_assets: Any, shelf_image_url: Any) -> str | None:
+    """商品图解析（预订清单/预订列表共用）。
+
+    顺序: 变体 option_values.image_url → 批次 media_assets[0] → 批次货架图。
+    option_values / media_assets 在 asyncpg 下可能是 dict/list 或 JSON 字符串。
+    """
+    for raw_name, raw in (("option_values", option_values), ("media_assets", media_assets)):
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if raw_name == "option_values":
+                option_values = parsed
+            else:
+                media_assets = parsed
+    if isinstance(option_values, dict):
+        url = option_values.get("image_url")
+        if url:
+            return str(url)
+    if isinstance(media_assets, list) and media_assets:
+        first = media_assets[0]
+        if isinstance(first, str) and first:
+            return first
+        if isinstance(first, dict):
+            url = first.get("url") or first.get("src")
+            if url:
+                return str(url)
+    if shelf_image_url:
+        return str(shelf_image_url)
+    return None
+
+
+async def list_customer_preorders(pool: Any, customer_id: str) -> list[dict]:
+    """顾客自己的预订行（preorder_qty > 0）——下单时未配到货、待配货的部分。"""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT o.id AS order_id, o.status AS order_status, o.created_at,
+                   oli.id AS line_id, pv.product_id, p.title,
+                   pv.id AS variant_id, oli.quantity, oli.preorder_qty,
+                   pv.option_values, ib.media_assets, ib.shelf_image_url
+            FROM order_line_item oli
+            JOIN customer_order o ON o.id = oli.order_id
+            LEFT JOIN inventory_batch ib ON ib.id = oli.batch_id
+            LEFT JOIN product_variant pv ON pv.id = COALESCE(oli.variant_id, ib.variant_id)
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE o.customer_id = $1 AND oli.preorder_qty > 0
+            ORDER BY o.created_at DESC, oli.created_at
+            """,
+            customer_id,
+        )
+        results = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d["image_url"] = _resolve_image_url(
+                d.pop("option_values", None),
+                d.pop("media_assets", None),
+                d.pop("shelf_image_url", None),
+            )
+            results.append(d)
+        return results
+
+
+async def list_admin_preorders(pool: Any, *, limit: int = 200) -> list[dict]:
+    """后台配货队列：全部 preorder_qty > 0 的订单行，最早优先。"""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT oli.id AS line_id, oli.order_id, o.customer_id,
+                   c.name AS customer_name, pv.product_id, p.title,
+                   oli.quantity, oli.preorder_qty, oli.created_at,
+                   COALESCE(avail.available_qty, 0)::int AS available_qty_now
+            FROM order_line_item oli
+            JOIN customer_order o ON o.id = oli.order_id
+            LEFT JOIN customer c ON c.id = o.customer_id
+            LEFT JOIN inventory_batch ib ON ib.id = oli.batch_id
+            LEFT JOIN product_variant pv ON pv.id = COALESCE(oli.variant_id, ib.variant_id)
+            LEFT JOIN product p ON p.id = pv.product_id
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(GREATEST(ib2.stock_qty - ib2.reserved_qty, 0)), 0)
+                    AS available_qty
+                FROM inventory_batch ib2
+                WHERE ib2.variant_id = pv.id AND ib2.deleted_at IS NULL
+                  AND ib2.status = 'active' AND ib2.inspection_status = 'passed'
+            ) avail ON true
+            WHERE oli.preorder_qty > 0
+            ORDER BY oli.created_at ASC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(r) for r in rows]

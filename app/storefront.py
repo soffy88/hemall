@@ -255,6 +255,218 @@ def _sign_customer_token(
     )
 
 
+# ── 预订（无货可订）共享 ─────────────────────────────────────────
+# 语义总纲：客户不管有货没货都能下单。加购/下单时每行按当时可用量拆分：
+# 现货部分锁定 inventory_batch.reserved_qty 并写 inventory_reservation，
+# 缺口记 order_line_item.preorder_qty，待后台配货（allocate）补锁。
+
+
+async def _pick_best_batch(conn: Any, variant_id: Any, *, for_update: bool = False) -> Any | None:
+    """挑变体的最佳批次：可售（active + 质检 passed）里可用量最大，并列取最早创建。
+
+    可用量 = stock_qty - reserved_qty。无可售批次返回 None（整量走预订）。
+    """
+    lock = " FOR UPDATE" if for_update else ""
+    return await conn.fetchrow(
+        """
+        SELECT id, location_id, stock_qty, reserved_qty, retail_price_cents,
+               status, inspection_status, deleted_at
+        FROM inventory_batch
+        WHERE variant_id = $1 AND deleted_at IS NULL
+          AND status = 'active' AND inspection_status = 'passed'
+        ORDER BY GREATEST(stock_qty - reserved_qty, 0) DESC, created_at ASC
+        LIMIT 1
+        """
+        + lock,
+        variant_id,
+    )
+
+
+def _batch_available(batch: Any | None) -> int:
+    """批次当前可配货量：不可售（状态/质检未过/已删）一律 0。"""
+    if batch is None:
+        return 0
+    if (
+        batch["deleted_at"] is not None
+        or batch["status"] != "active"
+        or batch["inspection_status"] != "passed"
+    ):
+        return 0
+    return max(0, int(batch["stock_qty"]) - int(batch["reserved_qty"] or 0))
+
+
+async def _reserve_batch_qty(
+    conn: Any,
+    *,
+    order_id: Any,
+    line_id: Any,
+    product_id: Any,
+    variant_id: Any,
+    batch: Any,
+    quantity: int,
+    reason: str,
+    key_suffix: str = "",
+) -> Any | None:
+    """在批次上锁定 quantity 并写 reservation ledger + stock_movement。
+
+    调用方须已对批次行 FOR UPDATE 且确认 quantity <= 可用量；这里仍用守卫
+    UPDATE 兜底（stock_qty - reserved_qty >= quantity），锁定失败返回 None。
+    """
+    updated = await conn.fetchrow(
+        """
+        UPDATE inventory_batch
+        SET reserved_qty = reserved_qty + $1, updated_at = NOW()
+        WHERE id = $2 AND stock_qty - reserved_qty >= $1
+        RETURNING id
+        """,
+        quantity,
+        batch["id"],
+    )
+    if updated is None:
+        return None
+    reservation_key = f"order:{order_id}:line:{line_id}{key_suffix}"
+    reservation_id = await conn.fetchval(
+        """
+        INSERT INTO inventory_reservation
+            (order_id, order_line_item_id, product_id, variant_id,
+             location_id, batch_id, quantity, idempotency_key)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id
+        """,
+        str(order_id),
+        str(line_id),
+        str(product_id),
+        str(variant_id) if variant_id else None,
+        batch["location_id"],
+        batch["id"],
+        quantity,
+        reservation_key,
+    )
+    await conn.execute(
+        """
+        INSERT INTO stock_movement
+            (product_id, variant_id, location_id, batch_id,
+             movement_type, quantity, reference_type, reference_id,
+             reason, idempotency_key)
+        VALUES ($1, $2, $3, $4, 'reserve', $5, 'order', $6, $7, $8)
+        ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+        DO NOTHING
+        """,
+        str(product_id),
+        str(variant_id) if variant_id else None,
+        batch["location_id"],
+        batch["id"],
+        quantity,
+        str(order_id),
+        reason,
+        f"movement:{reservation_key}",
+    )
+    return reservation_id
+
+
+async def _route_add_line_item(
+    pool: Any,
+    *,
+    cart_id: str,
+    batch_id: Any | None,
+    variant_id: Any | None,
+    quantity: int,
+    unit_price_cents: int,
+) -> dict[str, Any]:
+    """路由层直加购物车行（预订路径，不经 omodul）。
+
+    omodul 加购带防超卖硬校验：库存不足直接拒绝；变体无批次时更是无从
+    加购。预订语义下这两类都要落行——同 cart+batch 已有行（或同 cart+
+    变体的无批次行）则累加数量并按当前单价重算 line_total，随后按 omodul
+    同口径（oskill compute_cart_*）全量重算购物车 totals。本路径不动库存
+    预留：配货在结算时按当时可用量拆分（现货锁定 + 缺口 preorder_qty）。
+    """
+    from oskill import compute_cart_grand_total, compute_cart_subtotal
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cart = await conn.fetchrow(
+                "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                cart_id,
+            )
+            if cart is None:
+                raise HTTPException(404, "cart not found")
+            if batch_id is not None:
+                existing = await conn.fetchrow(
+                    """
+                    SELECT * FROM cart_line_item
+                    WHERE cart_id = $1 AND batch_id = $2 AND deleted_at IS NULL
+                    FOR UPDATE
+                    """,
+                    cart_id,
+                    batch_id,
+                )
+            else:
+                existing = await conn.fetchrow(
+                    """
+                    SELECT * FROM cart_line_item
+                    WHERE cart_id = $1 AND batch_id IS NULL AND variant_id = $2
+                      AND deleted_at IS NULL
+                    FOR UPDATE
+                    """,
+                    cart_id,
+                    variant_id,
+                )
+            if existing is not None:
+                line_item_id = existing["id"]
+                new_qty = int(existing["quantity"]) + quantity
+                await conn.execute(
+                    """
+                    UPDATE cart_line_item
+                    SET quantity = $1, unit_price_cents = $2, line_total_cents = $3,
+                        updated_at = NOW()
+                    WHERE id = $4
+                    """,
+                    new_qty,
+                    unit_price_cents,
+                    new_qty * unit_price_cents,
+                    line_item_id,
+                )
+            else:
+                line_item_id = uuid7()
+                new_qty = quantity
+                await conn.execute(
+                    """
+                    INSERT INTO cart_line_item
+                        (id, cart_id, batch_id, variant_id, quantity,
+                         unit_price_cents, line_total_cents)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    line_item_id,
+                    cart_id,
+                    batch_id,
+                    variant_id,
+                    quantity,
+                    unit_price_cents,
+                    quantity * unit_price_cents,
+                )
+            line_rows = await conn.fetch(
+                "SELECT line_total_cents FROM cart_line_item "
+                "WHERE cart_id = $1 AND deleted_at IS NULL",
+                cart_id,
+            )
+            subtotal = compute_cart_subtotal([dict(r) for r in line_rows])
+            grand_total = compute_cart_grand_total(
+                subtotal,
+                discount=cart["discount_cents"],
+                tax=cart["tax_cents"],
+                shipping=cart["shipping_cents"],
+            )
+            await conn.execute(
+                "UPDATE cart SET subtotal_cents = $1, grand_total_cents = $2, "
+                "updated_at = NOW() WHERE id = $3",
+                subtotal,
+                grand_total,
+                cart_id,
+            )
+    return {"line_item_id": str(line_item_id), "new_quantity": new_qty}
+
+
 # ── 购物车 ──────────────────────────────────────────────────────────────
 
 
@@ -299,7 +511,8 @@ async def create_cart(
 
 class AddLineItemRequest(BaseModel):
     cart_id: str
-    batch_id: str
+    batch_id: str | None = None
+    variant_id: str | None = None
     quantity: int = 1
 
 
@@ -309,39 +522,113 @@ async def add_line_item(
     request: Request,
     principal: dict[str, Any] | None = Depends(_optional_customer),
 ):
-    customer_id = await _authorize_cart(request, body.cart_id, principal)
-    from omodul.add_line_item_to_cart import (
-        AddLineItemConfig,
-        AddLineItemInput,
-        add_line_item_to_cart,
-    )
+    """加购即预订：有货走 omodul 原路；超库存/无批次时路由层直落预订行。
 
-    cfg = _cfg(request, AddLineItemConfig)
-    inp = AddLineItemInput(cart_id=body.cart_id, batch_id=body.batch_id, quantity=body.quantity)
-    result = await add_line_item_to_cart(
-        cfg, inp, _output_dir(request, "add_line_item_to_cart"), pool=_pool(request)
-    )
-    if result["status"] == "failed":
-        raise HTTPException(400, result["error"]["message"])
+    - 传 batch_id：先走 omodul（防超卖 + 加购即预留）；omodul 仅因
+      insufficient stock 拒绝时不报错，改走路由层直插/合并（结算时拆
+      现货锁定 + preorder_qty 缺口），其余失败（批次不可售/不存在等）
+      保持原 400 语义。
+    - 只传 variant_id：先按最佳批次规则挑可售批次转 batch_id 走原路；
+      变体完全无可售批次时直插只绑变体的行（batch_id 空），单价取变体
+      reference_price_cents，为空则 400「暂无价格，无法预订」。
+    """
+    customer_id = await _authorize_cart(request, body.cart_id, principal)
+    if body.quantity <= 0:
+        raise HTTPException(400, "quantity must be positive")
+    if body.batch_id is None and body.variant_id is None:
+        raise HTTPException(400, "batch_id or variant_id is required")
+    pool = _pool(request)
+
+    batch_id = body.batch_id
+    variant_row = None
+    if batch_id is None:
+        async with pool.acquire() as conn:
+            variant_row = await conn.fetchrow(
+                """
+                SELECT pv.id, pv.product_id, pv.reference_price_cents
+                FROM product_variant pv
+                JOIN product p ON p.id = pv.product_id AND p.deleted_at IS NULL
+                WHERE pv.id = $1 AND pv.deleted_at IS NULL
+                """,
+                body.variant_id,
+            )
+            if variant_row is None:
+                raise HTTPException(404, "variant not found")
+            best = await _pick_best_batch(conn, body.variant_id)
+        if best is not None:
+            batch_id = str(best["id"])
+
+    response: dict[str, Any] | None = None
+    if batch_id is not None:
+        from omodul.add_line_item_to_cart import (
+            AddLineItemConfig,
+            AddLineItemInput,
+            add_line_item_to_cart,
+        )
+
+        cfg = _cfg(request, AddLineItemConfig)
+        inp = AddLineItemInput(cart_id=body.cart_id, batch_id=batch_id, quantity=body.quantity)
+        result = await add_line_item_to_cart(
+            cfg, inp, _output_dir(request, "add_line_item_to_cart"), pool=pool
+        )
+        if result["status"] != "failed":
+            response = {
+                "line_item_id": result["line_item_id"],
+                "new_quantity": result["quantity"],
+            }
+        elif "insufficient stock" in str(result["error"]["message"]):
+            async with pool.acquire() as conn:
+                batch_row = await conn.fetchrow(
+                    "SELECT variant_id, retail_price_cents FROM inventory_batch "
+                    "WHERE id = $1 AND deleted_at IS NULL",
+                    batch_id,
+                )
+            if batch_row is None:
+                raise HTTPException(400, result["error"]["message"])
+            response = await _route_add_line_item(
+                pool,
+                cart_id=body.cart_id,
+                batch_id=batch_id,
+                variant_id=batch_row["variant_id"],
+                quantity=body.quantity,
+                unit_price_cents=int(batch_row["retail_price_cents"]),
+            )
+        else:
+            raise HTTPException(400, result["error"]["message"])
+    else:
+        # 变体完全无可售批次：只绑变体的预订行，单价取变体参考价。
+        reference_price = variant_row["reference_price_cents"] if variant_row else None
+        if reference_price is None:
+            raise HTTPException(400, "该商品暂无价格，无法预订")
+        response = await _route_add_line_item(
+            pool,
+            cart_id=body.cart_id,
+            batch_id=None,
+            variant_id=body.variant_id,
+            quantity=body.quantity,
+            unit_price_cents=int(reference_price),
+        )
+
     # 推荐行为旁路: 有顾客身份时把这次加购记 cart_add, 喂协同过滤训练。
     # 失败只记 debug, 绝不影响加购主流程。
     if customer_id is not None:
         try:
-            async with _pool(request).acquire() as conn:
-                added_product_id = await conn.fetchval(
-                    'SELECT product_id FROM "inventory_batch" WHERE id = $1',
-                    body.batch_id,
-                )
+            added_product_id = None
+            if variant_row is not None:
+                added_product_id = variant_row["product_id"]
+            elif batch_id is not None:
+                async with pool.acquire() as conn:
+                    added_product_id = await conn.fetchval(
+                        'SELECT product_id FROM "inventory_batch" WHERE id = $1',
+                        batch_id,
+                    )
             if added_product_id:
                 _log_recommend_behavior(
                     customer_id, str(added_product_id), UserBehaviorType.CART_ADD
                 )
         except Exception:  # noqa: BLE001 - 行为日志是旁路, 不阻断加购
             logger.debug("recommend cart_add logging failed", exc_info=True)
-    return {
-        "line_item_id": result["line_item_id"],
-        "new_quantity": result["quantity"],
-    }
+    return response
 
 
 class UpdateLineItemRequest(BaseModel):
@@ -712,7 +999,13 @@ async def _create_order_from_cart(
     cart_id: str,
     customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """把购物车快照原子转为 payment_pending 订单，但不捕获支付。"""
+    """把购物车快照原子转为 pending 订单，但不捕获支付。
+
+    预订拆分：每行按结算当时可用量拆——现货部分沿用守卫 UPDATE 锁定并写
+    inventory_reservation，缺口记 order_line_item.preorder_qty 待配货，
+    不再因库存不足整单失败。行只绑变体（batch_id 空）或批次已不可售时，
+    按最佳批次规则现挑可售批次；仍无批次则整行预订。
+    """
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -742,16 +1035,14 @@ async def _create_order_from_cart(
 
             lines = await conn.fetch(
                 """
-                SELECT cli.id, cli.batch_id, cli.quantity, cli.unit_price_cents,
-                       cli.line_total_cents, ib.variant_id, ib.location_id,
-                       pv.product_id, ib.stock_qty, ib.reserved_qty,
-                       ib.status, ib.inspection_status
+                SELECT cli.id, cli.batch_id, cli.variant_id, cli.quantity,
+                       cli.unit_price_cents, cli.line_total_cents,
+                       ib.variant_id AS batch_variant_id
                 FROM cart_line_item cli
-                JOIN inventory_batch ib ON ib.id = cli.batch_id
-                JOIN product_variant pv ON pv.id = ib.variant_id
+                LEFT JOIN inventory_batch ib ON ib.id = cli.batch_id
                 WHERE cli.cart_id = $1 AND cli.deleted_at IS NULL
                 ORDER BY cli.created_at, cli.id
-                FOR UPDATE OF cli, ib
+                FOR UPDATE OF cli
                 """,
                 cart_id,
             )
@@ -759,39 +1050,55 @@ async def _create_order_from_cart(
                 raise ValueError("cart has no line items")
 
             order_id = uuid7()
+            prepared: list[dict[str, Any]] = []
             for line in lines:
                 quantity = int(line["quantity"])
-                if (
-                    quantity <= 0
-                    or line["status"] != "active"
-                    or line["inspection_status"] != "passed"
-                ):
-                    raise ValueError(f"batch {line['batch_id']} is not sellable")
-                reserved = await conn.fetchrow(
-                    """
-                    UPDATE inventory_batch
-                    SET reserved_qty = reserved_qty + $1, updated_at = NOW()
-                    WHERE id = $2 AND stock_qty - reserved_qty >= $1
-                    RETURNING id
-                    """,
-                    quantity,
-                    line["batch_id"],
+                if quantity <= 0:
+                    raise ValueError("quantity must be positive")
+                variant_id = line["variant_id"] or line["batch_variant_id"]
+                if variant_id is None:
+                    raise ValueError("cart line has no variant")
+                batch = None
+                if line["batch_id"] is not None:
+                    batch = await conn.fetchrow(
+                        """
+                        SELECT id, location_id, stock_qty, reserved_qty, status,
+                               inspection_status, deleted_at
+                        FROM inventory_batch WHERE id = $1 FOR UPDATE
+                        """,
+                        line["batch_id"],
+                    )
+                if batch is None:
+                    batch = await _pick_best_batch(conn, variant_id, for_update=True)
+                reserve_qty = min(quantity, _batch_available(batch))
+                prepared.append(
+                    {
+                        "variant_id": variant_id,
+                        "batch": batch,
+                        "quantity": quantity,
+                        "reserve_qty": reserve_qty,
+                        "preorder_qty": quantity - reserve_qty,
+                        "unit_price_cents": int(line["unit_price_cents"]),
+                        "line_total_cents": int(line["line_total_cents"]),
+                    }
                 )
-                if reserved is None:
-                    raise ValueError(f"insufficient stock for batch {line['batch_id']}")
+
             await conn.execute(
                 """
                 INSERT INTO customer_order
                     (id, cart_id, customer_id, region_code, currency, status,
                      subtotal_cents, discount_cents, tax_cents, shipping_cents,
                      grand_total_cents, billing_address, shipping_address)
-                VALUES ($1, $2, COALESCE($3, $4), $5, $6, 'pending', $7, $8, $9, $10,
-                        $11, $12::jsonb, $13::jsonb)
+                VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10,
+                        $11::jsonb, $12::jsonb)
                 """,
                 order_id,
                 cart["id"],
-                customer_id,
-                cart["customer_id"],
+                # 原写法 COALESCE($3, $4) 两个未定型参数会被 PG 推断为 text，
+                # 与 customer_id 的 uuid 列冲突导致整条 INSERT 解析失败（基线
+                # 存量 bug，实测任何参数组合都过不了）——有效客户在 Python
+                # 侧先算好再单参数直传。
+                customer_id or (str(cart["customer_id"]) if cart["customer_id"] else None),
                 cart["region_code"],
                 str(cart["currency"] or "CNY").upper(),
                 cart["subtotal_cents"],
@@ -802,65 +1109,50 @@ async def _create_order_from_cart(
                 json.dumps(cart["billing_address"] or {}, ensure_ascii=False),
                 json.dumps(cart["shipping_address"] or {}, ensure_ascii=False),
             )
-            for line in lines:
+            for prep in prepared:
+                batch = prep["batch"]
                 line_id = uuid7()
                 await conn.execute(
                     """
                     INSERT INTO order_line_item
-                        (id, order_id, batch_id, quantity, unit_price_cents, line_total_cents,
-                         location_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        (id, order_id, batch_id, variant_id, quantity, preorder_qty,
+                         unit_price_cents, line_total_cents, location_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
                     line_id,
                     order_id,
-                    line["batch_id"],
-                    line["quantity"],
-                    line["unit_price_cents"],
-                    line["line_total_cents"],
-                    line["location_id"],
+                    batch["id"] if batch is not None else None,
+                    prep["variant_id"],
+                    prep["quantity"],
+                    prep["preorder_qty"],
+                    prep["unit_price_cents"],
+                    prep["line_total_cents"],
+                    batch["location_id"] if batch is not None else None,
                 )
-                reservation_key = f"order:{order_id}:line:{line_id}"
-                reservation_id = await conn.fetchval(
-                    """
-                    INSERT INTO inventory_reservation
-                        (order_id, order_line_item_id, product_id, variant_id,
-                         location_id, batch_id, quantity, idempotency_key)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    RETURNING id
-                    """,
-                    str(order_id),
-                    str(line_id),
-                    str(line["product_id"]),
-                    str(line["variant_id"]) if line["variant_id"] else None,
-                    line["location_id"],
-                    line["batch_id"],
-                    line["quantity"],
-                    reservation_key,
-                )
-                await conn.execute(
-                    "UPDATE order_line_item SET reservation_id = $1 WHERE id = $2",
-                    reservation_id,
-                    line_id,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO stock_movement
-                        (product_id, variant_id, location_id, batch_id,
-                         movement_type, quantity, reference_type, reference_id,
-                         reason, idempotency_key)
-                    VALUES ($1, $2, $3, $4, 'reserve', $5, 'order', $6, $7, $8)
-                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
-                    DO NOTHING
-                    """,
-                    str(line["product_id"]),
-                    str(line["variant_id"]) if line["variant_id"] else None,
-                    line["location_id"],
-                    line["batch_id"],
-                    line["quantity"],
-                    str(order_id),
-                    "cart reservation transferred to order",
-                    f"movement:{reservation_key}",
-                )
+                if prep["reserve_qty"] > 0 and batch is not None:
+                    product_id = await conn.fetchval(
+                        "SELECT product_id FROM product_variant WHERE id = $1",
+                        prep["variant_id"],
+                    )
+                    reservation_id = await _reserve_batch_qty(
+                        conn,
+                        order_id=order_id,
+                        line_id=line_id,
+                        product_id=product_id,
+                        variant_id=prep["variant_id"],
+                        batch=batch,
+                        quantity=prep["reserve_qty"],
+                        reason="cart reservation transferred to order",
+                    )
+                    if reservation_id is None:
+                        # 已持批次行锁且按同一可用量计算，守卫失败只可能来自
+                        # 数据被锁外改动——按整单失败处理，不静默少锁。
+                        raise ValueError("insufficient stock while reserving")
+                    await conn.execute(
+                        "UPDATE order_line_item SET reservation_id = $1 WHERE id = $2",
+                        reservation_id,
+                        line_id,
+                    )
 
             await conn.execute(
                 "UPDATE cart SET status = 'payment_pending', updated_at = NOW() WHERE id = $1",
@@ -1592,6 +1884,395 @@ async def update_my_profile(
 @router.get("/customers/me/orders")
 async def get_my_orders(request: Request, principal: dict = Depends(get_current_customer)):
     return await queries.list_customer_orders(_pool(request), principal["customer_id"])
+
+
+@router.get("/customers/me/preorders")
+async def get_my_preorders(request: Request, principal: dict = Depends(get_current_customer)):
+    return await queries.list_customer_preorders(_pool(request), principal["customer_id"])
+
+
+# ── 商家预订 ─────────────────────────────────────────────────────
+# 商家客户（customer.is_merchant，后台 PATCH 开通）有专属常购清单：
+# 存一次变体+默认数量，之后在清单页填数量一键整单预订，不必去商城页
+# 逐个选。预订订单跳过购物车直接成单（cart_id 空），拆分规则与结算一致。
+
+
+async def _require_merchant(request: Request, principal: dict[str, Any]) -> dict[str, Any]:
+    """商家端点门禁：已登录客户且 is_merchant 为真；非商家一律 403。"""
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT id, is_merchant FROM "customer" WHERE id = $1 AND deleted_at IS NULL',
+            principal["customer_id"],
+        )
+    if row is None:
+        raise HTTPException(404, "customer not found")
+    if not row["is_merchant"]:
+        raise HTTPException(403, "merchant account required")
+    return {"customer_id": str(row["id"]), "is_merchant": True}
+
+
+async def _reserve_list_item(pool: Any, item_id: Any) -> dict[str, Any] | None:
+    """组装一条预订清单 item 的展示结构（价格/可用量口径与结算拆分一致）。"""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT crl.id, crl.variant_id, crl.default_qty,
+                   pv.product_id, pv.reference_price_cents, pv.option_values,
+                   p.title,
+                   best.retail_price_cents AS best_price_cents,
+                   best.media_assets AS best_media_assets,
+                   best.shelf_image_url AS best_shelf_image_url,
+                   COALESCE(avail.available_qty, 0)::int AS available_qty
+            FROM customer_reserve_list crl
+            JOIN product_variant pv ON pv.id = crl.variant_id AND pv.deleted_at IS NULL
+            JOIN product p ON p.id = pv.product_id AND p.deleted_at IS NULL
+            LEFT JOIN LATERAL (
+                SELECT ib.retail_price_cents, ib.media_assets, ib.shelf_image_url
+                FROM inventory_batch ib
+                WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
+                  AND ib.status = 'active' AND ib.inspection_status = 'passed'
+                ORDER BY GREATEST(ib.stock_qty - ib.reserved_qty, 0) DESC, ib.created_at ASC
+                LIMIT 1
+            ) best ON true
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(GREATEST(ib.stock_qty - ib.reserved_qty, 0)), 0)
+                    AS available_qty
+                FROM inventory_batch ib
+                WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
+                  AND ib.status = 'active' AND ib.inspection_status = 'passed'
+            ) avail ON true
+            WHERE crl.id = $1 AND crl.deleted_at IS NULL
+            """,
+            item_id,
+        )
+    if row is None:
+        return None
+    price = (
+        row["best_price_cents"]
+        if row["best_price_cents"] is not None
+        else row["reference_price_cents"]
+    )
+    return {
+        "id": str(row["id"]),
+        "variant_id": str(row["variant_id"]),
+        "product_id": str(row["product_id"]),
+        "title": row["title"],
+        "image_url": queries._resolve_image_url(
+            row["option_values"], row["best_media_assets"], row["best_shelf_image_url"]
+        ),
+        "price_cents": int(price) if price is not None else None,
+        "available_qty": int(row["available_qty"]),
+        "default_qty": int(row["default_qty"]),
+    }
+
+
+@router.get("/merchant/reserve-list")
+async def get_reserve_list(request: Request, principal: dict = Depends(get_current_customer)):
+    merchant = await _require_merchant(request, principal)
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM customer_reserve_list "
+            "WHERE customer_id = $1 AND deleted_at IS NULL ORDER BY created_at",
+            merchant["customer_id"],
+        )
+    items = []
+    for r in rows:
+        item = await _reserve_list_item(pool, r["id"])
+        if item is not None:
+            items.append(item)
+    return {"items": items}
+
+
+class ReserveListUpsertRequest(BaseModel):
+    variant_id: str
+    default_qty: int = 0
+
+
+@router.post("/merchant/reserve-list")
+async def upsert_reserve_list_item(
+    body: ReserveListUpsertRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    merchant = await _require_merchant(request, principal)
+    if body.default_qty < 0:
+        raise HTTPException(400, "default_qty must not be negative")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            variant = await conn.fetchrow(
+                """
+                SELECT pv.id FROM product_variant pv
+                JOIN product p ON p.id = pv.product_id AND p.deleted_at IS NULL
+                WHERE pv.id = $1 AND pv.deleted_at IS NULL
+                """,
+                body.variant_id,
+            )
+            if variant is None:
+                raise HTTPException(404, "variant not found")
+            item_id = await conn.fetchval(
+                """
+                UPDATE customer_reserve_list
+                SET deleted_at = NULL, default_qty = $3
+                WHERE customer_id = $1 AND variant_id = $2
+                RETURNING id
+                """,
+                merchant["customer_id"],
+                body.variant_id,
+                body.default_qty,
+            )
+            if item_id is None:
+                item_id = uuid7()
+                await conn.execute(
+                    """
+                    INSERT INTO customer_reserve_list (id, customer_id, variant_id, default_qty)
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    item_id,
+                    merchant["customer_id"],
+                    body.variant_id,
+                    body.default_qty,
+                )
+    item = await _reserve_list_item(pool, item_id)
+    if item is None:
+        raise HTTPException(404, "variant not found")
+    return item
+
+
+@router.delete("/merchant/reserve-list/{item_id}")
+async def delete_reserve_list_item(
+    item_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    merchant = await _require_merchant(request, principal)
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        updated = await conn.execute(
+            """
+            UPDATE customer_reserve_list SET deleted_at = NOW()
+            WHERE id = $1 AND customer_id = $2 AND deleted_at IS NULL
+            """,
+            item_id,
+            merchant["customer_id"],
+        )
+    if updated == "UPDATE 0":
+        raise HTTPException(404, "reserve list item not found")
+    return {"ok": True}
+
+
+class ReserveOrderItem(BaseModel):
+    variant_id: str
+    quantity: int
+
+
+class ReserveOrderRequest(BaseModel):
+    items: list[ReserveOrderItem]
+
+
+@router.post("/merchant/reserve-order")
+async def create_reserve_order(
+    body: ReserveOrderRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """商家一键预订：变体+数量直接成单（跳过购物车），拆分规则同结算。
+
+    每项先锁最佳批次：现货部分写 inventory_reservation，缺口记
+    preorder_qty。整单一个事务，任一项不存在/无价整单失败回滚。
+    """
+    merchant = await _require_merchant(request, principal)
+    items = [i for i in body.items if i.quantity > 0]
+    if not items:
+        raise HTTPException(400, "no items with positive quantity")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            order_id = uuid7()
+            prepared: list[dict[str, Any]] = []
+            grand_total_cents = 0
+            for item in items:
+                variant = await conn.fetchrow(
+                    """
+                    SELECT pv.id, pv.product_id, pv.reference_price_cents, p.title
+                    FROM product_variant pv
+                    JOIN product p ON p.id = pv.product_id AND p.deleted_at IS NULL
+                    WHERE pv.id = $1 AND pv.deleted_at IS NULL
+                    """,
+                    item.variant_id,
+                )
+                if variant is None:
+                    raise HTTPException(400, f"variant {item.variant_id} not found")
+                batch = await _pick_best_batch(conn, item.variant_id, for_update=True)
+                if batch is not None:
+                    unit_price_cents = int(batch["retail_price_cents"])
+                elif variant["reference_price_cents"] is not None:
+                    unit_price_cents = int(variant["reference_price_cents"])
+                else:
+                    raise HTTPException(400, "该商品暂无价格，无法预订")
+                reserve_qty = min(item.quantity, _batch_available(batch))
+                line_total_cents = unit_price_cents * item.quantity
+                grand_total_cents += line_total_cents
+                prepared.append(
+                    {
+                        "variant_id": variant["id"],
+                        "product_id": variant["product_id"],
+                        "title": variant["title"],
+                        "batch": batch,
+                        "quantity": item.quantity,
+                        "reserve_qty": reserve_qty,
+                        "preorder_qty": item.quantity - reserve_qty,
+                        "unit_price_cents": unit_price_cents,
+                        "line_total_cents": line_total_cents,
+                    }
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO customer_order
+                    (id, cart_id, customer_id, region_code, currency, status,
+                     subtotal_cents, discount_cents, tax_cents, shipping_cents,
+                     grand_total_cents, billing_address, shipping_address)
+                VALUES ($1, NULL, $2, NULL, 'CNY', 'pending', $3, 0, 0, 0, $3,
+                        '{}'::jsonb, '{}'::jsonb)
+                """,
+                order_id,
+                merchant["customer_id"],
+                grand_total_cents,
+            )
+            lines_out: list[dict[str, Any]] = []
+            for prep in prepared:
+                batch = prep["batch"]
+                line_id = uuid7()
+                await conn.execute(
+                    """
+                    INSERT INTO order_line_item
+                        (id, order_id, batch_id, variant_id, quantity, preorder_qty,
+                         unit_price_cents, line_total_cents, location_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    """,
+                    line_id,
+                    order_id,
+                    batch["id"] if batch is not None else None,
+                    prep["variant_id"],
+                    prep["quantity"],
+                    prep["preorder_qty"],
+                    prep["unit_price_cents"],
+                    prep["line_total_cents"],
+                    batch["location_id"] if batch is not None else None,
+                )
+                if prep["reserve_qty"] > 0 and batch is not None:
+                    reservation_id = await _reserve_batch_qty(
+                        conn,
+                        order_id=order_id,
+                        line_id=line_id,
+                        product_id=prep["product_id"],
+                        variant_id=prep["variant_id"],
+                        batch=batch,
+                        quantity=prep["reserve_qty"],
+                        reason="merchant reserve order",
+                    )
+                    if reservation_id is None:
+                        raise ValueError("insufficient stock while reserving")
+                    await conn.execute(
+                        "UPDATE order_line_item SET reservation_id = $1 WHERE id = $2",
+                        reservation_id,
+                        line_id,
+                    )
+                lines_out.append(
+                    {
+                        "variant_id": str(prep["variant_id"]),
+                        "title": prep["title"],
+                        "quantity": prep["quantity"],
+                        "reserved_qty": prep["reserve_qty"],
+                        "preorder_qty": prep["preorder_qty"],
+                    }
+                )
+            return {
+                "order_id": str(order_id),
+                "grand_total_cents": grand_total_cents,
+                "lines": lines_out,
+            }
+
+
+async def allocate_preorder_line(pool: Any, line_id: str) -> dict[str, Any] | None:
+    """后台配货：把一行 preorder_qty 尽量从现有库存锁定，返回配货结果。
+
+    行已有批次且可售则从该批次配，否则按最佳批次规则现挑；锁定写
+    inventory_reservation 并等量扣减 preorder_qty，batch_id 为空时回填。
+    无可用库存返回 allocated=0（不报错）；行不存在返回 None。
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            line = await conn.fetchrow(
+                """
+                SELECT oli.id, oli.order_id, oli.batch_id, oli.variant_id,
+                       oli.preorder_qty, ib.variant_id AS batch_variant_id
+                FROM order_line_item oli
+                LEFT JOIN inventory_batch ib ON ib.id = oli.batch_id
+                WHERE oli.id = $1
+                FOR UPDATE OF oli
+                """,
+                line_id,
+            )
+            if line is None:
+                return None
+            preorder_left = int(line["preorder_qty"])
+            if preorder_left <= 0:
+                return {"allocated": 0, "preorder_qty_left": preorder_left}
+            variant_id = line["variant_id"] or line["batch_variant_id"]
+            if variant_id is None:
+                return {"allocated": 0, "preorder_qty_left": preorder_left}
+            batch = None
+            if line["batch_id"] is not None:
+                batch = await conn.fetchrow(
+                    """
+                    SELECT id, location_id, stock_qty, reserved_qty, status,
+                           inspection_status, deleted_at
+                    FROM inventory_batch WHERE id = $1 FOR UPDATE
+                    """,
+                    line["batch_id"],
+                )
+                if _batch_available(batch) <= 0:
+                    batch = None
+            if batch is None:
+                batch = await _pick_best_batch(conn, variant_id, for_update=True)
+            alloc = min(preorder_left, _batch_available(batch))
+            if alloc <= 0 or batch is None:
+                return {"allocated": 0, "preorder_qty_left": preorder_left}
+            product_id = await conn.fetchval(
+                "SELECT product_id FROM product_variant WHERE id = $1",
+                variant_id,
+            )
+            reservation_id = await _reserve_batch_qty(
+                conn,
+                order_id=line["order_id"],
+                line_id=line["id"],
+                product_id=product_id,
+                variant_id=variant_id,
+                batch=batch,
+                quantity=alloc,
+                reason="preorder allocation",
+                key_suffix=f":alloc:{str(uuid7())[:8]}",
+            )
+            if reservation_id is None:
+                return {"allocated": 0, "preorder_qty_left": preorder_left}
+            await conn.execute(
+                """
+                UPDATE order_line_item
+                SET preorder_qty = preorder_qty - $1,
+                    batch_id = COALESCE(batch_id, $2),
+                    reservation_id = COALESCE(reservation_id, $3)
+                WHERE id = $4
+                """,
+                alloc,
+                batch["id"],
+                reservation_id,
+                line["id"],
+            )
+            return {"allocated": alloc, "preorder_qty_left": preorder_left - alloc}
 
 
 @router.get("/customers/me/addresses")
