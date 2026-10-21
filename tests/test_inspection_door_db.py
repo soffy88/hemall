@@ -53,6 +53,59 @@ def db_client(monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_own_rows():
+    """每个用例后按 FK 安全顺序清掉本文件造的行（标记：inspect- 邮箱 / inspect-slug-）。
+
+    共享测试库跨文件复用；phase10/refund 的 fixture 用
+    db_test_utils.cleanup_db_test_rows 按 batch_no 'BATCH-%' 整体删
+    inventory_batch，而那份清扫清单不含 inventory_reservation——本文件
+    经结算/配货产生的台账行若残留，后续文件的 setup 会撞
+    inventory_reservation_batch_id_fkey。这里自清理，不污染后续文件。
+    """
+    yield
+    _run(_cleanup_rows())
+
+
+async def _cleanup_rows():
+    conn = await _connect()
+    try:
+        async with conn.transaction():
+            cust = "SELECT id FROM customer WHERE email LIKE 'inspect-%@test.dev'"
+            orders = f"SELECT id FROM customer_order WHERE customer_id IN ({cust})"
+            # inventory_reservation.order_id 是 text 列，子查询须 cast
+            orders_text = f"SELECT id::text FROM customer_order WHERE customer_id IN ({cust})"
+            variants = (
+                "SELECT pv.id FROM product_variant pv JOIN product p "
+                "ON p.id = pv.product_id WHERE p.slug LIKE 'inspect-slug-%'"
+            )
+            # order_line_item.reservation_id 反指台账，必须先删订单行
+            await conn.execute(f"DELETE FROM order_line_item WHERE order_id IN ({orders})")
+            await conn.execute(
+                f"DELETE FROM inventory_reservation WHERE order_id IN ({orders_text}) "
+                "OR batch_id IN (SELECT id FROM inventory_batch "
+                f"WHERE variant_id IN ({variants}))"
+            )
+            await conn.execute(
+                "DELETE FROM stock_movement WHERE reference_type = 'order' "
+                f"AND reference_id IN ({orders_text})"
+            )
+            await conn.execute(f"DELETE FROM customer_order WHERE customer_id IN ({cust})")
+            await conn.execute(
+                "DELETE FROM cart_line_item WHERE cart_id IN "
+                f"(SELECT id FROM cart WHERE customer_id IN ({cust}))"
+            )
+            await conn.execute(f"DELETE FROM cart WHERE customer_id IN ({cust})")
+            await conn.execute(f"DELETE FROM customer_reserve_list WHERE customer_id IN ({cust})")
+            await conn.execute(f"DELETE FROM inventory_batch WHERE variant_id IN ({variants})")
+            await conn.execute("DELETE FROM stock_location WHERE name LIKE 'inspect\\_loc\\_%'")
+            await conn.execute(f"DELETE FROM product_variant WHERE id IN ({variants})")
+            await conn.execute("DELETE FROM product WHERE slug LIKE 'inspect-slug-%'")
+            await conn.execute("DELETE FROM customer WHERE email LIKE 'inspect-%@test.dev'")
+    finally:
+        await conn.close()
+
+
 def _customer_headers(customer_id: str, email: str) -> dict:
     from app.deps import get_settings
     from app.storefront import _sign_customer_token
