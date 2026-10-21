@@ -12,6 +12,7 @@ const navItems: SideBarNavItem[] = [
   { id: 'catalog', label: '分类与合集', href: '/admin/catalog' },
   { id: 'orders', label: '订单管理', href: '/admin/orders' },
   { id: 'draft-orders', label: '草稿订单', href: '/admin/draft-orders' },
+  { id: 'preorders', label: '预订配货', href: '/admin/preorders' },
   { id: 'manual-order', label: '代客下单', href: '/admin/manual-order' },
   { id: 'customers', label: '客户管理', href: '/admin/customers' },
   { id: 'marketing', label: '营销管理', href: '/admin/marketing' },

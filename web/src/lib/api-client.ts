@@ -2,6 +2,7 @@
 
 import type {
   Address,
+  AdminPreorder,
   AdminRegion,
   AgentCommandResult,
   AgentIngestResult,
@@ -15,12 +16,15 @@ import type {
   Customer,
   CustomerAddress,
   CustomerGroup,
+  CustomerPreorder,
   CustomerTokenResponse,
   DashboardKPIs,
   Discount,
   Fulfillment,
   GiftCard,
   Health,
+  MerchantReserveItem,
+  MerchantReserveOrderResult,
   NearbyFeedResponse,
   Order,
   OmodulResult,
@@ -388,6 +392,13 @@ export const api = {
       body: JSON.stringify({ cart_id: cartId, batch_id: batchId, quantity }),
     }),
 
+  /** 无批次商品按变体加购（缺货预订）：后端按 variant 建行，下单时拆预订量。 */
+  addVariantLineItem: (cartId: string, variantId: string, quantity: number = 1) =>
+    request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
+      method: 'POST',
+      body: JSON.stringify({ cart_id: cartId, variant_id: variantId, quantity }),
+    }),
+
   updateLineItem: (cartId: string, lineItemId: string, quantity: number) =>
     request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
       method: 'PUT',
@@ -508,6 +519,9 @@ export const api = {
   customerMyOrders: () =>
     request<Order[]>('/store/customers/me/orders', {}, 'customer'),
 
+  customerMyPreorders: () =>
+    request<CustomerPreorder[]>('/store/customers/me/preorders', {}, 'customer'),
+
   customerMyAddresses: () =>
     request<CustomerAddress[]>('/store/customers/me/addresses', {}, 'customer'),
 
@@ -527,6 +541,44 @@ export const api = {
     request<{ ok: boolean }>(`/store/customers/me/addresses/${addressId}`, {
       method: 'DELETE',
     }, 'customer'),
+
+  // ── 商家预订：常购清单 + 整单预订（仅商家账号，非商家后端 403） ──
+
+  merchantReserveList: () =>
+    request<{ items: MerchantReserveItem[] }>('/store/merchant/reserve-list', {}, 'customer'),
+
+  merchantReserveUpsert: (data: { variant_id: string; default_qty: number }) =>
+    request<MerchantReserveItem>('/store/merchant/reserve-list', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  merchantReserveDelete: (itemId: string) =>
+    request<{ ok: boolean }>(`/store/merchant/reserve-list/${itemId}`, {
+      method: 'DELETE',
+    }, 'customer'),
+
+  merchantReserveOrder: (items: { variant_id: string; quantity: number }[]) =>
+    request<MerchantReserveOrderResult>('/store/merchant/reserve-order', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }, 'customer'),
+
+  // ── 后台：商家标记 + 预订配货 ─────────────────────────────────
+
+  adminSetCustomerMerchant: (customerId: string, isMerchant: boolean) =>
+    request<Customer>(`/admin/customers/${customerId}/merchant`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_merchant: isMerchant }),
+    }, true),
+
+  adminListPreorders: () =>
+    request<AdminPreorder[]>('/admin/preorders', {}, true),
+
+  adminAllocatePreorder: (lineId: string) =>
+    request<{ allocated: number; preorder_qty_left: number }>(`/admin/preorders/${lineId}/allocate`, {
+      method: 'POST',
+    }, true),
 
   // ── 售后：RMA 客诉自助报案 ──────────────────────────────────
 

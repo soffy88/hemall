@@ -16,6 +16,7 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
   const [regions, setRegions] = useState<Region[]>([]);
   const [regionCode, setRegionCode] = useState('');
   const [customerEmail, setCustomerEmail] = useState<string | null>(null);
+  const [isMerchant, setIsMerchant] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -30,6 +31,19 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
       unsubscribe();
     };
   }, [pathname]);
+
+  // 商家账号才显示「商家预订」入口：登录态确定后拉一次 me 看 is_merchant。
+  useEffect(() => {
+    if (!customerEmail) {
+      setIsMerchant(false);
+      return;
+    }
+    let alive = true;
+    api.customerMe()
+      .then((me) => { if (alive) setIsMerchant(!!me.is_merchant); })
+      .catch(() => { if (alive) setIsMerchant(false); });
+    return () => { alive = false; };
+  }, [customerEmail]);
 
   useEffect(() => {
     api.storeRegions().then((data) => {
@@ -92,6 +106,11 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
             <Link href="/shop/cart" className="text-gray-600 hover:text-emerald-700 transition font-medium">
               🛒 购物车
             </Link>
+            {isMerchant && (
+              <Link href="/shop/merchant" className="text-gray-600 hover:text-emerald-700 transition font-medium">
+                🏪 商家预订
+              </Link>
+            )}
             <Link href="/shop/lookup" className="text-gray-500 hover:text-emerald-700 transition">
               查单
             </Link>
