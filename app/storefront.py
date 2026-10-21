@@ -259,6 +259,11 @@ def _sign_customer_token(
 # 语义总纲：客户不管有货没货都能下单。加购/下单时每行按当时可用量拆分：
 # 现货部分锁定 inventory_batch.reserved_qty 并写 inventory_reservation，
 # 缺口记 order_line_item.preorder_qty，待后台配货（allocate）补锁。
+# 占位所有权：omodul 加购/改量会先把数量计入批次 reserved_qty（购物车
+# 占位，无台账），占位量同步记在 cart_line_item.reserved_qty 上；结算时
+# 占位转正——台账按订单现货量全量记，计数器只补台账量与占位量的差额，
+# 购物车 preview 与结算可用量都把本行占位视为本行可用，避免双重占位
+# 与「库存恰好够却被自己占位误判全额预订」。
 
 
 async def _pick_best_batch(conn: Any, variant_id: Any, *, for_update: bool = False) -> Any | None:
@@ -327,12 +332,19 @@ async def _reserve_batch_qty(
     quantity: int,
     reason: str,
     key_suffix: str = "",
+    counter_delta: int | None = None,
 ) -> Any | None:
     """在批次上锁定 quantity 并写 reservation ledger + stock_movement。
 
     调用方须已对批次行 FOR UPDATE 且确认 quantity <= 可用量；这里仍用守卫
-    UPDATE 兜底（stock_qty - reserved_qty >= quantity），锁定失败返回 None。
+    UPDATE 兜底（stock_qty - reserved_qty >= 计数增量），锁定失败返回 None。
+
+    counter_delta：台账按 quantity 全量记，但批次计数器只增这个差额——
+    结算转正购物车占位时，占位量已在计数器里，计数器只需补台账量与
+    占位量的差（可为负，表示释放多余占位）；None 表示增量就是 quantity
+    （商家下单/配货等无购物车占位的路径）。
     """
+    delta = quantity if counter_delta is None else counter_delta
     updated = await conn.fetchrow(
         """
         UPDATE inventory_batch
@@ -340,7 +352,7 @@ async def _reserve_batch_qty(
         WHERE id = $2 AND stock_qty - reserved_qty >= $1
         RETURNING id
         """,
-        quantity,
+        delta,
         batch["id"],
     )
     if updated is None:
@@ -402,8 +414,6 @@ async def _route_add_line_item(
     同口径（oskill compute_cart_*）全量重算购物车 totals。本路径不动库存
     预留：配货在结算时按当时可用量拆分（现货锁定 + 缺口 preorder_qty）。
     """
-    from oskill import compute_cart_grand_total, compute_cart_subtotal
-
     async with pool.acquire() as conn:
         async with conn.transaction():
             cart = await conn.fetchrow(
@@ -466,29 +476,120 @@ async def _route_add_line_item(
                     unit_price_cents,
                     quantity * unit_price_cents,
                 )
-            line_rows = await conn.fetch(
-                "SELECT line_total_cents FROM cart_line_item "
-                "WHERE cart_id = $1 AND deleted_at IS NULL",
-                cart_id,
-            )
-            subtotal = compute_cart_subtotal([dict(r) for r in line_rows])
-            grand_total = compute_cart_grand_total(
-                subtotal,
-                discount=cart["discount_cents"],
-                tax=cart["tax_cents"],
-                shipping=cart["shipping_cents"],
-            )
-            await conn.execute(
-                "UPDATE cart SET subtotal_cents = $1, grand_total_cents = $2, "
-                "updated_at = NOW() WHERE id = $3",
-                subtotal,
-                grand_total,
-                cart_id,
-            )
+            await _recompute_cart_totals(conn, cart)
     return {"line_item_id": str(line_item_id), "new_quantity": new_qty}
 
 
 # ── 购物车 ──────────────────────────────────────────────────────────────
+
+
+async def _recompute_cart_totals(conn: Any, cart: Any) -> None:
+    """按 omodul 同口径（oskill compute_cart_*）全量重算购物车 totals 写回。
+
+    调用方须已在事务内持有 cart 行。
+    """
+    from oskill import compute_cart_grand_total, compute_cart_subtotal
+
+    line_rows = await conn.fetch(
+        "SELECT line_total_cents FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL",
+        cart["id"],
+    )
+    subtotal = compute_cart_subtotal([dict(r) for r in line_rows])
+    grand_total = compute_cart_grand_total(
+        subtotal,
+        discount=cart["discount_cents"],
+        tax=cart["tax_cents"],
+        shipping=cart["shipping_cents"],
+    )
+    await conn.execute(
+        "UPDATE cart SET subtotal_cents = $1, grand_total_cents = $2, "
+        "updated_at = NOW() WHERE id = $3",
+        subtotal,
+        grand_total,
+        cart["id"],
+    )
+
+
+async def _route_delete_line_item(pool: Any, *, cart_id: str, line: Any) -> None:
+    """路由层删行：软删行 + 只释放本行真实占位 + totals 重算。
+
+    omodul 删行按行数量无条件扣减批次 reserved_qty，对占位小于数量的
+    预订回退/混合行会多释放其他购物车/订单的占位，甚至触发
+    reserved_qty >= 0 的 CHECK 约束让删除直接失败。这类行改走本路径，
+    释放量恰好等于 cart_line_item.reserved_qty 记录的真实占位；对纯
+    omodul 行（占位 == 数量）效果与 omodul 完全一致。
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cart = await conn.fetchrow(
+                "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                cart_id,
+            )
+            if cart is None:
+                raise HTTPException(404, "cart not found")
+            await conn.execute(
+                "UPDATE cart_line_item SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1",
+                line["id"],
+            )
+            held = int(line["reserved_qty"] or 0)
+            if held > 0 and line["batch_id"] is not None:
+                await conn.execute(
+                    "UPDATE inventory_batch "
+                    "SET reserved_qty = GREATEST(0, reserved_qty - $1), "
+                    "updated_at = NOW() WHERE id = $2",
+                    held,
+                    line["batch_id"],
+                )
+            await _recompute_cart_totals(conn, cart)
+
+
+async def _route_update_line_quantity(
+    pool: Any, *, cart_id: str, line: Any, new_quantity: int
+) -> dict[str, Any]:
+    """路由层改量：仅用于「减量幅度超过本行占位」的行。
+
+    omodul 改量按 delta 无条件调整批次 reserved_qty，减量超过占位时
+    同样会多扣他人占位/触发 CHECK 约束。这类行改走本路径：新占位只
+    保留 min(原占位, 新数量)，计数器按占位实际减少量扣减；单价取批次
+    当前零售价、totals 全量重算，与 omodul 口径一致。
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cart = await conn.fetchrow(
+                "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                cart_id,
+            )
+            if cart is None:
+                raise HTTPException(404, "cart not found")
+            batch = await conn.fetchrow(
+                "SELECT retail_price_cents FROM inventory_batch WHERE id = $1",
+                line["batch_id"],
+            )
+            if batch is None:
+                raise HTTPException(400, "batch not found")
+            unit_price_cents = int(batch["retail_price_cents"])
+            old_held = int(line["reserved_qty"] or 0)
+            new_held = min(old_held, new_quantity)
+            await conn.execute(
+                "UPDATE cart_line_item SET quantity = $1, unit_price_cents = $2, "
+                "line_total_cents = $3, reserved_qty = $4, updated_at = NOW() "
+                "WHERE id = $5",
+                new_quantity,
+                unit_price_cents,
+                new_quantity * unit_price_cents,
+                new_held,
+                line["id"],
+            )
+            if old_held > new_held and line["batch_id"] is not None:
+                await conn.execute(
+                    "UPDATE inventory_batch "
+                    "SET reserved_qty = GREATEST(0, reserved_qty - $1), "
+                    "updated_at = NOW() WHERE id = $2",
+                    old_held - new_held,
+                    line["batch_id"],
+                )
+            await _recompute_cart_totals(conn, cart)
+    return {"line_item_id": str(line["id"]), "new_quantity": new_quantity}
 
 
 class CreateCartRequest(BaseModel):
@@ -626,6 +727,14 @@ async def add_line_item(
                 "line_item_id": result["line_item_id"],
                 "new_quantity": result["quantity"],
             }
+            # omodul 加购即占位：本次数量已计入批次 reserved_qty，把占位
+            # 量记到行上，结算转正时据此只补差额（见 _create_order_from_cart）。
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE cart_line_item SET reserved_qty = reserved_qty + $1 WHERE id = $2",
+                    body.quantity,
+                    result["line_item_id"],
+                )
         else:
             message = str(result["error"]["message"])
             async with pool.acquire() as conn:
@@ -713,17 +822,56 @@ async def update_line_item(
         update_line_item_in_cart,
     )
 
+    pool = _pool(request)
+    # 改量前先读本行数量与已记占位：omodul 按 (cart_id, batch_id) 定位行，
+    # 并按 delta 同步调整批次 reserved_qty；成功后把行上记录的占位量按
+    # 同一 delta 同步，结算转正才准确。
+    async with pool.acquire() as conn:
+        prior_line = await conn.fetchrow(
+            "SELECT id, batch_id, quantity, reserved_qty FROM cart_line_item "
+            "WHERE cart_id = $1 AND deleted_at IS NULL AND (id = $2 OR batch_id = $2) "
+            "ORDER BY CASE WHEN batch_id = $2 THEN 0 ELSE 1 END LIMIT 1",
+            body.cart_id,
+            body.line_item_id,
+        )
+    # 对外字段叫 line_item_id，前端传的是行 id、omodul 要的是 batch_id：
+    # 命中行时统一解析成该行批次再走原路（传批次 id 的旧调用方不受影响）；
+    # 无批次行（只绑变体）没有 batch_key，删除走路由层、改量维持原 400。
+    batch_key = (
+        str(prior_line["batch_id"])
+        if prior_line is not None and prior_line["batch_id"] is not None
+        else body.line_item_id
+    )
+    if prior_line is not None:
+        delta_pre = int(body.quantity) - int(prior_line["quantity"])
+        if delta_pre < 0 and -delta_pre > int(prior_line["reserved_qty"] or 0):
+            # 减量幅度超过本行占位：omodul 会多扣他人占位/触发 CHECK
+            # 约束，改走路由层精确改量。
+            return await _route_update_line_quantity(
+                pool,
+                cart_id=body.cart_id,
+                line=prior_line,
+                new_quantity=int(body.quantity),
+            )
     cfg = _cfg(request, UpdateLineItemConfig)
     # omodul 侧字段名为 batch_id（API 层对外仍叫 line_item_id）；
     # 原先传 line_item_id 会触发 pydantic ValidationError（batch_id 缺失），接口永远 500。
-    inp = UpdateLineItemInput(
-        cart_id=body.cart_id, batch_id=body.line_item_id, quantity=body.quantity
-    )
+    inp = UpdateLineItemInput(cart_id=body.cart_id, batch_id=batch_key, quantity=body.quantity)
     result = await update_line_item_in_cart(
-        cfg, inp, _output_dir(request, "update_line_item_in_cart"), pool=_pool(request)
+        cfg, inp, _output_dir(request, "update_line_item_in_cart"), pool=pool
     )
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
+    if prior_line is not None:
+        delta = int(body.quantity) - int(prior_line["quantity"])
+        if delta != 0:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE cart_line_item "
+                    "SET reserved_qty = GREATEST(0, reserved_qty + $1) WHERE id = $2",
+                    delta,
+                    prior_line["id"],
+                )
     return {
         "line_item_id": result["line_item_id"],
         "new_quantity": result["quantity"],
@@ -748,14 +896,39 @@ async def delete_line_item(
         delete_line_item_from_cart,
     )
 
+    pool = _pool(request)
+    # 删行前先读本行数量与已记占位：占位小于行数量的行（预订回退/混合
+    # 行）走 omodul 会多释放他人占位、甚至触发 CHECK 约束让删除失败，
+    # 改走路由层按真实占位释放；纯 omodul 行（占位 == 数量）仍走原路。
+    async with pool.acquire() as conn:
+        prior_line = await conn.fetchrow(
+            "SELECT id, batch_id, quantity, reserved_qty FROM cart_line_item "
+            "WHERE cart_id = $1 AND deleted_at IS NULL AND (id = $2 OR batch_id = $2) "
+            "ORDER BY CASE WHEN batch_id = $2 THEN 0 ELSE 1 END LIMIT 1",
+            body.cart_id,
+            body.line_item_id,
+        )
+    # 对外字段叫 line_item_id，前端传的是行 id、omodul 要的是 batch_id：
+    # 命中行时统一解析成该行批次再走原路（传批次 id 的旧调用方不受影响）；
+    # 无批次行（只绑变体）没有 batch_key，删除走路由层、改量维持原 400。
+    batch_key = (
+        str(prior_line["batch_id"])
+        if prior_line is not None and prior_line["batch_id"] is not None
+        else body.line_item_id
+    )
+    if prior_line is not None and int(prior_line["reserved_qty"] or 0) < int(
+        prior_line["quantity"]
+    ):
+        await _route_delete_line_item(pool, cart_id=body.cart_id, line=prior_line)
+        return {"ok": True}
     cfg = _cfg(request, DeleteLineItemConfig)
     # omodul 侧字段名为 batch_id（见上）。
-    inp = DeleteLineItemInput(cart_id=body.cart_id, batch_id=body.line_item_id)
+    inp = DeleteLineItemInput(cart_id=body.cart_id, batch_id=batch_key)
     result = await delete_line_item_from_cart(
         cfg,
         inp,
         _output_dir(request, "delete_line_item_from_cart"),
-        pool=_pool(request),
+        pool=pool,
     )
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
@@ -1099,6 +1272,7 @@ async def _create_order_from_cart(
             lines = await conn.fetch(
                 """
                 SELECT cli.id, cli.batch_id, cli.variant_id, cli.quantity,
+                       cli.reserved_qty AS cart_held_qty,
                        cli.unit_price_cents, cli.line_total_cents,
                        ib.variant_id AS batch_variant_id
                 FROM cart_line_item cli
@@ -1133,7 +1307,30 @@ async def _create_order_from_cart(
                     )
                 if batch is None:
                     batch = await _pick_best_batch(conn, variant_id, for_update=True)
-                reserve_qty = min(quantity, _batch_available(batch))
+                # 购物车占位转正：本行若在服务批次上有 omodul 占位
+                # （cart_held_qty），这部分库存本就是给本行的，可用量要
+                # 把它加回；计数器在锁定时只补差额（见 _reserve_batch_qty
+                # 的 counter_delta）。服务批次被替换/不可售/不存在时占位
+                # 无法转正，锁定前先把占位释放回原批次计数器。
+                cart_held = int(line["cart_held_qty"] or 0)
+                same_batch = (
+                    batch is not None
+                    and line["batch_id"] is not None
+                    and str(batch["id"]) == str(line["batch_id"])
+                )
+                sellable = (
+                    batch is not None
+                    and batch["deleted_at"] is None
+                    and batch["status"] == "active"
+                    and batch["inspection_status"] == "passed"
+                )
+                own_held = cart_held if (same_batch and sellable) else 0
+                release_batch_id = (
+                    line["batch_id"]
+                    if cart_held > 0 and line["batch_id"] is not None and own_held == 0
+                    else None
+                )
+                reserve_qty = min(quantity, _batch_available(batch) + own_held)
                 prepared.append(
                     {
                         "variant_id": variant_id,
@@ -1141,6 +1338,9 @@ async def _create_order_from_cart(
                         "quantity": quantity,
                         "reserve_qty": reserve_qty,
                         "preorder_qty": quantity - reserve_qty,
+                        "own_held": own_held,
+                        "cart_held": cart_held,
+                        "release_batch_id": release_batch_id,
                         "unit_price_cents": int(line["unit_price_cents"]),
                         "line_total_cents": int(line["line_total_cents"]),
                     }
@@ -1192,6 +1392,19 @@ async def _create_order_from_cart(
                     prep["line_total_cents"],
                     batch["location_id"] if batch is not None else None,
                 )
+                if prep["release_batch_id"] is not None:
+                    # 本行在原批次上的占位无法转正（批次被替换/不可售）：
+                    # 先把占位释放回原批次计数器，避免库存被僵尸占位锁死。
+                    await conn.execute(
+                        """
+                        UPDATE inventory_batch
+                        SET reserved_qty = GREATEST(0, reserved_qty - $1),
+                            updated_at = NOW()
+                        WHERE id = $2
+                        """,
+                        prep["cart_held"],
+                        prep["release_batch_id"],
+                    )
                 if prep["reserve_qty"] > 0 and batch is not None:
                     product_id = await conn.fetchval(
                         "SELECT product_id FROM product_variant WHERE id = $1",
@@ -1206,6 +1419,9 @@ async def _create_order_from_cart(
                         batch=batch,
                         quantity=prep["reserve_qty"],
                         reason="cart reservation transferred to order",
+                        # 台账按现货量全量记；计数器里已有本行占位
+                        # own_held，只补差额，避免双重占位。
+                        counter_delta=prep["reserve_qty"] - prep["own_held"],
                     )
                     if reservation_id is None:
                         # 已持批次行锁且按同一可用量计算，守卫失败只可能来自

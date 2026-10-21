@@ -335,8 +335,9 @@ def test_inspection_pass_then_add_and_checkout_reserves(db_client):
 
     r = _add(db_client, headers, cart_id, batch_id=bid, quantity=4)
     assert r.status_code == 200, r.text
-    # 基线语义：omodul 加购即预留——加购后批次 reserved_qty 先 +4（购物车
-    # 占位），结算时再按订单锁定 +4；本用例只断言这条既有口径与拆分结果。
+    # 语义（双重占位修复后）：omodul 加购即预留——加购后批次 reserved_qty
+    # 先 +4（购物车占位）；结算时占位转正，计数器只补差额、台账记全量，
+    # 结算后仍为 4（修复前会被二次锁定成 8，与台账不一致）。
     batch = _run(_fetchone("SELECT reserved_qty FROM inventory_batch WHERE id = $1", bid))
     assert batch["reserved_qty"] == 4
 
@@ -352,7 +353,7 @@ def test_inspection_pass_then_add_and_checkout_reserves(db_client):
     assert order_line["preorder_qty"] == 0
     assert order_line["reservation_id"] is not None
     batch = _run(_fetchone("SELECT reserved_qty FROM inventory_batch WHERE id = $1", bid))
-    assert batch["reserved_qty"] == 8
+    assert batch["reserved_qty"] == 4
 
 
 def test_inspection_endpoint_auth_and_validation(db_client):

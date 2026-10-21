@@ -562,7 +562,8 @@ async def get_cart(pool: Any, cart_id: str) -> dict | None:
                         THEN GREATEST(ib.stock_qty - ib.reserved_qty, 0) ELSE 0 END,
                     'preorder_qty_preview', GREATEST(cli.quantity - (CASE WHEN ib.id IS NOT NULL
                         AND ib.status = 'active' AND ib.inspection_status = 'passed'
-                        THEN GREATEST(ib.stock_qty - ib.reserved_qty, 0) ELSE 0 END), 0)
+                        THEN GREATEST(ib.stock_qty - ib.reserved_qty, 0)
+                             + COALESCE(cli.reserved_qty, 0) ELSE 0 END), 0)
                 )) AS line_items
                 FROM cart_line_item cli
                 LEFT JOIN inventory_batch ib ON cli.batch_id = ib.id
