@@ -191,6 +191,18 @@ CREATE TABLE IF NOT EXISTS customer_reserve_list (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_reserve_list_active
     ON customer_reserve_list(customer_id, variant_id)
     WHERE deleted_at IS NULL;
+
+-- ── 微信小程序登录 ──────────────────────────────────────────────
+-- 客户的微信身份绑定（小程序 jscode2session 换得）。openid 部分唯一：
+-- 一个微信号只能绑一个客户；unionid 仅记录、不强制唯一；未绑定行
+-- 为 NULL 不占唯一位。
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS wechat_openid TEXT;
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS wechat_unionid TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_wechat_openid
+    ON customer(wechat_openid)
+    WHERE wechat_openid IS NOT NULL;
 """
 
 

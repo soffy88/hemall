@@ -30,6 +30,7 @@ _SECRET_FILE_MAP: dict[str, str] = {
     "HEMALL_WECHAT_PAY_API_V3_KEY_FILE": "wechat_pay_api_v3_key",
     "HEMALL_WECHAT_PAY_PRIVATE_KEY_FILE": "wechat_pay_private_key_path",
     "HEMALL_WECHAT_PAY_PLATFORM_CERT_FILE": "wechat_pay_platform_cert_path",
+    "HEMALL_WECHAT_MP_APP_SECRET_FILE": "wechat_mp_app_secret",
     "HEMALL_STRIPE_SECRET_KEY_FILE": "stripe_secret_key",
     "HEMALL_STRIPE_WEBHOOK_SECRET_FILE": "stripe_webhook_secret",
     "HEMALL_ALIPAY_PRIVATE_KEY_FILE": "alipay_private_key_path",
@@ -165,6 +166,14 @@ class Settings(BaseSettings):
     wechat_pay_api_v3_key: str = ""
     wechat_pay_platform_cert_path: str = ""
     wechat_pay_notify_url: str = ""
+    # 微信小程序登录 (jscode2session)：appid/secret 在小程序后台获取，
+    # secret 支持 HEMALL_WECHAT_MP_APP_SECRET_FILE。两者留空 = 微信登录
+    # 未配置，/store/customers/wechat-login 与 wechat-bind 返回 503。
+    # 注意：小程序 JSAPI 支付时，上面的 wechat_pay_appid 应填**小程序的
+    # appid**（下单 appid 必须与 payer.openid 所属应用一致），通常与
+    # wechat_mp_app_id 相同，不要与公众号/移动应用 appid 混用。
+    wechat_mp_app_id: str = ""
+    wechat_mp_app_secret: str = ""
     # 证书轮换引擎的持久化落盘路径 (JSON: serial_no/expire_time/pem)。
     # 轮换引擎每 12h 拉 /v3/certificates 热更新内存网关 + 写此文件，重启后
     # bootstrap 读文件继续用，消灭"到期运维手动更新"。

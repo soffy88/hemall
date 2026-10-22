@@ -1,21 +1,25 @@
 """支付 SDK 生产分支的 fail-fast（audit tests.md P2-2）。
 
-背景: app/payments/{wechat,alipay}.py 里 create_order / handle_notify /
-query_order / refund 的生产分支共 8 处 `NotImplementedError`，而沙箱分支一切
-正常。生产配置一旦真的走到这些分支，结果是：
+背景: app/payments/{wechat,alipay}.py 的生产分支原先共 8 处
+`NotImplementedError`，而沙箱分支一切正常。生产配置一旦真的走到这些分支，
+结果是：
 
   - 微信回调 `handle_notify` 抛 NotImplementedError → **支付状态永不回写，
     订单永久卡在 pending**；
   - `POST /payments/refund` 必 500。
 
-真正的微信/Stripe 收款走 `app/ext/payment_gateways.py`
-（`HEMALL_PAYMENT_GATEWAY_PROVIDER` + 密钥装配），这两个 SDK 文件是遗留骨架。
+2026-10 小程序接入后，微信的 create_order(JSAPI) / handle_notify /
+query_order 生产分支已实现（真实签名/验签/解密，由
+tests/test_wechat_pay_jsapi.py 的密码学测试覆盖）；支付宝仍是遗留骨架，
+微信 refund 与无 openid 的下单分支仍未实现。真正的微信/Stripe 收款仍走
+`app/ext/payment_gateways.py`（`HEMALL_PAYMENT_GATEWAY_PROVIDER` + 密钥装配）。
 本文件锁定两件事：
 
-1. 选到"生产模式"（即配了 WECHAT_PAY_MCH_ID / ALIPAY_APP_ID）时**构造即失败**，
-   不给"运行到一半才 500"的机会；
-2. 8 处 `NotImplementedError` 逐条锁死，防止有人改成 `pass` / `return {}`
-   变成假成功（假成功 = 回调被当成验签通过 = 订单被白嫖）。
+1. 选到"生产模式"但配置不全（只配了 WECHAT_PAY_MCH_ID / ALIPAY_APP_ID）
+   时**构造即失败**，不给"运行到一半才 500"的机会；
+2. 剩余 `NotImplementedError` 逐条锁死，防止有人改成 `pass` / `return {}`
+   变成假成功（假成功 = 回调被当成验签通过 = 订单被白嫖）；已实现的微信
+   分支则锁 fail-closed 行为（回调失败一律 None、查单回 err）。
 """
 
 from __future__ import annotations
@@ -148,7 +152,10 @@ def _forced_production_provider(cls, sandbox_attr="_sandbox"):
 
 
 @pytest.mark.asyncio
-async def test_wechat_production_branches_all_raise():
+async def test_wechat_production_branches_fail_closed():
+    """微信生产分支已实现：强制实例（绕过构造、无完整配置）下仍须
+    fail-closed——无 openid 下单与 refund 仍 NotImplementedError；回调
+    无平台证书 → None（拒绝，不是假成功）；查单无私钥 → err 回填。"""
     from app.payments.wechat import WeChatPayOrderRequest, WeChatPayProvider
 
     p = _forced_production_provider(WeChatPayProvider)
@@ -156,10 +163,9 @@ async def test_wechat_production_branches_all_raise():
         await p.create_order(
             WeChatPayOrderRequest(out_trade_no="o1", description="d", total_amount=1)
         )
-    with pytest.raises(NotImplementedError):
-        await p.handle_notify({}, b"{}")
-    with pytest.raises(NotImplementedError):
-        await p.query_order("o1")
+    assert await p.handle_notify({}, b"{}") is None
+    result = await p.query_order("o1")
+    assert result.get("err_code") == "NOT_CONFIGURED"
     with pytest.raises(NotImplementedError):
         await p.refund(out_trade_no="o1", out_refund_no="r1", refund_amount=1)
 
@@ -203,8 +209,9 @@ def test_every_not_implemented_error_in_payments_still_raises():
                         isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value
                         for a in node.exc.args
                     ), f"{path.name}: NotImplementedError 必须带非空说明字符串"
-    # 8 处方法级分支 (wechat/alipay 各 4) + 2 处构造期 fail-fast。
-    assert count == 10, f"payments 包应有 10 处 NotImplementedError，实际 {count}"
+    # 微信: 构造 fail-fast 2 (配置不全/私钥不可用) + 无 openid 下单 1
+    # + refund 1 = 4；支付宝: 构造 1 + 方法级 4 = 5；共 9。
+    assert count == 9, f"payments 包应有 9 处 NotImplementedError，实际 {count}"
 
 
 # ── 4. HTTP 层: 生产下遗留回调端点本来就不可达（再确认一次）──────────────

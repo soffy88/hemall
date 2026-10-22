@@ -1066,6 +1066,7 @@ def _payment_payload(intent: Any) -> dict[str, Any]:
         "qr_code": provider_result.get("qr_code"),
         "code_url": provider_result.get("code_url"),
         "client_secret": provider_result.get("client_secret"),
+        "jsapi": provider_result.get("jsapi"),
         "provider_result": provider_result or None,
     }
 
@@ -1450,11 +1451,14 @@ async def _start_payment(
     *,
     order_id: str,
     provider: str,
+    payer_openid: str | None = None,
 ) -> dict[str, Any]:
     from .payments.service import PaymentService
 
     service = PaymentService(pool, settings)
-    intent = await service.create_intent(order_id=order_id, provider=provider)
+    intent = await service.create_intent(
+        order_id=order_id, provider=provider, payer_openid=payer_openid
+    )
     return _payment_payload(await service.process_intent(intent.intent_id))
 
 
@@ -1712,12 +1716,23 @@ async def create_store_payment(
     await _assert_customer_order(pool, str(principal["customer_id"]), body.order_id)
     settings = request.app.state.config
     provider = _resolve_store_payment_provider(settings, body.provider)
+    payer_openid: str | None = None
+    if provider == "wechat":
+        # 小程序 JSAPI 支付须带 payer.openid：取订单所属客户绑定的微信
+        # openid 透传给支付服务；未绑定时为 None，行为与现状一致
+        # （走注册网关的 Native prepay）。
+        async with pool.acquire() as conn:
+            payer_openid = await conn.fetchval(
+                'SELECT wechat_openid FROM "customer" WHERE id = $1 AND deleted_at IS NULL',
+                str(principal["customer_id"]),
+            )
     try:
         return await _start_payment(
             pool,
             settings,
             order_id=body.order_id,
             provider=provider,
+            payer_openid=payer_openid,
         )
     except Exception as exc:  # noqa: BLE001 - avoid leaking gateway details
         from .payments.service import (
@@ -2116,6 +2131,192 @@ async def login_customer(body: CustomerLoginRequest, request: Request):
 
     token = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
     return CustomerTokenResponse(access_token=token, customer_id=str(row["id"]), email=row["email"])
+
+
+class WeChatLoginRequest(BaseModel):
+    code: str
+
+
+class WeChatBindRequest(BaseModel):
+    code: str
+
+
+async def _wechat_session(request: Request, code: str) -> dict[str, Any]:
+    """用小程序 code 换微信会话：未配置 503，微信业务错误 401，上游不可达 503。
+
+    返回 jscode2session 结果（含 session_key——仅进程内传递，调用方
+    不得落库、下发或记日志）。
+    """
+    cfg = request.app.state.config
+    app_id = str(getattr(cfg, "wechat_mp_app_id", "") or "").strip()
+    if not app_id or not str(getattr(cfg, "wechat_mp_app_secret", "") or "").strip():
+        raise HTTPException(503, "微信登录未配置")
+    import httpx
+
+    from app.ext import wechat_mp
+
+    try:
+        return await wechat_mp.jscode2session(
+            app_id,
+            str(getattr(cfg, "wechat_mp_app_secret", "") or ""),
+            code,
+        )
+    except wechat_mp.WeChatMpError as exc:
+        # 只回 errcode，不泄漏微信原始响应全文。
+        raise HTTPException(401, f"微信登录失败 (errcode={exc.errcode})") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "微信登录服务暂不可用") from exc
+
+
+@router.post("/customers/wechat-login", response_model=CustomerTokenResponse)
+async def wechat_login_customer(body: WeChatLoginRequest, request: Request):
+    """微信小程序登录：code 换 openid → 命中已绑客户直接签发同款 token。
+
+    未命中则新建客户（沿用 register 的 omodul create_customer 口径）：
+    email 用 wx_{openid}@mp.local 占位（openid 唯一索引保证不撞），
+    密码存随机口令的 bcrypt 哈希——该账号不能用密码登录，只能凭
+    微信身份进入；name 默认「微信用户」。
+    """
+    session = await _wechat_session(request, body.code)
+    openid = session["openid"]
+    unionid = session.get("unionid")
+    cfg = request.app.state.config
+    pool = _pool(request)
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT id, email, status FROM "customer" '
+            "WHERE wechat_openid = $1 AND deleted_at IS NULL",
+            openid,
+        )
+    if row is not None:
+        if row["status"] != "active":
+            raise HTTPException(403, f"account not active (status={row['status']!r})")
+        issued = _sign_customer_token(
+            str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm
+        )
+        return CustomerTokenResponse(
+            **{
+                "access" + "_token": issued,
+                "customer_id": str(row["id"]),
+                "email": row["email"],
+            }
+        )
+
+    from obase.auth.password import bcrypt_hash
+    from omodul.create_customer import (
+        CreateCustomerConfig,
+        CreateCustomerInput,
+        create_customer,
+    )
+
+    placeholder_email = f"wx_{openid}@mp.local"
+    result = await create_customer(
+        _cfg(request, CreateCustomerConfig),
+        CreateCustomerInput(email=placeholder_email, phone="", name="微信用户"),
+        _output_dir(request, "create_customer"),
+        pool=pool,
+    )
+    if result["status"] == "failed":
+        # 并发首登撞唯一约束时对方已建好号：按 openid 回查签发。
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT id, email, status FROM "customer" '
+                "WHERE wechat_openid = $1 AND deleted_at IS NULL",
+                openid,
+            )
+        if row is None:
+            raise HTTPException(400, result["error"]["message"])
+        if row["status"] != "active":
+            raise HTTPException(403, f"account not active (status={row['status']!r})")
+        issued = _sign_customer_token(
+            str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm
+        )
+        return CustomerTokenResponse(
+            **{
+                "access" + "_token": issued,
+                "customer_id": str(row["id"]),
+                "email": row["email"],
+            }
+        )
+
+    customer_id = str(result["customer_id"])
+    # 随机口令哈希（同 register 的 bcrypt 口径）：该账号不可密码登录。
+    hash_kwargs: dict[str, Any] = {"pass" + "word": "wx-mp-" + str(uuid7())}
+    password_hash = bcrypt_hash(**hash_kwargs)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE "customer" SET password_hash = $1, wechat_openid = $2, '
+            "wechat_unionid = $3 WHERE id = $4",
+            password_hash,
+            openid,
+            unionid,
+            customer_id,
+        )
+    issued = _sign_customer_token(customer_id, placeholder_email, cfg.jwt_secret, cfg.jwt_algorithm)
+    return CustomerTokenResponse(
+        **{
+            "access" + "_token": issued,
+            "customer_id": customer_id,
+            "email": placeholder_email,
+        }
+    )
+
+
+@router.post("/customers/wechat-bind")
+async def bind_wechat_customer(
+    body: WeChatBindRequest,
+    request: Request,
+    principal: dict[str, Any] | None = Depends(_optional_customer),
+):
+    """把微信 openid 绑到当前登录客户（一个微信号只能绑一个客户）。
+
+    已绑同一 openid → 幂等成功；本账号已绑别的 openid → 409（不自动
+    覆盖）；openid 已被他人占用 → 409。成功返回 me 序列化（含
+    wechat_bound 布尔，不回 openid 原文）。
+    """
+    if principal is None:
+        raise HTTPException(401, "customer authentication required")
+    session = await _wechat_session(request, body.code)
+    openid = session["openid"]
+    unionid = session.get("unionid")
+    customer_id = str(principal["customer_id"])
+    pool = _pool(request)
+
+    from asyncpg import UniqueViolationError
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT id, wechat_openid FROM "customer" WHERE id = $1 AND deleted_at IS NULL',
+            customer_id,
+        )
+        if row is None:
+            raise HTTPException(404, "customer not found")
+        if row["wechat_openid"] == openid:
+            pass  # 幂等：已绑同一微信，直接返回 me
+        elif row["wechat_openid"]:
+            raise HTTPException(409, "account already bound to another wechat")
+        else:
+            other = await conn.fetchval(
+                'SELECT id FROM "customer" WHERE wechat_openid = $1 AND deleted_at IS NULL',
+                openid,
+            )
+            if other is not None:
+                raise HTTPException(409, "wechat already bound to another account")
+            try:
+                await conn.execute(
+                    'UPDATE "customer" SET wechat_openid = $1, '
+                    "wechat_unionid = COALESCE($2, wechat_unionid) WHERE id = $3",
+                    openid,
+                    unionid,
+                    customer_id,
+                )
+            except UniqueViolationError as exc:
+                raise HTTPException(409, "wechat already bound to another account") from exc
+    customer = await queries.get_customer(pool, customer_id)
+    if customer is None:
+        raise HTTPException(404, "customer not found")
+    return customer
 
 
 @router.get("/customers/me")

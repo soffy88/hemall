@@ -746,6 +746,31 @@ class PaymentService:
             if not response.success:
                 raise PaymentServiceError(response.err_msg or "alipay prepay failed")
             return {"qr_code": response.qr_code, "gateway": "alipay"}
+        if provider == PaymentProvider.WECHAT.value and payer_openid:
+            from .wechat import WeChatPayOrderRequest, WeChatPayProvider
+
+            wx_gateway = gateway
+            if not hasattr(wx_gateway, "create_order"):
+                wx_gateway = WeChatPayProvider(settings=self._settings)
+            wx_response = await wx_gateway.create_order(
+                WeChatPayOrderRequest(
+                    out_trade_no=out_trade_no,
+                    description=description,
+                    total_amount=total_fee_cents,
+                    payer_openid=payer_openid,
+                )
+            )
+            if not wx_response.success:
+                raise PaymentServiceError(wx_response.err_msg or "wechat prepay failed")
+            wx_result: dict[str, Any] = {
+                "code_url": wx_response.code_url,
+                "prepay_id": wx_response.prepay_id,
+                "gateway": "wechat",
+            }
+            jsapi_params = getattr(wx_response, "jsapi_params", None)
+            if jsapi_params:
+                wx_result["jsapi"] = jsapi_params
+            return wx_result
         if hasattr(gateway, "prepay"):
             return await gateway.prepay(
                 out_trade_no=out_trade_no,

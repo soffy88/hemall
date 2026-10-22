@@ -435,6 +435,7 @@ async def list_customers(
             """
             SELECT c.id, c.email, c.phone, c.name, c.customer_group_id,
                    c.is_merchant, c.status, c.created_at, c.updated_at,
+                   (c.wechat_openid IS NOT NULL) AS wechat_bound,
                    COUNT(co.id)::int AS order_count,
                    COALESCE(SUM(co.grand_total_cents), 0)::int AS total_spent_cents
             FROM customer c
@@ -457,6 +458,7 @@ async def get_customer(pool: Any, customer_id: str) -> dict | None:
             """
             SELECT c.id, c.email, c.phone, c.name, c.customer_group_id,
                    c.is_merchant, c.status, c.created_at, c.updated_at,
+                   (c.wechat_openid IS NOT NULL) AS wechat_bound,
                    COUNT(co.id)::int AS order_count,
                    COALESCE(SUM(co.grand_total_cents), 0)::int AS total_spent_cents
             FROM customer c
