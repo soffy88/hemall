@@ -51,8 +51,8 @@ def _request(settings: Settings, pool: _FakePool, token: str | None = None) -> R
         "http_version": "1.1",
         "method": "GET",
         "scheme": "http",
-        "path": "/store/carts/cart-1",
-        "raw_path": b"/store/carts/cart-1",
+        "path": "/store/carts/00000000-0000-4000-8000-000000000001",
+        "raw_path": b"/store/carts/00000000-0000-4000-8000-000000000001",
         "query_string": b"",
         "headers": headers,
         "client": ("testclient", 1234),
@@ -66,25 +66,31 @@ def test_guest_cart_requires_capability():
     settings = Settings()
     request = _request(settings, _FakePool())
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(_authorize_cart(request, "cart-1", None))
+        asyncio.run(_authorize_cart(request, "00000000-0000-4000-8000-000000000001", None))
     assert exc.value.status_code == 404
 
 
 def test_guest_cart_accepts_only_cart_scoped_signed_capability():
     settings = Settings()
-    token = _sign_cart_capability("cart-1", settings.jwt_secret, settings.jwt_algorithm)
+    token = _sign_cart_capability(
+        "00000000-0000-4000-8000-000000000001", settings.jwt_secret, settings.jwt_algorithm
+    )
     request = _request(settings, _FakePool(), token)
-    assert _has_cart_capability(request, "cart-1")
-    assert not _has_cart_capability(request, "cart-2")
-    assert asyncio.run(_authorize_cart(request, "cart-1", None)) is None
+    assert _has_cart_capability(request, "00000000-0000-4000-8000-000000000001")
+    assert not _has_cart_capability(request, "00000000-0000-4000-8000-000000000002")
+    assert (
+        asyncio.run(_authorize_cart(request, "00000000-0000-4000-8000-000000000001", None)) is None
+    )
 
 
 def test_guest_capability_cannot_access_customer_owned_cart():
     settings = Settings()
-    token = _sign_cart_capability("cart-1", settings.jwt_secret, settings.jwt_algorithm)
+    token = _sign_cart_capability(
+        "00000000-0000-4000-8000-000000000001", settings.jwt_secret, settings.jwt_algorithm
+    )
     request = _request(settings, _FakePool(owner="customer-2"), token)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(_authorize_cart(request, "cart-1", None))
+        asyncio.run(_authorize_cart(request, "00000000-0000-4000-8000-000000000001", None))
     assert exc.value.status_code == 404
 
 
@@ -92,17 +98,27 @@ def test_customer_cannot_access_another_customers_cart():
     settings = Settings()
     request = _request(settings, _FakePool(owner="customer-2"))
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(_authorize_cart(request, "cart-1", {"customer_id": "customer-1"}))
+        asyncio.run(
+            _authorize_cart(
+                request, "00000000-0000-4000-8000-000000000001", {"customer_id": "customer-1"}
+            )
+        )
     assert exc.value.status_code == 404
 
 
 def test_customer_can_claim_guest_cart_only_with_capability():
     settings = Settings()
     pool = _FakePool()
-    token = _sign_cart_capability("cart-1", settings.jwt_secret, settings.jwt_algorithm)
+    token = _sign_cart_capability(
+        "00000000-0000-4000-8000-000000000001", settings.jwt_secret, settings.jwt_algorithm
+    )
     request = _request(settings, pool, token)
     assert (
-        asyncio.run(_authorize_cart(request, "cart-1", {"customer_id": "customer-1"}))
+        asyncio.run(
+            _authorize_cart(
+                request, "00000000-0000-4000-8000-000000000001", {"customer_id": "customer-1"}
+            )
+        )
         == "customer-1"
     )
     assert pool.conn.owner == "customer-1"
@@ -112,12 +128,19 @@ def test_customer_cannot_claim_guest_cart_without_capability():
     settings = Settings()
     request = _request(settings, _FakePool())
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(_authorize_cart(request, "cart-1", {"customer_id": "customer-1"}))
+        asyncio.run(
+            _authorize_cart(
+                request, "00000000-0000-4000-8000-000000000001", {"customer_id": "customer-1"}
+            )
+        )
     assert exc.value.status_code == 404
 
 
 def test_checkout_rejects_client_selected_customer_without_auth(client):
-    response = client.post("/store/checkout", json={"cart_id": "cart-1", "customer_id": "victim"})
+    response = client.post(
+        "/store/checkout",
+        json={"cart_id": "00000000-0000-4000-8000-000000000001", "customer_id": "victim"},
+    )
     assert response.status_code == 401
 
 
@@ -130,7 +153,7 @@ def test_checkout_rejects_customer_id_not_matching_customer_token(client):
     )
     response = client.post(
         "/store/checkout",
-        json={"cart_id": "cart-1", "customer_id": "victim"},
+        json={"cart_id": "00000000-0000-4000-8000-000000000001", "customer_id": "victim"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 403
