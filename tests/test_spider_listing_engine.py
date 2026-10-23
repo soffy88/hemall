@@ -21,6 +21,7 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock
 
+import asyncpg
 import httpx
 import pytest
 
@@ -160,6 +161,7 @@ class TestListingPhase:
             "priced": 0,
             "skipped_no_screenshot": True,
             "failed": 0,
+            "skipped_has_batch": 0,
         }
         product_inserts = conn.issued(r'INSERT INTO "product" \(')
         assert len(product_inserts) == 2
@@ -465,3 +467,101 @@ class TestCategoryMapping:
         ]
         assert oservi._map_spider_listing_category("鲜活基围虾 500g/盒", categories) is None
         assert oservi._map_spider_listing_category("新鲜猪肉馅 500g", categories) == "cat-meat"
+
+
+class TestPricingRaceGuards:
+    """填价段跨 worker 竞态防护 (生产多 worker 同 tick 并发填价)。
+
+    - 锁内复查命中已有 active 批次 → 跳过 (skipped_has_batch),
+      填价本体不触发 (截图/VLM/建批次都不发生), 锁仍成对释放
+    - advisory lock 按行成对取/放: key1 为管线固定常数, key2 传
+      变体 id 文本 (SQL 内 hashtext), 批次插入夹在 lock/unlock 之间
+    - 部分唯一索引兜底触发 UniqueViolationError → 按竞态跳过计,
+      不计 failed, 锁仍成对释放
+    """
+
+    async def test_recheck_hit_skips_without_pricing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        vlm_mock = AsyncMock(return_value={"price_yuan": 9.9, "confidence": 0.9})
+        monkeypatch.setattr(oservi, "vlm_extract_price", vlm_mock)
+        conn = _pricing_conn([_unpriced_row("prod-1", "var-1", {"detail_url": _DETAIL_URL})])
+        # 锁内复查命中: 该变体已有 active 批次 (快照之后被另一 worker 建好)
+        conn.on(r'FROM "inventory_batch" WHERE variant_id', 1)
+        engine = oservi.build_spider_listing_engine(FakePool(conn), settings=_priced_settings())
+
+        result = await _run(engine)
+
+        assert result["priced"] == 0
+        assert result["failed"] == 0
+        assert result["skipped_has_batch"] == 1
+        assert vlm_mock.await_count == 0  # 复查在截图/VLM 之前, 跳过即全不发生
+        assert not conn.did_issue(r'INSERT INTO "inventory_batch"')
+        # 跳过路径上锁也要成对释放
+        assert len(conn.issued(r"pg_advisory_lock")) == 1
+        assert len(conn.issued(r"pg_advisory_unlock")) == 1
+
+    async def test_advisory_lock_pairs_around_each_priced_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            oservi,
+            "vlm_extract_price",
+            AsyncMock(return_value={"price_yuan": 9.9, "confidence": 0.9}),
+        )
+        rows = [
+            _unpriced_row("prod-1", "var-1", {"detail_url": _DETAIL_URL}),
+            _unpriced_row("prod-2", "var-2", {"detail_url": _DETAIL_URL}),
+        ]
+        conn = _pricing_conn(rows)
+        engine = oservi.build_spider_listing_engine(FakePool(conn), settings=_priced_settings())
+
+        result = await _run(engine)
+
+        assert result["priced"] == 2
+        assert result["skipped_has_batch"] == 0
+        locks = conn.issued(r"pg_advisory_lock")
+        unlocks = conn.issued(r"pg_advisory_unlock")
+        assert [args for _sql, args in locks] == [
+            (oservi._SPIDER_PRICING_LOCK_KEY1, "var-1"),
+            (oservi._SPIDER_PRICING_LOCK_KEY1, "var-2"),
+        ]
+        assert [args for _sql, args in unlocks] == [
+            (oservi._SPIDER_PRICING_LOCK_KEY1, "var-1"),
+            (oservi._SPIDER_PRICING_LOCK_KEY1, "var-2"),
+        ]
+        # 全序: 每行 lock → 建批次 → unlock, 行间不交叉
+        kinds = []
+        for sql, _args in conn.statements:
+            if "pg_advisory_unlock" in sql:
+                kinds.append("unlock")
+            elif "pg_advisory_lock" in sql:
+                kinds.append("lock")
+            elif 'INSERT INTO "inventory_batch"' in sql:
+                kinds.append("insert")
+        assert kinds == ["lock", "insert", "unlock", "lock", "insert", "unlock"]
+
+    async def test_unique_violation_counts_as_race_skip_not_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            oservi,
+            "vlm_extract_price",
+            AsyncMock(return_value={"price_yuan": 9.9, "confidence": 0.9}),
+        )
+        conn = _pricing_conn([_unpriced_row("prod-1", "var-1", {"detail_url": _DETAIL_URL})])
+
+        def _raise_unique(_sql: str, _args: tuple[Any, ...]) -> Any:
+            raise asyncpg.UniqueViolationError(
+                "duplicate key value violates unique constraint "
+                '"uq_inventory_batch_spider_ext_variant"'
+            )
+
+        conn.handlers[r'INSERT INTO "inventory_batch" \('] = _raise_unique
+        engine = oservi.build_spider_listing_engine(FakePool(conn), settings=_priced_settings())
+
+        result = await _run(engine)
+
+        assert result["priced"] == 0
+        assert result["failed"] == 0
+        assert result["skipped_has_batch"] == 1
+        assert len(conn.issued(r"pg_advisory_lock")) == 1
+        assert len(conn.issued(r"pg_advisory_unlock")) == 1
