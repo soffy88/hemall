@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,20 @@ def _has_cart_capability(request: Request, cart_id: str) -> bool:
     return payload.get("cart_id") == cart_id
 
 
+def _require_uuid(value: str, field: str) -> str:
+    """校验客户端传入的 id 是合法 UUID 格式；非法直接 400。
+
+    非法 id（如空串、随手编的字符串）一路打到 asyncpg 的 UUID 编码会
+    抛 ValueError 变成 500；所有把客户端 id 绑定到 UUID 列的入口先过
+    这里。合法但不存在的 id 仍走原有 404 语义，不受影响。
+    """
+    try:
+        uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(400, f"invalid {field}") from None
+    return value
+
+
 async def _authorize_cart(
     request: Request, cart_id: str, principal: dict[str, Any] | None
 ) -> str | None:
@@ -150,6 +165,7 @@ async def _authorize_cart(
     Guest carts use a signed, cart-scoped bearer capability returned only at creation.
     A guest cart can be claimed by a logged-in customer only with that capability.
     """
+    _require_uuid(cart_id, "cart_id")
     pool = _pool(request)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -658,6 +674,10 @@ async def add_line_item(
       400「暂无价格，无法预订」。
     """
     customer_id = await _authorize_cart(request, body.cart_id, principal)
+    if body.batch_id is not None:
+        _require_uuid(body.batch_id, "batch_id")
+    if body.variant_id is not None:
+        _require_uuid(body.variant_id, "variant_id")
     if body.quantity <= 0:
         raise HTTPException(400, "quantity must be positive")
     if body.batch_id is None and body.variant_id is None:
@@ -816,6 +836,7 @@ async def update_line_item(
     principal: dict[str, Any] | None = Depends(_optional_customer),
 ):
     await _authorize_cart(request, body.cart_id, principal)
+    _require_uuid(body.line_item_id, "line_item_id")
     from omodul.update_line_item_in_cart import (
         UpdateLineItemConfig,
         UpdateLineItemInput,
@@ -890,6 +911,7 @@ async def delete_line_item(
     principal: dict[str, Any] | None = Depends(_optional_customer),
 ):
     await _authorize_cart(request, body.cart_id, principal)
+    _require_uuid(body.line_item_id, "line_item_id")
     from omodul.delete_line_item_from_cart import (
         DeleteLineItemConfig,
         DeleteLineItemInput,
@@ -1478,11 +1500,14 @@ async def checkout(
     request: Request,
     principal: dict[str, Any] | None = Depends(_optional_customer),
 ):
+    _require_uuid(body.cart_id, "cart_id")
     if body.customer_id is not None and principal is None:
         raise HTTPException(401, "customer authentication required")
     authenticated_customer_id = str(principal["customer_id"]) if principal else None
     if body.customer_id is not None and body.customer_id != authenticated_customer_id:
         raise HTTPException(403, "customer_id does not match authenticated customer")
+    if body.customer_id is not None:
+        _require_uuid(body.customer_id, "customer_id")
     pool = _pool(request)
     cfg_store = request.app.state.config
     out_root = _output_dir(request, "checkout")
@@ -1660,6 +1685,8 @@ async def create_store_draft_order(
 ) -> dict[str, Any]:
     """顾客快捷下单：库存预留和 reservation ledger 一次事务完成。"""
 
+    for item in body.line_items:
+        _require_uuid(item.batch_id, "batch_id")
     try:
         return await _create_draft_order_with_reservations(
             _pool(request),
@@ -1712,6 +1739,7 @@ async def create_store_payment(
 ) -> dict[str, Any]:
     """顾客支付入口；只接受自己订单，金额由 payment_intent 从订单读取。"""
 
+    _require_uuid(body.order_id, "order_id")
     pool = _pool(request)
     await _assert_customer_order(pool, str(principal["customer_id"]), body.order_id)
     settings = request.app.state.config
@@ -1759,6 +1787,7 @@ async def query_store_payment(
 ) -> dict[str, Any]:
     """顾客轮询支付状态；不存在或非本人订单统一返回 404。"""
 
+    _require_uuid(payment_id, "payment_id")
     pool = _pool(request)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -2005,6 +2034,7 @@ async def storefront_products(
 
 @router.get("/products/{product_id}")
 async def storefront_product(product_id: str, request: Request):
+    _require_uuid(product_id, "product_id")
     product = await queries.get_storefront_product(_pool(request), product_id)
     if product is None:
         raise HTTPException(404, "product not found")
@@ -2477,6 +2507,7 @@ async def upsert_reserve_list_item(
     principal: dict = Depends(get_current_customer),
 ):
     merchant = await _require_merchant(request, principal)
+    _require_uuid(body.variant_id, "variant_id")
     if body.default_qty < 0:
         raise HTTPException(400, "default_qty must not be negative")
     pool = _pool(request)
@@ -2528,6 +2559,7 @@ async def delete_reserve_list_item(
     principal: dict = Depends(get_current_customer),
 ):
     merchant = await _require_merchant(request, principal)
+    _require_uuid(item_id, "item_id")
     pool = _pool(request)
     async with pool.acquire() as conn:
         updated = await conn.execute(
@@ -2564,6 +2596,8 @@ async def create_reserve_order(
     preorder_qty。整单一个事务，任一项不存在/无价整单失败回滚。
     """
     merchant = await _require_merchant(request, principal)
+    for i in body.items:
+        _require_uuid(i.variant_id, "variant_id")
     items = [i for i in body.items if i.quantity > 0]
     if not items:
         raise HTTPException(400, "no items with positive quantity")
@@ -2795,6 +2829,7 @@ async def add_my_address(
 
 
 async def _owns_address(pool: Any, customer_id: str, address_id: str) -> bool:
+    _require_uuid(address_id, "address_id")
     """地址增删改前的越权校验：omodul 只按 address_id 操作，不知道调用者是谁。"""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
