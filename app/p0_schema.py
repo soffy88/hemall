@@ -203,6 +203,17 @@ ALTER TABLE customer
 CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_wechat_openid
     ON customer(wechat_openid)
     WHERE wechat_openid IS NOT NULL;
+
+-- ── 蜘蛛填价 EXT 批次防重 (纵深防御) ────────────────────────────
+-- 蜘蛛填价段已用 advisory lock 按变体串行化 + 锁内复查 (见
+-- app/ext/oservi.py _price_one_locked), 本索引作跨进程兜底: 同一
+-- 变体只允许一个 active 的 EXT- 蜘蛛批次。正常库存批次 (人工/其它
+-- 来源) 同变体多批次是合法的, 故只约束 batch_no LIKE 'EXT-%' 的行。
+-- 注意: 建索引前必须先清理存量重复 EXT 批次, 否则 CREATE UNIQUE
+-- INDEX 会失败 (生产存量已于 2026-10-23 清理)。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_batch_spider_ext_variant
+    ON inventory_batch (variant_id)
+    WHERE batch_no LIKE 'EXT-%' AND status = 'active' AND deleted_at IS NULL;
 """
 
 

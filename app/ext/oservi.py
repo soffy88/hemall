@@ -48,6 +48,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import asyncpg
+
 from ..config import Settings
 from .omodul.commission_new_location import (
     CommissionNewLocationConfig,
@@ -1734,6 +1736,10 @@ def build_wechat_cert_rotation_engine(pool: Any, settings: Settings) -> CronSche
 #: 自动上架来源短名 (进 product.slug / variant.sku_code 幂等键)。
 _SPIDER_LISTING_SOURCES = ("suning", "off")
 
+#: 蜘蛛填价 advisory lock 的 key1 (本管线固定常数, 与其它管线的锁命名
+#: 空间隔离); key2 取 hashtext(variant_id::text), 按变体粒度串行化。
+_SPIDER_PRICING_LOCK_KEY1 = 0x53505243  # "SPRC"
+
 #: 标题关键词 → 分类名映射 (按顺序优先匹配; 分类名不在库里时整条跳过)。
 #: 顺序按"具体品类先于泛品类": 蛋糕先归乳品烘焙而不是被"蛋"带去肉禽蛋,
 #: 果汁先归酒水饮料而不是时令水果。库里实际分类以 product_category 为准
@@ -1987,7 +1993,8 @@ def build_spider_listing_engine(
     混进 published 集合; 填价建批次后才翻 published 正式开卖。
 
     单品失败 try/except 计数不中断整轮; tick 返回
-    {"listed", "priced", "skipped_no_screenshot", "failed"}。
+    {"listed", "priced", "skipped_no_screenshot", "failed",
+    "skipped_has_batch"}。
     """
 
     async def _price_one(row: dict[str, Any], location_id: Any, stats: dict[str, Any]) -> None:
@@ -2066,7 +2073,58 @@ def build_spider_listing_engine(
                 )
         stats["priced"] += 1
 
+    async def _price_one_locked(
+        row: dict[str, Any], location_id: Any, stats: dict[str, Any]
+    ) -> None:
+        """填价单个变体: PG advisory lock 跨进程串行化 + 锁内复查。
+
+        生产 api 是多 worker 部署, 每个 worker 都装配本引擎且 tick 时点
+        相同: 无防护时同一变体会被多个 worker 并发建 EXT- 批次 (库存
+        虚增数倍)。这里按变体取会话级 advisory lock: key1 = 本管线固定
+        常数 _SPIDER_PRICING_LOCK_KEY1, key2 = hashtext(variant_id
+        文本); 同一变体同一时刻只允许一个 worker 进入填价。
+
+        锁绑定在连接上: worker 进程死亡时连接关闭, PG 自动释放锁, 不
+        留死锁; 但连接归还连接池后会被复用, 所以必须在 finally 里显
+        式 unlock, 不能指望靠关连接解。unlock 自身失败 (连接已断) 时
+        吞掉异常 —— 断连即释放, 语义不变。
+
+        取锁后先在锁连接上复查该变体是否已有批次: 待填价集合是本轮
+        开始时的一次性快照, 别的 worker 可能已在本轮内建好。复查口
+        径与 _price_pending 待填价查询的 NOT EXISTS 一致 (active 且未
+        软删); 命中则跳过该行, 计 skipped_has_batch (不算 priced,
+        也不算 failed)。
+        """
+        variant_key = str(row["variant_id"])
+        async with pool.acquire() as lock_conn:
+            await lock_conn.execute(
+                "SELECT pg_advisory_lock($1, hashtext($2))",
+                _SPIDER_PRICING_LOCK_KEY1,
+                variant_key,
+            )
+            try:
+                existing = await lock_conn.fetchval(
+                    'SELECT 1 FROM "inventory_batch" '
+                    "WHERE variant_id = $1 AND status = 'active' "
+                    "AND deleted_at IS NULL LIMIT 1",
+                    row["variant_id"],
+                )
+                if existing is not None:
+                    stats["skipped_has_batch"] += 1
+                    return
+                await _price_one(row, location_id, stats)
+            finally:
+                try:
+                    await lock_conn.execute(
+                        "SELECT pg_advisory_unlock($1, hashtext($2))",
+                        _SPIDER_PRICING_LOCK_KEY1,
+                        variant_key,
+                    )
+                except Exception:  # noqa: BLE001 - 连接已断时锁随连接关闭释放
+                    pass
+
     async def _price_pending(stats: dict[str, Any]) -> None:
+        stats.setdefault("skipped_has_batch", 0)
         rows = await db_query_many(
             pool,
             sql=(
@@ -2114,7 +2172,16 @@ def build_spider_listing_engine(
                 break
             attempts += 1
             try:
-                await _price_one(row, locations[idx % len(locations)]["id"], stats)
+                await _price_one_locked(row, locations[idx % len(locations)]["id"], stats)
+            except asyncpg.UniqueViolationError:
+                # 纵深防御兜底: EXT 批次部分唯一索引 (p0_schema 的
+                # uq_inventory_batch_spider_ext_variant) 触发 —— 另一
+                # worker 已抢先建好该变体批次, 按竞态跳过计, 不算失败。
+                stats["skipped_has_batch"] += 1
+                logger.info(
+                    "spider listing price skipped (ext batch race) product=%s",
+                    row.get("product_id"),
+                )
             except Exception as exc:  # noqa: BLE001 - 单品填价失败不中断整轮
                 stats["failed"] += 1
                 logger.warning(
@@ -2218,6 +2285,7 @@ def build_spider_listing_engine(
             "priced": 0,
             "skipped_no_screenshot": False,
             "failed": 0,
+            "skipped_has_batch": 0,
         }
         # 填价段先行: 先把历史未定价商品补上价开卖, 再抓新品建档。
         if settings.vlm_screenshot_url:
