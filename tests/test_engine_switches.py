@@ -54,16 +54,16 @@ async def test_spider_listing_disabled_placeholder() -> None:
 def test_spider_listing_settings_defaults() -> None:
     settings = Settings()
     assert settings.engine_spider_listing_enabled is True
-    assert settings.spider_listing_keywords == [
-        "草莓",
-        "牛奶",
-        "鸡蛋",
-        "牛肉",
-        "大米",
-        "苹果",
-        "西红柿",
-        "食用油",
-    ]
+    # 词表已扩成完整超市目录 (app/config.py 按分类分组): 原 8 词全部保留,
+    # 无重复, 且每个分类都有代表词在表内 (全量字面量不在此钉死)
+    keywords = settings.spider_listing_keywords
+    for kw in ["草莓", "牛奶", "鸡蛋", "牛肉", "大米", "苹果", "西红柿", "食用油"]:
+        assert kw in keywords
+    for kw in ["土豆", "香蕉", "猪肉", "基围虾", "酸奶", "面粉", "水饺", "薯片", "可乐", "纸巾"]:
+        assert kw in keywords
+    assert len(keywords) == len(set(keywords))
+    assert len(keywords) >= 90
+    assert settings.spider_listing_max_price_per_tick == 100
     assert settings.spider_listing_max_per_keyword == 5
     assert settings.spider_listing_default_stock == 30
     # 截图服务默认未配置: 填价段整段跳过, 不假装能填价

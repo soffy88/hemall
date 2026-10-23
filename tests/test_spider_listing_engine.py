@@ -9,6 +9,10 @@
 - 填价段跳过: 未配置截图服务时整段跳过 (skipped_no_screenshot)
 - 填价失败不中断: 无 detail_url / VLM 无价 / 低置信度 → failed 计数,
   不建批次
+- 分类映射: 海鲜水产规则优先于肉禽蛋 (虾/蟹/海鲜/鲜鱼 已移出肉禽蛋);
+  库里无海鲜水产分类时含虾标题回退为映射不到 (None)
+- 填价节流: 单轮尝试数 (priced+failed) 不超过
+  spider_listing_max_price_per_tick; 未定价集合按 created_at 倒序
 """
 
 from __future__ import annotations
@@ -367,7 +371,97 @@ class TestPricingPhase:
         assert result["priced"] == 0
         assert not conn.did_issue(r"slug LIKE")  # 未定价集合根本没查
 
+    async def test_pricing_phase_caps_attempts_per_tick(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vlm_mock = AsyncMock(
+            return_value={"price_yuan": 9.9, "price_text": "¥9.90", "confidence": 0.9}
+        )
+        monkeypatch.setattr(oservi, "vlm_extract_price", vlm_mock)
+        rows = [
+            _unpriced_row(f"prod-{i}", f"var-{i}", {"detail_url": _DETAIL_URL}) for i in range(5)
+        ]
+        conn = _pricing_conn(rows)
+        engine = oservi.build_spider_listing_engine(
+            FakePool(conn),
+            settings=_priced_settings(spider_listing_max_price_per_tick=2),
+        )
+
+        result = await _run(engine)
+
+        # 5 个待填价, 单轮上限 2: 只尝试前 2 个, 其余留待下一轮
+        assert result["priced"] == 2
+        assert result["failed"] == 0
+        assert vlm_mock.await_count == 2
+        assert len(conn.issued(r'INSERT INTO "inventory_batch" \(')) == 2
+        # 新品优先: 未定价集合按 created_at 倒序取
+        unpriced_queries = conn.issued(r"slug LIKE")
+        assert "ORDER BY p.created_at DESC" in unpriced_queries[0][0]
+
+    async def test_pricing_cap_counts_failures_as_attempts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vlm_mock = AsyncMock(
+            return_value={"price_yuan": 9.9, "price_text": "¥9.90", "confidence": 0.9}
+        )
+        monkeypatch.setattr(oservi, "vlm_extract_price", vlm_mock)
+        rows = [
+            _unpriced_row("prod-bad", "var-bad", {"来源": "苏宁自营"}),  # 无 detail_url → 失败
+            _unpriced_row("prod-1", "var-1", {"detail_url": _DETAIL_URL}),
+            _unpriced_row("prod-2", "var-2", {"detail_url": _DETAIL_URL}),
+        ]
+        conn = _pricing_conn(rows)
+        engine = oservi.build_spider_listing_engine(
+            FakePool(conn),
+            settings=_priced_settings(spider_listing_max_price_per_tick=2),
+        )
+
+        result = await _run(engine)
+
+        # 失败也算一次尝试: 1 失败 + 1 成功即达上限, 第 3 个不碰
+        assert result["failed"] == 1
+        assert result["priced"] == 1
+        assert vlm_mock.await_count == 1
+        assert len(conn.issued(r'INSERT INTO "inventory_batch" \(')) == 1
+
     def test_engine_schedule(self) -> None:
         engine = oservi.build_spider_listing_engine(FakePool(FakeConn()), settings=_settings())
         assert engine.name == "ext-spider-listing"
         assert engine.trigger == {"on_cron": "30 4 * * *"}
+
+
+class TestCategoryMapping:
+    """_map_spider_listing_category: 海鲜水产规则优先于肉禽蛋。"""
+
+    _WITH_SEAFOOD = [
+        {"id": "cat-meat", "name": "肉禽蛋"},
+        {"id": "cat-seafood", "name": "海鲜水产"},
+    ]
+
+    def test_shrimp_title_maps_to_seafood(self) -> None:
+        assert (
+            oservi._map_spider_listing_category("鲜活基围虾 500g/盒", self._WITH_SEAFOOD)
+            == "cat-seafood"
+        )
+
+    def test_shrimp_no_longer_maps_to_meat_when_seafood_exists(self) -> None:
+        # 虾/蟹/海鲜/鲜鱼 已从肉禽蛋规则删除: 含虾标题只会落海鲜水产
+        assert (
+            oservi._map_spider_listing_category("冰鲜大虾仁 300g", self._WITH_SEAFOOD)
+            == "cat-seafood"
+        )
+
+    def test_meat_title_still_maps_to_meat(self) -> None:
+        assert (
+            oservi._map_spider_listing_category("新鲜猪肉馅 500g", self._WITH_SEAFOOD) == "cat-meat"
+        )
+
+    def test_missing_seafood_category_falls_back_to_none(self) -> None:
+        # 库里没有海鲜水产分类时整条规则跳过: 含虾标题映射不到 → None,
+        # 由上架段走第一个分类兜底 (行为同本次改动之前)
+        categories = [
+            {"id": "cat-meat", "name": "肉禽蛋"},
+            {"id": "cat-veg", "name": "蔬菜豆品"},
+        ]
+        assert oservi._map_spider_listing_category("鲜活基围虾 500g/盒", categories) is None
+        assert oservi._map_spider_listing_category("新鲜猪肉馅 500g", categories) == "cat-meat"

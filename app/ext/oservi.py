@@ -1737,8 +1737,8 @@ _SPIDER_LISTING_SOURCES = ("suning", "off")
 #: 标题关键词 → 分类名映射 (按顺序优先匹配; 分类名不在库里时整条跳过)。
 #: 顺序按"具体品类先于泛品类": 蛋糕先归乳品烘焙而不是被"蛋"带去肉禽蛋,
 #: 果汁先归酒水饮料而不是时令水果。库里实际分类以 product_category 为准
-#: (种子: 蔬菜豆品/时令水果/肉禽蛋/粮油调味/乳品烘焙/冷冻速食/休闲零食/
-#: 酒水饮料/日用百货), 映射不到时归库里第一个分类。
+#: (种子: 蔬菜豆品/时令水果/肉禽蛋/海鲜水产/粮油调味/乳品烘焙/冷冻速食/
+#: 休闲零食/酒水饮料/日用百货), 映射不到时归库里第一个分类。
 _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("冷冻速食", ("速冻", "冷冻", "冰淇淋", "冰激凌", "雪糕", "汤圆", "水饺", "馄饨")),
     (
@@ -1779,6 +1779,28 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "海鲜水产",
+        (
+            "海鲜",
+            "虾",
+            "蟹",
+            "带鱼",
+            "鲈鱼",
+            "黄鱼",
+            "三文鱼",
+            "鳕鱼",
+            "扇贝",
+            "生蚝",
+            "鲍鱼",
+            "海参",
+            "鱿鱼",
+            "章鱼",
+            "蛤蜊",
+            "鲜鱼",
+            "活鱼",
+        ),
+    ),
+    (
         "肉禽蛋",
         (
             "牛肉",
@@ -1786,9 +1808,6 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "羊肉",
             "鸡肉",
             "鸭肉",
-            "鲜鱼",
-            "虾",
-            "蟹",
             "牛排",
             "排骨",
             "鸡蛋",
@@ -1799,7 +1818,6 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "火腿",
             "香肠",
             "腊肉",
-            "海鲜",
         ),
     ),
     (
@@ -2063,7 +2081,7 @@ def build_spider_listing_engine(
                 "WHERE b.variant_id = v.id AND b.status = 'active' "
                 "AND b.deleted_at IS NULL"
                 ") "
-                "ORDER BY p.created_at"
+                "ORDER BY p.created_at DESC"
             ),
         )
         if not rows:
@@ -2079,7 +2097,22 @@ def build_spider_listing_engine(
                 len(rows),
             )
             return
+        # 单轮尝试上限 (settings.spider_listing_max_price_per_tick): 老积压
+        # 多为源页无价的结构性失败, 无上限时单轮能跑数小时。配合上面的
+        # created_at DESC 新品优先, 保证当天上新当天开卖; 积压在队列短于
+        # 上限时仍会被处理到。尝试数按 priced+failed 计 (成功失败都消耗
+        # 一次截图+VLM 调用)。
+        max_attempts = int(settings.spider_listing_max_price_per_tick)
+        attempts = 0
         for idx, row in enumerate(rows):
+            if attempts >= max_attempts:
+                logger.info(
+                    "spider listing: pricing cap %d reached, %d products left for next tick",
+                    max_attempts,
+                    len(rows) - idx,
+                )
+                break
+            attempts += 1
             try:
                 await _price_one(row, locations[idx % len(locations)]["id"], stats)
             except Exception as exc:  # noqa: BLE001 - 单品填价失败不中断整轮
