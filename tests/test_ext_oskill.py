@@ -345,6 +345,22 @@ def test_compute_market_maker_price_rejects_invalid_params():
         compute_market_maker_price(1000, vwap_deviation=0.0, theta_decay=1.5)
 
 
+def test_compute_market_maker_price_never_below_cost_floor():
+    # 2026-10-28 回归：零销量批次曾被做市一路降到 1 分；成本底线兜底。
+    assert (
+        compute_market_maker_price(1, vwap_deviation=-20.0, theta_decay=0.0, floor_cents=2988)
+        == 2988
+    )
+    assert (
+        compute_market_maker_price(1000, vwap_deviation=-20.0, theta_decay=0.0, floor_cents=800)
+        == 800
+    )
+
+
+def test_compute_market_maker_price_default_floor_is_zero():
+    assert compute_market_maker_price(1000, vwap_deviation=-20.0, theta_decay=0.0) == 700
+
+
 # ── calculate_membership_dividend (v2.0) ───────────────────────────────────
 
 
