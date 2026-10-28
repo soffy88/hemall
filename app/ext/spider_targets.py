@@ -166,11 +166,16 @@ def _clean_description(raw: str) -> str:
 
 
 def _normalize_suning_image_url(raw: str) -> str:
+    # 苏宁搜索图默认是 200w 移动端缩略图；同链接换 800w 即为真 800 大图
+    # （2026-10-28 实测 imgservice 800x800 可用），归一化时直接升档，
+    # 避免前台再出现小图放大发糊。
     img = (raw or "").strip()
     if not img:
         return ""
     if img.startswith("//"):
-        return f"https:{img}"
+        img = f"https:{img}"
+    if "suning.cn" in img:
+        img = re.sub(r"_\d+w_\d+h", "_800w_800h", img)
     return img
 
 

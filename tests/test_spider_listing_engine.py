@@ -313,7 +313,8 @@ class TestPricingPhase:
         assert args[5] == 2990  # retail = 29.9 元 → 分
         assert args[6] == 30  # 默认库存
         assert json.loads(args[7]) == [_IMAGE_URL]  # media = 商品图
-        curve = json.loads(args[8])
+        assert args[8] == _IMAGE_URL  # shelf = 裸链接（2026-10-28 回归）
+        curve = json.loads(args[9])
         assert len(curve["expected_cumulative"]) == 72
         assert curve["expected_cumulative"][-1] == 30
 
