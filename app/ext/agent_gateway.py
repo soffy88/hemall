@@ -1035,7 +1035,7 @@ async def _insert_ingest_batch(
             "cost_price_cents, retail_price_cents, stock_qty, currency, media_assets, "
             "shelf_image_url, vwap_target_curve, status) "
             "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'CNY', "
-            "$8::jsonb, $8::jsonb, $9::jsonb, 'active') "
+            "$8::jsonb, $9, $10::jsonb, 'active') "
             "RETURNING id"
         ),
         variant_id,
@@ -1046,6 +1046,7 @@ async def _insert_ingest_batch(
         retail,
         stock_qty,
         f'["{media_url}"]',
+        media_url or None,
         _default_vwap_curve_json(stock_qty),
     )
 

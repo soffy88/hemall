@@ -2045,7 +2045,7 @@ def build_spider_listing_engine(
                     "cost_price_cents, retail_price_cents, stock_qty, currency, "
                     "media_assets, shelf_image_url, vwap_target_curve, status) "
                     "VALUES ($1, $2, $3, $4, '', $5, $6, $7, 'CNY', "
-                    "$8::jsonb, $8::jsonb, $9::jsonb, 'active')",
+                    "$8::jsonb, $9, $10::jsonb, 'active')",
                     uuid7(),
                     row["variant_id"],
                     location_id,
@@ -2054,6 +2054,7 @@ def build_spider_listing_engine(
                     retail,
                     stock_qty,
                     media_json,
+                    image_url or None,
                     curve_json,
                 )
                 await conn.execute(
