@@ -552,7 +552,11 @@ def calculate_vwap_deviation(
 
 
 def compute_market_maker_price(
-    base_price: int, *, vwap_deviation: float, theta_decay: float
+    base_price: int,
+    *,
+    vwap_deviation: float,
+    theta_decay: float,
+    floor_cents: int = 0,
 ) -> int:
     """结合销量偏离度与时间衰减 (Theta)，算出当前的"最佳做市零售价"。
 
@@ -565,9 +569,12 @@ def compute_market_maker_price(
         base_price: 未做市调整前的基准零售价 (分)，必须为正。
         vwap_deviation: calculate_vwap_deviation 算出的偏离度 (标准差倍数)。
         theta_decay: 时间衰减系数 [0.0, 1.0]，0 表示无衰减。
+        floor_cents: 做市价下限 (分)，默认 0；调用方传批次成本价时，
+            做市价永不低于成本 (2026-10-28 回归：此前下限为 0，零销量
+            蜘蛛批次被一路降到 1 分)。
 
     Returns:
-        做市后的零售价 (分，整数)，不低于 0。
+        做市后的零售价 (分，整数)，不低于 floor_cents。
 
     Raises:
         ValueError: base_price 非正，theta_decay 不在 [0, 1]。
@@ -576,12 +583,14 @@ def compute_market_maker_price(
         raise ValueError("compute_market_maker_price: base_price must be positive")
     if not 0.0 <= theta_decay <= 1.0:
         raise ValueError("compute_market_maker_price: theta_decay must be within [0, 1]")
+    if floor_cents < 0:
+        raise ValueError("compute_market_maker_price: floor_cents must be non-negative")
 
     deviation_adjustment = max(
         min(vwap_deviation * 0.05, _MARKET_MAKER_MAX_MARKUP), _MARKET_MAKER_MAX_MARKDOWN
     )
     price = base_price * (1 + deviation_adjustment) * (1 - theta_decay)
-    return max(round(price), 0)
+    return max(round(price), floor_cents)
 
 
 #: calculate_membership_dividend 每邀请 1 个活跃邻居对应的减免/分红比例。

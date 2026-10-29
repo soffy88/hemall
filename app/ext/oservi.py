@@ -603,7 +603,7 @@ def build_market_maker_engine(
         batches = await db_query_many(
             pool,
             sql=(
-                "SELECT id, retail_price_cents, created_at AS intake_time, "
+                "SELECT id, retail_price_cents, cost_price_cents, created_at AS intake_time, "
                 "expiration_time, vwap_target_curve "
                 'FROM "inventory_batch" '
                 "WHERE status = 'active' AND vwap_target_curve IS NOT NULL"
@@ -649,6 +649,7 @@ def build_market_maker_engine(
                 batch["retail_price_cents"],
                 vwap_deviation=deviation,
                 theta_decay=theta_decay,
+                floor_cents=batch["cost_price_cents"] or 0,
             )
             if new_price == batch["retail_price_cents"]:
                 continue
