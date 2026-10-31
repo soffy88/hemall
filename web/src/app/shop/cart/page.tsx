@@ -9,6 +9,7 @@ import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { Cart } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import { displayOptionLabel, isInternalSku } from '@/lib/option-label';
 
 const SHIPPING_METHODS = [
   { name: '标准配送', price_cents: 0 },
@@ -156,10 +157,12 @@ export default function CartPage() {
               <div className="flex-1 min-w-0">
                 <h3 className="font-medium text-gray-900 truncate">{item.product_title || '—'}</h3>
                 <p className="text-xs text-gray-500">
-                  {item.variant_sku}
-                  {item.option_values && Object.values(item.option_values).length > 0 && (
-                    <> · {Object.values(item.option_values).join(' / ')}</>
-                  )}
+                  {[
+                    !isInternalSku(item.variant_sku) ? String(item.variant_sku) : '',
+                    displayOptionLabel(item.option_values, ''),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </p>
                 <p className="text-sm text-emerald-700 font-medium mt-1">{fmt(item.unit_price_cents)}</p>
                 {(item.preorder_qty_preview ?? 0) > 0 && (
