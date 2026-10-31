@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api-client';
+import { isAssortmentProduct } from '@/lib/storefront-assortment';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
@@ -35,13 +36,19 @@ export default function ShopPage() {
   // 图片加载失败的 product id — 回落占位图而不是隐藏 (缺图不再留白块)
   const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
 
+  // 社区小超市模型: 只显示模型内品类的商品, 其余仅前台隐藏 (数据保留)。
+  const visibleProducts = useMemo(
+    () => products.filter(isAssortmentProduct),
+    [products],
+  );
+
   function load() {
     api.storeProducts({ limit: 500 })
       .then((data) => {
         setProducts(data);
         // 菜单栏分类下拉带 ?cat= 进来: 非法分类回落全部。
         const cat = new URLSearchParams(window.location.search).get('cat');
-        if (cat && cat !== 'all' && !data.some((p) => p.category_id === cat)) {
+        if (cat && cat !== 'all' && !data.some((p) => p.category_id === cat && isAssortmentProduct(p))) {
           setActiveCat('all');
         }
       })
@@ -62,7 +69,7 @@ export default function ShopPage() {
   // 聚合分类 (按 category_id + 后端返回的分类名/图标映射)
   const categories: GroceryCategory[] = useMemo(() => {
     const map = new Map<string, GroceryCategory>();
-    for (const p of products) {
+    for (const p of visibleProducts) {
       if (!p.category_id) continue;
       if (!map.has(p.category_id)) {
         const slug = p.category_slug ?? p.category_id;
@@ -76,7 +83,7 @@ export default function ShopPage() {
       }
       map.get(p.category_id)!.count++;
     }
-    // 保持 9 大分类的展示顺序
+    // 保持模型内 5 个分类的展示顺序
     const order = Object.keys(CATEGORY_ICONS);
     return Array.from(map.values()).sort((a, b) => {
       const ia = order.indexOf(a.slug);
@@ -86,11 +93,11 @@ export default function ShopPage() {
       if (ib === -1) return -1;
       return ia - ib;
     });
-  }, [products]);
+  }, [visibleProducts]);
 
   const filtered = useMemo(() => {
-    // 整个 shop 就是生鲜日用: 只显示有分类的商品 (数码等无分类不进超市视图)
-    let list = products.filter((p) => p.category_id);
+    // 整个 shop 就是社区小超市模型: 只显示模型内品类 (其余仅前台隐藏)
+    let list = visibleProducts.filter((p) => p.category_id);
     if (activeCat !== 'all') {
       list = list.filter((p) => p.category_id === activeCat);
     }
@@ -99,7 +106,7 @@ export default function ShopPage() {
       list = list.filter((p) => p.title.toLowerCase().includes(q));
     }
     return [...list].sort((a, b) => (a.min_price_cents ?? 0) - (b.min_price_cents ?? 0));
-  }, [products, activeCat, search]);
+  }, [visibleProducts, activeCat, search]);
 
   // 取商品划线价 (variant.reference_price_cents 优先)
   function referencePrice(p: StorefrontProduct): number | null {

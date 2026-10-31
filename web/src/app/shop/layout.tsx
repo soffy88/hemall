@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { api } from '@/lib/api-client';
+import { isVisibleCategorySlug } from '@/lib/storefront-assortment';
 import { getSelectedRegion, setSelectedRegion } from '@/lib/region-store';
 import { getCustomerAuth, initCustomerAuth, subscribeCustomerAuth } from '@/lib/customer-auth-store';
 import { ToastProvider, useToast } from '@/components/Toast';
@@ -60,7 +61,9 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
 
   // 菜单栏分类下拉: 分类列表 + 当前选中分类 (读 ?cat=)。
   useEffect(() => {
-    api.storeCategories().then(setCategories).catch(() => {});
+    api.storeCategories()
+      .then((cats) => setCategories(cats.filter((c) => isVisibleCategorySlug(c.slug))))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
