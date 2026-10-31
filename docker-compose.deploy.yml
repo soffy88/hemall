@@ -6,7 +6,7 @@ services:
       HEMALL_VLM_SCREENSHOT_URL: http://172.17.0.1:8799/shot
       HEMALL_VLM_SCREENSHOT_TOKEN: ${HEMALL_VLM_SCREENSHOT_TOKEN}
   web:
-    image: registry.sxueji.com/hemall/frontend:0.5.6-prod
+    image: registry.sxueji.com/hemall/frontend:0.5.7-prod
     environment:
       HEMALL_BACKEND_URL: http://hemal-api-1:8000
   caddy:
