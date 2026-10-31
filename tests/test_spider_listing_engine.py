@@ -334,9 +334,7 @@ class TestPricingPhase:
         assert result["skipped_no_screenshot"] is False
         # 截图服务契约: GET ?url= + X-Shot-Token 头 (在调用历史中查找:
         # 填价段还会尝试下载商品图, 截图不再是最后一次调用)
-        shot_calls = [
-            c for c in _FakeShotClient.calls if c["url"] == "http://shot.local/capture"
-        ]
+        shot_calls = [c for c in _FakeShotClient.calls if c["url"] == "http://shot.local/capture"]
         assert len(shot_calls) == 2
         assert shot_calls[0]["params"] == {"url": _DETAIL_URL}
         assert shot_calls[0]["headers"] == {"X-Shot-Token": "tok-123"}

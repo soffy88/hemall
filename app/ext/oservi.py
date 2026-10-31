@@ -2043,9 +2043,7 @@ def build_spider_listing_engine(
             f"EXT-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{str(uuid7()).replace('-', '')[:8]}"
         )
         # 商品图本地化: 下载失败保留原 URL, 由 tick 回填重试。
-        local_image = await localize_spider_image(
-            image_url, output_root=settings.output_root
-        )
+        local_image = await localize_spider_image(image_url, output_root=settings.output_root)
         shelf_url = local_image or image_url or None
         media_json = json.dumps([shelf_url] if shelf_url else [])
         curve_json = json.dumps(build_default_vwap_curve(stock_qty))
@@ -2315,9 +2313,7 @@ def build_spider_listing_engine(
         for row in rows:
             try:
                 remote_url = str(row["shelf_image_url"] or "")
-                local = await localize_spider_image(
-                    remote_url, output_root=settings.output_root
-                )
+                local = await localize_spider_image(remote_url, output_root=settings.output_root)
                 if not local:
                     continue
                 media = row["media_assets"]
@@ -2340,9 +2336,7 @@ def build_spider_listing_engine(
                     )
                 stats["images_localized"] = stats.get("images_localized", 0) + 1
             except Exception as exc:  # noqa: BLE001 - 单品回填失败不中断整轮
-                logger.warning(
-                    "spider image backfill failed batch=%s: %s", row.get("id"), exc
-                )
+                logger.warning("spider image backfill failed batch=%s: %s", row.get("id"), exc)
 
     async def spider_listing_tick(**_: Any) -> dict[str, Any]:
         stats: dict[str, Any] = {
