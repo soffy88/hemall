@@ -604,6 +604,11 @@ def create_app() -> FastAPI:
     ingest_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest")
 
+    # 蜘蛛商品图本地化 (spider_media 输出): /media/spider/<hash>.<ext>
+    spider_root = settings.output_root / "ext_bespoke" / "spider_media"
+    spider_root.mkdir(parents=True, exist_ok=True)
+    app.mount("/media/spider", StaticFiles(directory=spider_root), name="spider_media")
+
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
     app.include_router(refund_router)

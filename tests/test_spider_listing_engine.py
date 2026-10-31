@@ -53,6 +53,7 @@ class _FakeShotClient:
 
     next_response: _ShotResponse | None = None
     last_get: dict[str, Any] | None = None
+    calls: list[dict[str, Any]] = []
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         pass
@@ -64,7 +65,9 @@ class _FakeShotClient:
         return False
 
     async def get(self, url: str, params: Any = None, headers: Any = None) -> _ShotResponse:
-        type(self).last_get = {"url": url, "params": params, "headers": headers}
+        call = {"url": url, "params": params, "headers": headers}
+        type(self).last_get = call
+        type(self).calls.append(call)
         assert type(self).next_response is not None
         return type(self).next_response
 
@@ -73,6 +76,7 @@ class _FakeShotClient:
 def _patch_shot_client(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeShotClient.next_response = _ShotResponse()
     _FakeShotClient.last_get = None
+    _FakeShotClient.calls = []
     monkeypatch.setattr(httpx, "AsyncClient", _FakeShotClient)
 
 
@@ -169,9 +173,10 @@ class TestListingPhase:
         assert "cat-fruit" in product_inserts[0][1]
         assert "cat-daily" in product_inserts[1][1]
         assert "draft" in product_inserts[0][0]
-        # 描述 = 介绍 + 来源行
-        assert "来源：苏宁自营" in str(product_inserts[0][1])
-        assert _DETAIL_URL in str(product_inserts[0][1])
+        # 描述只留介绍本身, 不带来源行与外链; 店铺/详情页只记 option_values 内部留痕
+        assert product_inserts[0][1][2] == "产地直发"
+        assert "来源" not in str(product_inserts[0][1])
+        assert _DETAIL_URL not in str(product_inserts[0][1])
 
         variant_inserts = conn.issued(r'INSERT INTO "product_variant" \(')
         assert len(variant_inserts) == 2
@@ -184,6 +189,38 @@ class TestListingPhase:
         assert option_values["来源"] == "苏宁自营"
         # reference_price_cents 以字面 NULL 入库, 不拿 0 冒充未定价
         assert ", NULL, 'active')" in variant_inserts[0][0]
+
+    async def test_listing_strips_brand_tokens_and_source_trailer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            oservi,
+            "spider_fetch_products",
+            AsyncMock(
+                return_value=[
+                    {
+                        "item": "苏鲜生 [苏宁自有品牌]可生食鲜鸡蛋1.8kg(30枚)",
+                        "image_url": _IMAGE_URL,
+                        "description": "可生食 无抗生素\n来源：苏宁自营 https://m.suning.com/product/0000000000/12417909119.html",
+                        "detail_url": _DETAIL_URL,
+                        "source_id": "999",
+                        "store": "苏宁自营",
+                        "source": "suning",
+                    }
+                ]
+            ),
+        )
+        conn = _listing_conn()
+        engine = oservi.build_spider_listing_engine(FakePool(conn), settings=_settings())
+
+        result = await _run(engine)
+
+        assert result["listed"] == 1
+        product_inserts = conn.issued(r'INSERT INTO "product" \(')
+        assert len(product_inserts) == 1
+        title, _slug, description, _cat = product_inserts[0][1]
+        assert title == "可生食鲜鸡蛋1.8kg(30枚)"
+        assert description == "可生食 无抗生素"
 
     async def test_max_per_keyword_caps_new_listings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -295,11 +332,12 @@ class TestPricingPhase:
         assert result["priced"] == 2
         assert result["failed"] == 0
         assert result["skipped_no_screenshot"] is False
-        # 截图服务契约: GET ?url= + X-Shot-Token 头
-        assert _FakeShotClient.last_get is not None
-        assert _FakeShotClient.last_get["url"] == "http://shot.local/capture"
-        assert _FakeShotClient.last_get["params"] == {"url": _DETAIL_URL}
-        assert _FakeShotClient.last_get["headers"] == {"X-Shot-Token": "tok-123"}
+        # 截图服务契约: GET ?url= + X-Shot-Token 头 (在调用历史中查找:
+        # 填价段还会尝试下载商品图, 截图不再是最后一次调用)
+        shot_calls = [c for c in _FakeShotClient.calls if c["url"] == "http://shot.local/capture"]
+        assert len(shot_calls) == 2
+        assert shot_calls[0]["params"] == {"url": _DETAIL_URL}
+        assert shot_calls[0]["headers"] == {"X-Shot-Token": "tok-123"}
         # VLM 吃到的是截图 PNG bytes
         assert vlm_mock.await_args.kwargs["image_bytes"] == b"png-bytes"
 
@@ -325,6 +363,61 @@ class TestPricingPhase:
         assert "'spider_vlm'" in bench[0][0]
         assert bench[0][1][3] == "苏宁自营"
         assert bench[0][1][4] == 2990
+
+    async def test_pricing_localizes_product_image(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        vlm_mock = AsyncMock(
+            return_value={"price_yuan": 29.9, "price_text": "¥29.90", "confidence": 0.9}
+        )
+        monkeypatch.setattr(oservi, "vlm_extract_price", vlm_mock)
+
+        jpeg = b"\xff\xd8\xff" + b"\x00" * 5000
+
+        class _BranchingClient:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> _BranchingClient:
+                return self
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+            async def get(self, url: str, params: Any = None, headers: Any = None) -> Any:
+                if url == _IMAGE_URL:
+                    return _ShotResponse(jpeg)
+                return _ShotResponse(b"png-bytes")
+
+        monkeypatch.setattr(httpx, "AsyncClient", _BranchingClient)
+        rows = [
+            _unpriced_row(
+                "prod-1",
+                "var-1",
+                {
+                    "来源": "苏宁自营",
+                    "detail_url": _DETAIL_URL,
+                    "source_id": "111",
+                    "image_url": _IMAGE_URL,
+                },
+            )
+        ]
+        conn = _pricing_conn(rows)
+        engine = oservi.build_spider_listing_engine(
+            FakePool(conn), settings=_priced_settings(output_root=str(tmp_path))
+        )
+
+        result = await _run(engine)
+
+        assert result["priced"] == 1
+        batch_inserts = conn.issued(r'INSERT INTO "inventory_batch" \(')
+        assert len(batch_inserts) == 1
+        args = batch_inserts[0][1]
+        shelf = args[8]
+        assert shelf.startswith("/media/spider/")
+        assert shelf.endswith(".jpg")
+        assert json.loads(args[7]) == [shelf]
+        assert (tmp_path / "ext_bespoke" / "spider_media" / shelf.rsplit("/", 1)[1]).exists()
 
     async def test_missing_detail_url_fails_single_item(
         self, monkeypatch: pytest.MonkeyPatch

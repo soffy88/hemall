@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { api } from '@/lib/api-client';
@@ -10,6 +10,15 @@ import { ToastProvider, useToast } from '@/components/Toast';
 import type { Region } from '@/types/api';
 import { errMessage } from '@/lib/errors';
 
+// 分类图标映射 (与 /shop 胶囊条一致, 后端只存 name/slug)。
+const CATEGORY_ICONS: Record<string, string> = {
+  vegetables: '🥬', fruits: '🍎', 'meat-eggs': '🥩', 'grain-oil': '🌾',
+  'dairy-bakery': '🥛', frozen: '🧊', snacks: '🍫', drinks: '🥤', daily: '🧻',
+  seafood: '🦐', electronics: '📱',
+};
+
+type StoreCategory = { id: string; name: string; slug: string; count: number };
+
 function ShopChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const showToast = useToast();
@@ -17,6 +26,10 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
   const [regionCode, setRegionCode] = useState('');
   const [customerEmail, setCustomerEmail] = useState<string | null>(null);
   const [isMerchant, setIsMerchant] = useState(false);
+  const [categories, setCategories] = useState<StoreCategory[]>([]);
+  const [catOpen, setCatOpen] = useState(false);
+  const [activeCatId, setActiveCatId] = useState('all');
+  const catRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -44,6 +57,37 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
       .catch(() => { if (alive) setIsMerchant(false); });
     return () => { alive = false; };
   }, [customerEmail]);
+
+  // 菜单栏分类下拉: 分类列表 + 当前选中分类 (读 ?cat=)。
+  useEffect(() => {
+    api.storeCategories().then(setCategories).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setActiveCatId(new URLSearchParams(window.location.search).get('cat') || 'all');
+    setCatOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!catOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (catRef.current && !catRef.current.contains(e.target as Node)) setCatOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCatOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [catOpen]);
+
+  function goCategory(id: string) {
+    setCatOpen(false);
+    window.location.assign(id === 'all' ? '/shop' : `/shop?cat=${encodeURIComponent(id)}`);
+  }
 
   useEffect(() => {
     api.storeRegions().then((data) => {
@@ -82,12 +126,50 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
       {/* Header */}
       <header className="bg-white/90 backdrop-blur border-b border-gray-200/80 sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-          <Link href="/shop" className="flex items-center gap-2 shrink-0">
-            <span className="w-8 h-8 rounded-lg bg-emerald-700 text-white flex items-center justify-center text-base">
-              🛍
-            </span>
-            <span className="text-lg font-bold tracking-tight text-gray-900">Hemall</span>
-          </Link>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link href="/shop" className="flex items-center gap-2 shrink-0">
+              <span className="w-8 h-8 rounded-lg bg-emerald-700 text-white flex items-center justify-center text-base">
+                🛍
+              </span>
+              <span className="text-lg font-bold tracking-tight text-gray-900">Hemall</span>
+            </Link>
+            {/* 商品分类下拉: 菜单栏最左侧, 点击弹出分类列表 */}
+            <div className="relative" ref={catRef}>
+              <button
+                type="button"
+                onClick={() => setCatOpen((v) => !v)}
+                aria-expanded={catOpen}
+                className="flex items-center gap-1 rounded-full bg-emerald-700 px-3 py-1.5 text-sm font-bold text-white hover:bg-emerald-800 transition"
+              >
+                🗂 商品分类 {catOpen ? '▴' : '▾'}
+              </button>
+              {catOpen && (
+                <div className="absolute left-0 top-full z-50 mt-2 w-60 rounded-xl border border-gray-200 bg-white py-2 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => goCategory('all')}
+                    className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-emerald-50 ${activeCatId === 'all' ? 'font-bold text-emerald-700 bg-emerald-50' : 'text-gray-700'}`}
+                  >
+                    <span className="w-5 text-center">🛒</span>
+                    <span className="flex-1">全部商品</span>
+                    <span className="text-xs text-gray-400">{categories.reduce((n, c) => n + c.count, 0)}</span>
+                  </button>
+                  {categories.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => goCategory(c.id)}
+                      className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-emerald-50 ${activeCatId === c.id ? 'font-bold text-emerald-700 bg-emerald-50' : 'text-gray-700'}`}
+                    >
+                      <span className="w-5 text-center">{CATEGORY_ICONS[c.slug] ?? '🛒'}</span>
+                      <span className="flex-1">{c.name}</span>
+                      <span className="text-xs text-gray-400">{c.count}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
           <nav className="flex items-center gap-5 text-sm">
             {regions.length > 0 && (
               <select
