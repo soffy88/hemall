@@ -169,9 +169,9 @@ class TestListingPhase:
         }
         product_inserts = conn.issued(r'INSERT INTO "product" \(')
         assert len(product_inserts) == 2
-        # 草莓 → 时令水果 (关键词映射); 英文奶名无关键词命中 → 第一个分类兜底
+        # 草莓 → 时令水果 (关键词映射); 英文奶名无关键词命中 → NULL, 不再兜底
         assert "cat-fruit" in product_inserts[0][1]
-        assert "cat-daily" in product_inserts[1][1]
+        assert product_inserts[1][1][3] is None
         assert "draft" in product_inserts[0][0]
         # 描述只留介绍本身, 不带来源行与外链; 店铺/详情页只记 option_values 内部留痕
         assert product_inserts[0][1][2] == "产地直发"
@@ -553,8 +553,7 @@ class TestCategoryMapping:
         )
 
     def test_missing_seafood_category_falls_back_to_none(self) -> None:
-        # 库里没有海鲜水产分类时整条规则跳过: 含虾标题映射不到 → None,
-        # 由上架段走第一个分类兜底 (行为同本次改动之前)
+        # 库里没有海鲜水产分类时整条规则跳过: 含虾标题映射不到 → None
         categories = [
             {"id": "cat-meat", "name": "肉禽蛋"},
             {"id": "cat-veg", "name": "蔬菜豆品"},
