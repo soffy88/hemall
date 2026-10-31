@@ -40,7 +40,10 @@ _BRAND_TOKENS = (
     "易购",
     "云商",
 )
-_BRAND_BRACKET_RE = re.compile(r"\[[^\]]*(?:苏宁|易购|云商)[^\]]*\]")
+_BRAND_BRACKET_RE = re.compile(r"\[[^\]]*(?:苏宁|易购|云商|苏鲜生|顺丰快递)[^\]]*\]")
+_EMPTY_BRACKETS_RE = re.compile(r"\[\s*\]")
+_FW_OPEN = chr(0x3010)
+_FW_CLOSE = chr(0x3011)
 _URL_RE = re.compile(r"https?://\S+")
 _SOURCE_TRAILER_RE = re.compile(r"\n来源[:：]")
 _SOURCE_TRAILER_URL_RE = re.compile(r"来源[:：][^\n]*https?://")
@@ -48,9 +51,11 @@ _SOURCE_TRAILER_URL_RE = re.compile(r"来源[:：][^\n]*https?://")
 
 def clean_spider_title(title: str) -> str:
     """去掉标题里的其他公司品牌词, 只留产品名本身."""
-    text = _BRAND_BRACKET_RE.sub("", title or "")
+    text = (title or "").replace(_FW_OPEN, "[").replace(_FW_CLOSE, "]")
+    text = _BRAND_BRACKET_RE.sub("", text)
     for token in _BRAND_TOKENS:
         text = text.replace(token, "")
+    text = _EMPTY_BRACKETS_RE.sub("", text)
     text = re.sub(r"\s+", " ", text).strip(" ,，、")
     if "/" in text:
         parts = [p.strip() for p in text.split("/")]

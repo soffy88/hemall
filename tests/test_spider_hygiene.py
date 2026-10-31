@@ -48,11 +48,31 @@ _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 5000
             "顺丰快递黄天鹅可生食鸡蛋 20枚/2.12斤礼盒装 生鲜鸡蛋苏宁自营 无抗生素",
             "黄天鹅可生食鸡蛋 20枚/2.12斤礼盒装 生鲜鸡蛋 无抗生素",
         ),
+        (
+            "[苏鲜生]山东贝贝小南瓜 新鲜蔬菜 净重5斤",
+            "山东贝贝小南瓜 新鲜蔬菜 净重5斤",
+        ),
+        (
+            "[顺丰快递]黄天鹅可生食鸡蛋 20枚",
+            "黄天鹅可生食鸡蛋 20枚",
+        ),
+        ("[]山东贝贝小南瓜 新鲜蔬菜", "山东贝贝小南瓜 新鲜蔬菜"),
+        (
+            "礼盒装[]新鲜山东秋月梨 净重4.5斤",
+            "礼盒装新鲜山东秋月梨 净重4.5斤",
+        ),
         ("丹东草莓 新鲜水果 2斤装", "丹东草莓 新鲜水果 2斤装"),
     ],
 )
 def test_clean_spider_title(raw: str, want: str) -> None:
     assert clean_spider_title(raw) == want
+
+
+def test_clean_spider_title_fullwidth_brackets() -> None:
+    fw_open = chr(0x3010)
+    fw_close = chr(0x3011)
+    raw = f"{fw_open}苏鲜生{fw_close}山东贝贝小南瓜"
+    assert clean_spider_title(raw) == "山东贝贝小南瓜"
 
 
 @pytest.mark.parametrize(
