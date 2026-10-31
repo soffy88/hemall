@@ -1753,7 +1753,22 @@ _SPIDER_PRICING_LOCK_KEY1 = 0x53505243  # "SPRC"
 #: (种子: 蔬菜豆品/时令水果/肉禽蛋/海鲜水产/粮油调味/乳品烘焙/冷冻速食/
 #: 休闲零食/酒水饮料/日用百货), 映射不到时归库里第一个分类。
 _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("冷冻速食", ("速冻", "冷冻", "冰淇淋", "冰激凌", "雪糕", "汤圆", "水饺", "馄饨")),
+    (
+        "冷冻速食",
+        (
+            "速冻",
+            "冷冻",
+            "冰淇淋",
+            "冰激凌",
+            "雪糕",
+            "汤圆",
+            "水饺",
+            "馄饨",
+            "手抓饼",
+            "棒冰",
+            "饺子",
+        ),
+    ),
     (
         "酒水饮料",
         (
@@ -1771,6 +1786,14 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "气泡水",
             "咖啡",
             "茶饮",
+            "椰子水",
+            "椰汁",
+            "橙汁",
+            "饮用水",
+            "天然水",
+            "凉茶",
+            "拿铁",
+            "摩卡",
         ),
     ),
     (
@@ -1789,6 +1812,13 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "蛋糕",
             "吐司",
             "烘焙",
+            "灭菌乳",
+            "山羊奶",
+            "鮮乳",
+            "发酵乳",
+            "優格",
+            "优格",
+            "Bread",
         ),
     ),
     (
@@ -1811,6 +1841,7 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "蛤蜊",
             "鲜鱼",
             "活鱼",
+            "刀鱼",
         ),
     ),
     (
@@ -1831,6 +1862,17 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "火腿",
             "香肠",
             "腊肉",
+            "五花肉",
+            "猪蹄",
+            "里脊",
+            "鸡翅",
+            "鸡腿",
+            "乳鸽",
+            "鸽子",
+            "腱",
+            "公鸡",
+            "走地鸡",
+            "白条猪",
         ),
     ),
     (
@@ -1856,6 +1898,11 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "柚子",
             "水果",
             "鲜果",
+            "冬桃",
+            "蜜柚",
+            "果粒",
+            "青枣",
+            "小米蕉",
         ),
     ),
     (
@@ -1882,6 +1929,11 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "红薯",
             "山药",
             "莲藕",
+            "四季豆",
+            "腐竹",
+            "大豆",
+            "野菜",
+            "Tofu",
         ),
     ),
     (
@@ -1907,6 +1959,12 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "绿豆",
             "食盐",
             "白糖",
+            "白醋",
+            "腐乳",
+            "小麦粉",
+            "精制粉",
+            "籽油",
+            "粉丝",
         ),
     ),
     (
@@ -1927,6 +1985,13 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "方便面",
             "肉脯",
             "海苔",
+            "巴旦木",
+            "腰果",
+            "花生",
+            "松子",
+            "拉面",
+            "即食面",
+            "即食麵",
         ),
     ),
     (
@@ -1946,18 +2011,86 @@ _SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "电池",
             "湿巾",
             "抽纸",
+            "鱼缸",
+        ),
+    ),
+    (
+        "数码家电",
+        (
+            "iPhone",
+            "iPad",
+            "MacBook",
+            "AirPods",
+            "手机壳",
+            "手机",
+            "平板",
+            "笔记本",
+            "台式机",
+            "显示器",
+            "耳机",
+            "音箱",
+            "充电器",
+            "充电宝",
+            "数据线",
+            "键盘",
+            "鼠标",
+            "智能手表",
+            "手环",
+            "电脑",
+            "路由器",
+            "硬盘",
+            "U盘",
+            "养生壶",
+            "电磁炉",
         ),
     ),
 )
 
 
+# 非食品标记: 带这些标记的标题不是食品, 不参与食品分类 (如图书)。
+_NON_FOOD_MARKERS = ("[M]", "978", "图书", "绘本", "书籍", "种子")
+
+# 并列优先级 (在前者胜): 产品型分类优先于口味/配料型分类。
+_CATEGORY_PRIORITY = (
+    "日用百货",
+    "冷冻速食",
+    "数码家电",
+    "乳品烘焙",
+    "休闲零食",
+    "肉禽蛋",
+    "海鲜水产",
+    "酒水饮料",
+    "粮油调味",
+    "蔬菜豆品",
+    "时令水果",
+)
+_CATEGORY_PRIORITY_INDEX = {name: i for i, name in enumerate(_CATEGORY_PRIORITY)}
+
+
 def _map_spider_listing_category(title: str, categories: list[dict[str, Any]]) -> Any:
-    """按标题关键词把外部商品映射到库里已有分类 id; 映射不到返回 None。"""
+    """按标题关键词把外部商品映射到库里已有分类 id; 映射不到返回 None。
+
+    最长关键词命中优先 (如“蟹稻共生大米”: “大米”胜过“蟹”);
+    同长并列时取规则表在前的分类; 带非食品标记的直接返回 None。
+    """
+    if any(marker in title for marker in _NON_FOOD_MARKERS):
+        return None
     by_name = {str(c.get("name") or ""): c.get("id") for c in categories}
+    best_id: Any = None
+    best_key: tuple[int, int] | None = None
     for cat_name, keywords in _SPIDER_LISTING_CATEGORY_RULES:
-        if cat_name in by_name and any(kw in title for kw in keywords):
-            return by_name[cat_name]
-    return None
+        if cat_name not in by_name:
+            continue
+        for keyword in keywords:
+            if not keyword or keyword not in title:
+                continue
+            # (关键词长度, 负优先级): 长者胜; 同长时产品型分类胜出
+            # (如水果味牙膏归日用、咖啡伴侣牛奶归乳品、番茄方便面归零食)。
+            key = (len(keyword), -_CATEGORY_PRIORITY_INDEX.get(cat_name, len(_CATEGORY_PRIORITY)))
+            if best_key is None or key > best_key:
+                best_id = by_name[cat_name]
+                best_key = key
+    return best_id
 
 
 def build_spider_listing_engine(
@@ -2206,7 +2339,6 @@ def build_spider_listing_engine(
         *,
         slug: str,
         categories: list[dict[str, Any]],
-        fallback_category_id: Any,
     ) -> None:
         import json
 
@@ -2219,7 +2351,7 @@ def build_spider_listing_engine(
         intro = str(item.get("description") or "").strip()
         # 前台不展示来源行: 介绍只留产品本身, 店铺/详情页只记 option_values 内部留痕。
         description = clean_spider_description(intro)
-        category_id = _map_spider_listing_category(title, categories) or fallback_category_id
+        category_id = _map_spider_listing_category(title, categories)
         option_values = {
             "来源": store,
             "detail_url": detail_url,
@@ -2253,7 +2385,6 @@ def build_spider_listing_engine(
                 "WHERE deleted_at IS NULL ORDER BY created_at"
             ),
         )
-        fallback_category_id = categories[0]["id"] if categories else None
         for keyword in settings.spider_listing_keywords:
             try:
                 products = await spider_fetch_products(spider_provider, keywords=[keyword])
@@ -2283,7 +2414,6 @@ def build_spider_listing_engine(
                         item,
                         slug=slug,
                         categories=categories,
-                        fallback_category_id=fallback_category_id,
                     )
                     stats["listed"] += 1
                     taken += 1
