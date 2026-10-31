@@ -12,6 +12,7 @@ import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
 import type { StorefrontProduct, ProductVariant, InventoryBatch } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import { displayOptionLabel } from '@/lib/option-label';
 
 export default function ProductDetailPage() {
   const params = useParams();
@@ -159,7 +160,7 @@ export default function ProductDetailPage() {
               <h3 className="text-sm font-medium text-gray-700 mb-2">选择规格</h3>
               <div className="flex flex-wrap gap-2">
                 {product.variants.map((v) => {
-                  const label = Object.values(v.option_values || {}).join(' / ') || v.sku_code;
+                  const label = displayOptionLabel(v.option_values);
                   const isSelected = selectedVariant?.id === v.id;
                   const hasStock = (v.batches || []).some((b) => b.available_qty > 0);
                   return (

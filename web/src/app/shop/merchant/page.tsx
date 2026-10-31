@@ -19,6 +19,7 @@ import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { MerchantReserveItem, MerchantReserveOrderResult, StorefrontProduct } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import { displayOptionLabel } from '@/lib/option-label';
 
 interface SearchRow {
   key: string;
@@ -97,13 +98,13 @@ export default function MerchantReservePage() {
       const rows: SearchRow[] = [];
       for (const p of products) {
         for (const v of p.variants || []) {
-          const spec = Object.values(v.option_values || {}).join(' / ');
+          const spec = displayOptionLabel(v.option_values);
           rows.push({
             key: v.id,
             productId: p.id,
             variantId: v.id,
             title: p.title,
-            label: spec || v.sku_code,
+            label: spec,
             priceCents: v.min_price_cents ?? p.min_price_cents ?? v.reference_price_cents,
             totalStock: v.total_stock ?? 0,
           });
