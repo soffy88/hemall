@@ -43,6 +43,7 @@ v6.0 §5 抖音做市与清算守护进程：
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -108,6 +109,11 @@ from .oskill import (
     compute_mercenary_bounty_rate,
     evaluate_claim_credibility,
     normalize_sku_price,
+)
+from .spider_hygiene import (
+    clean_spider_description,
+    clean_spider_title,
+    localize_spider_image,
 )
 from .spider_targets import extract_unit_from_text
 
@@ -1983,7 +1989,7 @@ def build_spider_listing_engine(
       variant sku_code = "EXT-{source}-{source_id}"; option_values 记
       {"来源", "detail_url", "source_id", "image_url"} 供填价段回读;
       reference_price_cents 留 NULL (未定价不用 0 冒充); description =
-      介绍 + "\\n来源:{store} {detail_url}"; 分类按标题关键词映射既有
+      介绍 (已去品牌词/来源行, 只留产品本身); 分类按标题关键词映射既有
       分类名, 映射不到归第一个分类。
 
     状态选择 (storefront 行为核查结论): queries.list_storefront_products
@@ -2036,7 +2042,12 @@ def build_spider_listing_engine(
         batch_no = (
             f"EXT-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{str(uuid7()).replace('-', '')[:8]}"
         )
-        media_json = json.dumps([image_url] if image_url else [])
+        # 商品图本地化: 下载失败保留原 URL, 由 tick 回填重试。
+        local_image = await localize_spider_image(
+            image_url, output_root=settings.output_root
+        )
+        shelf_url = local_image or image_url or None
+        media_json = json.dumps([shelf_url] if shelf_url else [])
         curve_json = json.dumps(build_default_vwap_curve(stock_qty))
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -2055,7 +2066,7 @@ def build_spider_listing_engine(
                     retail,
                     stock_qty,
                     media_json,
-                    image_url or None,
+                    shelf_url,
                     curve_json,
                 )
                 await conn.execute(
@@ -2203,12 +2214,13 @@ def build_spider_listing_engine(
 
         source = str(item.get("source") or "")
         source_id = str(item.get("source_id") or "")
-        title = str(item.get("item") or "").strip()[:120]
+        title = clean_spider_title(str(item.get("item") or "").strip())[:120]
         store = str(item.get("store") or "")
         detail_url = str(item.get("detail_url") or "")
         image_url = str(item.get("image_url") or "")
         intro = str(item.get("description") or "").strip()
-        description = (f"{intro}\n" if intro else "") + f"来源：{store} {detail_url}"
+        # 前台不展示来源行: 介绍只留产品本身, 店铺/详情页只记 option_values 内部留痕。
+        description = clean_spider_description(intro)
         category_id = _map_spider_listing_category(title, categories) or fallback_category_id
         option_values = {
             "来源": store,
@@ -2281,6 +2293,57 @@ def build_spider_listing_engine(
                     stats["failed"] += 1
                     logger.warning("spider listing create failed slug=%s: %s", slug, exc)
 
+    async def _backfill_remote_images(stats: dict[str, Any]) -> None:
+        """把仍挂外链的 active 批次图下载本地化 (每轮 ≤30, 单品失败不中断)。
+
+        新上架写入时下载失败的批次 (或历史遗留外链图) 在此收敛:
+        同 URL 哈希已落盘则直接复用, 无需重复下载。
+        """
+        try:
+            async with pool.acquire() as conn:
+                rows = (
+                    await conn.fetch(
+                        "SELECT id, shelf_image_url, media_assets FROM inventory_batch "
+                        "WHERE deleted_at IS NULL AND status = 'active' "
+                        "AND shelf_image_url LIKE 'http%' LIMIT 30"
+                    )
+                    or []
+                )
+        except Exception as exc:  # noqa: BLE001 - 回填查询失败不拖垮整轮
+            logger.warning("spider image backfill select failed: %s", exc)
+            return
+        for row in rows:
+            try:
+                remote_url = str(row["shelf_image_url"] or "")
+                local = await localize_spider_image(
+                    remote_url, output_root=settings.output_root
+                )
+                if not local:
+                    continue
+                media = row["media_assets"]
+                if isinstance(media, str):
+                    try:
+                        media = json.loads(media)
+                    except (json.JSONDecodeError, ValueError):
+                        media = media
+                if isinstance(media, list):
+                    new_media = [local if m == remote_url else m for m in media]
+                else:
+                    new_media = [local]
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE inventory_batch SET shelf_image_url = $2, "
+                        "media_assets = $3::jsonb WHERE id = $1",
+                        row["id"],
+                        local,
+                        json.dumps(new_media, ensure_ascii=False),
+                    )
+                stats["images_localized"] = stats.get("images_localized", 0) + 1
+            except Exception as exc:  # noqa: BLE001 - 单品回填失败不中断整轮
+                logger.warning(
+                    "spider image backfill failed batch=%s: %s", row.get("id"), exc
+                )
+
     async def spider_listing_tick(**_: Any) -> dict[str, Any]:
         stats: dict[str, Any] = {
             "listed": 0,
@@ -2299,6 +2362,11 @@ def build_spider_listing_engine(
         else:
             stats["skipped_no_screenshot"] = True
         await _list_new(stats)
+        try:
+            await _backfill_remote_images(stats)
+        except Exception as exc:  # noqa: BLE001 - 回填失败不拖垮整轮
+            stats["failed"] += 1
+            logger.warning("spider image backfill failed: %s", exc)
         return stats
 
     spider_listing_tick.__name__ = "spider_listing_tick"

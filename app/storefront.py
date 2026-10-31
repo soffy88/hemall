@@ -2032,6 +2032,27 @@ async def storefront_products(
     )
 
 
+@router.get("/categories")
+async def storefront_categories(request: Request):
+    """商城公开分类列表 (菜单栏分类下拉用): 含各分类在售商品数。"""
+    async with _pool(request).acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT pc.id, pc.name, pc.slug, COUNT(p.id) AS count
+            FROM product_category pc
+            LEFT JOIN product p
+              ON p.category_id = pc.id AND p.deleted_at IS NULL AND p.status = 'published'
+            WHERE pc.deleted_at IS NULL
+            GROUP BY pc.id, pc.name, pc.slug, pc.created_at
+            ORDER BY pc.created_at
+            """
+        )
+    return [
+        {"id": str(row["id"]), "name": row["name"], "slug": row["slug"], "count": int(row["count"])}
+        for row in rows
+    ]
+
+
 @router.get("/products/{product_id}")
 async def storefront_product(product_id: str, request: Request):
     _require_uuid(product_id, "product_id")

@@ -23,6 +23,7 @@ import { errMessage } from '@/lib/errors';
 const CATEGORY_ICONS: Record<string, string> = {
   vegetables: '🥬', fruits: '🍎', 'meat-eggs': '🥩', 'grain-oil': '🌾',
   'dairy-bakery': '🥛', frozen: '🧊', snacks: '🍫', drinks: '🥤', daily: '🧻',
+  seafood: '🦐', electronics: '📱',
 };
 
 export default function ShopPage() {
@@ -35,9 +36,14 @@ export default function ShopPage() {
   const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
 
   function load() {
-    api.storeProducts({ limit: 200 })
+    api.storeProducts({ limit: 500 })
       .then((data) => {
         setProducts(data);
+        // 菜单栏分类下拉带 ?cat= 进来: 非法分类回落全部。
+        const cat = new URLSearchParams(window.location.search).get('cat');
+        if (cat && cat !== 'all' && !data.some((p) => p.category_id === cat)) {
+          setActiveCat('all');
+        }
       })
       .catch((e) => {
         showToast(errMessage(e) || '加载失败');
@@ -47,7 +53,11 @@ export default function ShopPage() {
       });
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const cat = new URLSearchParams(window.location.search).get('cat');
+    if (cat) setActiveCat(cat);
+    load();
+  }, []);
 
   // 聚合分类 (按 category_id + 后端返回的分类名/图标映射)
   const categories: GroceryCategory[] = useMemo(() => {

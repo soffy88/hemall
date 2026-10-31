@@ -365,6 +365,9 @@ export const api = {
   storeProduct: (id: string) =>
     request<StorefrontProduct>(`/store/products/${id}`),
 
+  storeCategories: () =>
+    request<Array<{ id: string; name: string; slug: string; count: number }>>('/store/categories'),
+
   storeRegions: () =>
     request<Region[]>('/store/regions'),
 
