@@ -9,6 +9,7 @@ from __future__ import annotations
 from obase.persistence.pool import PgPool
 
 from .cangzhu import CANGZHU_DDL
+from .ext.spider_hygiene import OCR_GATE_DDL
 
 P0_SCHEMA_DDL = """
 -- ── payment authority / outbox / refund idempotency ────────────────
@@ -226,3 +227,5 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(P0_SCHEMA_DDL)
         # 仓主试点：推荐码/券账本/点货/邀请礼 DDL（幂等，见 app/cangzhu.py）。
         await conn.execute(CANGZHU_DDL)
+        # OCR 品牌门: inventory_batch.inspection_note 留痕列 (幂等, 见 spider_hygiene.py)。
+        await conn.execute(OCR_GATE_DDL)

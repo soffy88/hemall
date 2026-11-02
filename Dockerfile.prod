@@ -65,6 +65,8 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
     apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true \
     libpq-dev \
     curl \
+    tesseract-ocr \
+    tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 
 # 从构建阶段复制虚拟环境 (3O 平台包已在 venv 内，源码来自 git rev)
