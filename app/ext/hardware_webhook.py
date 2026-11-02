@@ -9,6 +9,7 @@ HARDWARE_SECRET (HEMALL_HARDWARE_SECRET) 保护：
 
     POST /ext/hardware/webhook/pick            — 重力货架 pick (MQTT pick)
     POST /ext/hardware/webhook/gate-reconcile  — 闸口物理对账 (MQTT gate req)
+    POST /ext/hardware/webhook/weigh           — 称重台重量上报 (IoT 报告 §4.2)
 
 防护与一致性设计：
     1. HARDWARE_SECRET：网桥请求带 ``Authorization: Bearer <secret>``，
@@ -274,3 +275,297 @@ async def gate_reconcile(
             "gate_id": body.gate_id,
             "tote_id": body.tote_id,
         }
+
+
+# ── 柜台称重试点 (IoT 报告 §4.2) ─────────────────────────────────────────
+# 秤只出重量，识别与计价在 Hemal：称重事件与 pick 同记 hardware_event 一本账，
+# event_type='weigh'。真实秤尚未接入（等卖家回串口格式），本次只有模拟器注入；
+# 接入契约见 docs/weigh-scale-contract.md。
+
+
+class WeighEvent(BaseModel):
+    """称重台重量上报（网桥/网关翻译后的标准 payload）。
+
+    batch_id/variant_id 二选一：给了就地计价；都不给只记重量（status='unpriced'），
+    柜台 UI 后续点选确认时再挂商品计价。ticket_id 给了则事件挂进该单据（须为 open 态）。
+    """
+
+    message_id: str
+    weight_grams: int  # 克，须为正数且不超过秤量程
+    tote_id: str | None = None
+    ticket_id: str | None = None
+    batch_id: str | None = None
+    variant_id: str | None = None
+    node_id: str | None = None
+    timestamp: int | None = None  # 毫秒时间戳（网桥透传，仅留痕）
+
+
+def _weigh_event_dict(row: Any) -> dict:
+    """hardware_event 行 → 对外 dict（UUID 转 str，金额字段原样）。"""
+
+    def _col(name: str) -> Any:
+        try:
+            return row[name]
+        except (KeyError, IndexError):
+            return None
+
+    return {
+        "message_id": row["message_id"],
+        "event_type": row["event_type"],
+        "status": row["status"],
+        "settlement_status": _col("settlement_status"),
+        "weight_grams": _col("weight_grams"),
+        "unit_price_cents": _col("unit_price_cents"),
+        "price_basis_grams": _col("price_basis_grams"),
+        "amount_cents": _col("amount_cents"),
+        "source": _col("source"),
+        "batch_id": str(row["batch_id"]) if row["batch_id"] else None,
+        "ticket_id": str(_col("ticket_id")) if _col("ticket_id") else None,
+        "tote_id": row["tote_id"],
+        "node_id": row["node_id"],
+        "title": _col("title"),
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }
+
+
+async def _resolve_weigh_target(
+    conn: Any, batch_id: str | None, variant_id: str | None
+) -> tuple[Any, Any]:
+    """解析称重目标 → (batch 行, variant 行)。失败 raise ValueError（调用方转 422）。
+
+    批次门：只有 status='active' 且 inspection_status='passed' 的批次可售；
+    variant 只给时取“可售余量最大、最早建”的最优批次（与商城 best-batch 口径一致）。
+    """
+    if batch_id:
+        batch = await conn.fetchrow(
+            'SELECT * FROM "inventory_batch" WHERE id = $1 AND deleted_at IS NULL',
+            batch_id,
+        )
+        if batch is None:
+            raise ValueError(f"batch not found: {batch_id}")
+        if batch["status"] != "active" or batch["inspection_status"] != "passed":
+            raise ValueError(
+                f"batch not sellable: status={batch['status']} "
+                f"inspection={batch['inspection_status']}"
+            )
+        variant = await conn.fetchrow(
+            'SELECT * FROM "product_variant" WHERE id = $1 AND deleted_at IS NULL',
+            batch["variant_id"],
+        )
+        if variant is None:
+            raise ValueError("variant not found for batch")
+        return batch, variant
+    if variant_id:
+        variant = await conn.fetchrow(
+            'SELECT * FROM "product_variant" WHERE id = $1 AND deleted_at IS NULL',
+            variant_id,
+        )
+        if variant is None:
+            raise ValueError(f"variant not found: {variant_id}")
+        batch = await conn.fetchrow(
+            "SELECT * FROM inventory_batch WHERE variant_id = $1 AND deleted_at IS NULL "
+            "AND status = 'active' AND inspection_status = 'passed' "
+            "ORDER BY GREATEST(stock_qty - reserved_qty, 0) DESC, created_at ASC LIMIT 1",
+            variant_id,
+        )
+        if batch is None:
+            raise ValueError("no sellable batch for variant")
+        return batch, variant
+    raise ValueError("batch_id or variant_id is required for priced weighing")
+
+
+async def _price_weigh(
+    conn: Any, weight_grams: int, batch: Any, variant: Any
+) -> tuple[int, int, int]:
+    """计价：(单价分, 基准克, 金额分)。取不到价/基准未知 → ValueError，不写账。"""
+    from ..weigh import extract_unit_texts, parse_basis_grams, weigh_amount_cents
+
+    unit_price = batch["retail_price_cents"]
+    if unit_price is None:
+        unit_price = variant["reference_price_cents"]
+    if unit_price is None:
+        raise ValueError("no price for batch/variant: refusing to invent a price")
+    basis = parse_basis_grams(extract_unit_texts(variant["option_values"]))
+    if basis is None:
+        product = await conn.fetchrow(
+            'SELECT title FROM "product" WHERE id = $1', variant["product_id"]
+        )
+        basis = parse_basis_grams([product["title"]] if product else [])
+    if basis is None:
+        raise ValueError(
+            "price basis unknown: variant spec carries no g/kg unit; "
+            "refusing to guess per-kg vs per-piece"
+        )
+    amount = weigh_amount_cents(int(weight_grams), int(unit_price), int(basis))
+    return int(unit_price), int(basis), amount
+
+
+async def record_weigh_event(
+    conn: Any,
+    *,
+    message_id: str,
+    weight_grams: int,
+    tote_id: str | None,
+    ticket_id: str | None,
+    batch_id: str | None,
+    variant_id: str | None,
+    node_id: str | None,
+    source: str,
+    payload: dict,
+) -> dict:
+    """称重事件落账（硬件端点 / 模拟器 / 柜台 UI 共用同一函数，同一本账）。
+
+    - weight_grams 超出 1..15000 → ValueError（秤量程 15KG，脏数据拒收）。
+    - ticket_id 给了：须存在且 status='open'，否则 ValueError。
+    - 有 batch/variant：解析 + 计价，失败 ValueError（不写账）。
+    - 无 batch/variant：只记重量，status='unpriced'，等柜台确认挂商品。
+    - message_id 唯一约束撞上时抛 asyncpg.UniqueViolationError（调用方转 duplicate）。
+    """
+    from ..weigh import MAX_WEIGHT_GRAMS, WEIGH_SOURCES
+
+    if source not in WEIGH_SOURCES:
+        raise ValueError(f"unknown weigh source: {source}")
+    if not isinstance(weight_grams, int) or not 1 <= weight_grams <= MAX_WEIGHT_GRAMS:
+        raise ValueError(f"weight_grams out of range 1..{MAX_WEIGHT_GRAMS}: {weight_grams!r}")
+    ticket_uuid = None
+    if ticket_id:
+        try:
+            import uuid
+
+            ticket_uuid = uuid.UUID(str(ticket_id))
+        except ValueError:
+            raise ValueError(f"invalid ticket_id: {ticket_id}") from None
+        ticket = await conn.fetchrow(
+            'SELECT id, status FROM "counter_ticket" WHERE id = $1', ticket_uuid
+        )
+        if ticket is None:
+            raise ValueError(f"ticket not found: {ticket_id}")
+        if ticket["status"] != "open":
+            raise ValueError(f"ticket not open: status={ticket['status']}")
+
+    unit_price = basis = amount = None
+    status = "unpriced"
+    resolved_batch_id = None
+    if batch_id or variant_id:
+        batch, variant = await _resolve_weigh_target(conn, batch_id, variant_id)
+        unit_price, basis, amount = await _price_weigh(conn, weight_grams, batch, variant)
+        resolved_batch_id = batch["id"]
+        status = "processed"
+
+    row = await conn.fetchrow(
+        'INSERT INTO "hardware_event" '
+        "(message_id, event_type, node_id, shelf_id, tote_id, batch_id, "
+        "qty_delta, unit_weight_grams, payload, status, session_id, "
+        "settlement_status, weight_grams, unit_price_cents, price_basis_grams, "
+        "amount_cents, source, ticket_id) "
+        "VALUES ($1, 'weigh', $2, NULL, $3, $4, 0, 0, $5, $6, $7, "
+        "'unsettled', $8, $9, $10, $11, $12, $13) RETURNING *",
+        message_id,
+        node_id,
+        tote_id,
+        resolved_batch_id,
+        json.dumps(payload, ensure_ascii=False),
+        status,
+        str(ticket_uuid) if ticket_uuid else None,
+        weight_grams,
+        unit_price,
+        basis,
+        amount,
+        source,
+        ticket_uuid,
+    )
+    return _weigh_event_dict(row)
+
+
+async def confirm_weigh_event(
+    conn: Any, *, message_id: str, batch_id: str | None, variant_id: str | None, ticket_id: str
+) -> dict:
+    """柜台确认：把一条未挂商品的原始称重（unpriced）挂上商品计价并进单据。
+
+    只接受未认领或已挂同一单据的原始事件；已挂其它单据的事件拒绝二次认领
+    （防重复计费）。同一单据的 unpriced 事件就地计价，不改 session_id。
+    """
+    import uuid
+
+    try:
+        ticket_uuid = uuid.UUID(str(ticket_id))
+    except ValueError:
+        raise ValueError(f"invalid ticket_id: {ticket_id}") from None
+    ticket = await conn.fetchrow(
+        'SELECT id, status FROM "counter_ticket" WHERE id = $1', ticket_uuid
+    )
+    if ticket is None:
+        raise ValueError(f"ticket not found: {ticket_id}")
+    if ticket["status"] != "open":
+        raise ValueError(f"ticket not open: status={ticket['status']}")
+    event = await conn.fetchrow('SELECT * FROM "hardware_event" WHERE message_id = $1', message_id)
+    if event is None:
+        raise ValueError(f"weigh event not found: {message_id}")
+    if event["event_type"] != "weigh":
+        raise ValueError(f"not a weigh event: {message_id}")
+    if event["ticket_id"] is not None and str(event["ticket_id"]) != str(ticket_uuid):
+        raise ValueError(f"weigh event already claimed by ticket {event['ticket_id']}")
+    if event["status"] != "unpriced":
+        raise ValueError(f"weigh event not confirmable: status={event['status']}")
+    batch, variant = await _resolve_weigh_target(conn, batch_id, variant_id)
+    unit_price, basis, amount = await _price_weigh(conn, int(event["weight_grams"]), batch, variant)
+    row = await conn.fetchrow(
+        'UPDATE "hardware_event" SET batch_id = $1, ticket_id = $2, '
+        "unit_price_cents = $3, price_basis_grams = $4, amount_cents = $5, "
+        "status = 'processed' WHERE message_id = $6 RETURNING *",
+        batch["id"],
+        ticket_uuid,
+        unit_price,
+        basis,
+        amount,
+        message_id,
+    )
+    return _weigh_event_dict(row)
+
+
+@router.post("/weigh")
+async def hardware_weigh(
+    body: WeighEvent,
+    request: Request,
+    _: None = Depends(require_hardware_secret),
+) -> dict:
+    """称重台重量上报：秤/网关只发重量，计价在主干完成（同 pick 的幂等与鉴权）。
+
+    响应带 priced/amount 供网关回显；同一 message_id 重发得 status='duplicate'。
+    取不到价/基准未知 → 422，不写账（绝不编价格）。
+    """
+    pool = _pool(request)
+    try:
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                'SELECT status, amount_cents, ticket_id FROM "hardware_event" '
+                "WHERE message_id = $1",
+                body.message_id,
+            )
+            if existing is not None:
+                return {
+                    "status": "duplicate",
+                    "message_id": body.message_id,
+                    "first_status": existing["status"],
+                    "amount_cents": existing["amount_cents"],
+                    "ticket_id": (str(existing["ticket_id"]) if existing["ticket_id"] else None),
+                }
+            event = await record_weigh_event(
+                conn,
+                message_id=body.message_id,
+                weight_grams=body.weight_grams,
+                tote_id=body.tote_id,
+                ticket_id=body.ticket_id,
+                batch_id=body.batch_id,
+                variant_id=body.variant_id,
+                node_id=body.node_id,
+                source="scale",
+                payload=body.model_dump(),
+            )
+        event["priced"] = event["status"] == "processed"
+        return event
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except asyncpg.UniqueViolationError:
+        # 竞态兜底：两个重发同时到达，后到者撞 message_id 唯一约束。
+        return {"status": "duplicate", "message_id": body.message_id}

@@ -3406,3 +3406,434 @@ async def submit_my_claim(
 @router.get("/customers/me/claims")
 async def list_my_claims(request: Request, principal: dict = Depends(get_current_customer)):
     return await queries.list_customer_claims(_pool(request), principal["customer_id"])
+
+
+# ── 柜台称重试点 ─────────────────────────────────────────────────────────
+# 店员柜台页 /shop/counter 的后端：照片格商品、单据、行项、模拟器。
+# 门禁：顾客登录 + is_merchant（仓管家），与点货/裂变账本同一道门。
+# 结算语义：本试点只到“待结算”（pending_settlement），不创建支付单据、
+# 不碰券账本与 9 折逻辑；收款在收银台完成，结算闭环另行立项。
+
+
+def _counter_first_media_ref(value: object) -> str | None:
+    """取第一个媒体引用：shelf_image_url/media_assets 历史上都可能存成
+    JSON 数组字符串，先解析再取首项（与前端 product-image.ts 同一容错）。"""
+
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            ref = _counter_first_media_ref(item)
+            if ref:
+                return ref
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.startswith("["):
+            try:
+                import json as _json
+
+                return _counter_first_media_ref(_json.loads(text))
+            except ValueError:
+                return None
+        return text
+    return None
+
+
+def _counter_ticket_dict(row: Any, total_cents: int) -> dict:
+    return {
+        "ticket_id": str(row["id"]),
+        "status": row["status"],
+        "tote_id": row["tote_id"],
+        "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
+        "created_by": row["created_by"],
+        "note": row["note"],
+        "total_cents": total_cents,
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
+async def _counter_require_ticket(conn: Any, ticket_id: str, owner_id: str) -> Any:
+    """取单据并验归属：不存在 404，非本人 403。"""
+    import uuid
+
+    try:
+        ticket_uuid = uuid.UUID(str(ticket_id))
+    except ValueError:
+        raise HTTPException(400, "invalid ticket_id") from None
+    row = await conn.fetchrow('SELECT * FROM "counter_ticket" WHERE id = $1', ticket_uuid)
+    if row is None:
+        raise HTTPException(404, "ticket not found")
+    if str(row["created_by"]) != str(owner_id):
+        raise HTTPException(403, "ticket belongs to another merchant")
+    return row
+
+
+async def _counter_ticket_total(conn: Any, ticket_uuid: Any) -> int:
+    total = await conn.fetchval(
+        'SELECT COALESCE(SUM(amount_cents), 0)::int FROM "hardware_event" '
+        "WHERE ticket_id = $1 AND event_type = 'weigh' AND status = 'processed'",
+        ticket_uuid,
+    )
+    return int(total or 0)
+
+
+@router.get("/counter/products")
+async def counter_products(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """柜台照片格：可称重商品（最优可售批次 + 现价 + 计价基准 + 首图）。
+
+    只返回“能当场计价”的行：无价或规格里解析不出 g/kg 基准的商品不上格，
+    避免店员点选后才发现算不了账（缺价商品走点货/补价流程，不在这里编价格）。
+    """
+    await _require_merchant(request, principal)
+    from app.weigh import extract_unit_texts, parse_basis_grams
+
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.id AS product_id, p.title,
+                   pv.id AS variant_id, pv.option_values, pv.reference_price_cents,
+                   best.id AS batch_id, best.retail_price_cents,
+                   best.shelf_image_url, best.media_assets,
+                   GREATEST(best.stock_qty - best.reserved_qty, 0)::int AS available_qty
+            FROM product p
+            JOIN product_variant pv ON pv.product_id = p.id AND pv.deleted_at IS NULL
+            JOIN LATERAL (
+                SELECT ib.* FROM inventory_batch ib
+                WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
+                  AND ib.status = 'active' AND ib.inspection_status = 'passed'
+                ORDER BY GREATEST(ib.stock_qty - ib.reserved_qty, 0) DESC,
+                         ib.created_at ASC
+                LIMIT 1
+            ) best ON true
+            WHERE p.deleted_at IS NULL
+            ORDER BY p.title
+            LIMIT 200
+            """
+        )
+    products = []
+    for row in rows:
+        price = row["retail_price_cents"]
+        if price is None:
+            price = row["reference_price_cents"]
+        basis = parse_basis_grams(extract_unit_texts(row["option_values"]))
+        if basis is None:
+            basis = parse_basis_grams([row["title"]])
+        if price is None or basis is None:
+            continue
+        image = _counter_first_media_ref(row["shelf_image_url"]) or _counter_first_media_ref(
+            row["media_assets"]
+        )
+        products.append(
+            {
+                "batch_id": str(row["batch_id"]),
+                "variant_id": str(row["variant_id"]),
+                "product_id": str(row["product_id"]),
+                "title": row["title"],
+                "image_url": image,
+                "unit_price_cents": int(price),
+                "price_basis_grams": int(basis),
+                "available_qty": int(row["available_qty"]),
+            }
+        )
+    return {"products": products}
+
+
+@router.post("/counter/tickets")
+async def counter_create_ticket(
+    request: Request,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """开一张柜台单据（open 态）。tote_id 为可选的现场筐/台号标签。"""
+    await _require_merchant(request, principal)
+    pool = _pool(request)
+    tote_id = body.get("tote_id")
+    note = body.get("note") or ""
+    if tote_id is not None and not isinstance(tote_id, str):
+        raise HTTPException(400, "tote_id must be a string")
+    if len(note) > 200:
+        raise HTTPException(400, "note too long")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'INSERT INTO "counter_ticket" (status, tote_id, created_by, note) '
+            "VALUES ('open', $1, $2, $3) RETURNING *",
+            tote_id,
+            str(principal["customer_id"]),
+            note,
+        )
+    return _counter_ticket_dict(row, 0)
+
+
+@router.get("/counter/tickets")
+async def counter_list_tickets(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """本仓管家的单据列表（open 与 pending_settlement 在前，最新在前）。"""
+    await _require_merchant(request, principal)
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT * FROM "counter_ticket" WHERE created_by = $1 '
+            "ORDER BY created_at DESC LIMIT 20",
+            str(principal["customer_id"]),
+        )
+        tickets = []
+        for row in rows:
+            total = await _counter_ticket_total(conn, row["id"])
+            tickets.append(_counter_ticket_dict(row, total))
+    return {"tickets": tickets}
+
+
+@router.get("/counter/tickets/{ticket_id}")
+async def counter_get_ticket(
+    request: Request,
+    ticket_id: str,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """单据详情：头 + 全部称重行项（同记一本账的 hardware_event 行）+ 合计。"""
+    await _require_merchant(request, principal)
+    from app.ext.hardware_webhook import _weigh_event_dict
+
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        ticket = await _counter_require_ticket(conn, ticket_id, str(principal["customer_id"]))
+        lines = await conn.fetch(
+            'SELECT he.*, p.title FROM "hardware_event" he '
+            "LEFT JOIN inventory_batch ib ON ib.id = he.batch_id "
+            "LEFT JOIN product_variant pv ON pv.id = ib.variant_id "
+            "LEFT JOIN product p ON p.id = pv.product_id "
+            "WHERE he.ticket_id = $1 AND he.event_type = 'weigh' "
+            "ORDER BY he.created_at ASC",
+            ticket["id"],
+        )
+        total = await _counter_ticket_total(conn, ticket["id"])
+    return {
+        "ticket": _counter_ticket_dict(ticket, total),
+        "lines": [_weigh_event_dict(row) for row in lines],
+    }
+
+
+@router.post("/counter/tickets/{ticket_id}/lines")
+async def counter_add_line(
+    request: Request,
+    ticket_id: str,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """柜台确认记行项：点选商品 + 重量 → 当场计价写进单据。
+
+    两种来源：
+    - weigh_message_id：确认一条秤/模拟器已发的原始重量（unpriced），挂商品计价；
+      body 的 weight_grams 若给了须与原始重量一致，否则 422。
+    - 无 weigh_message_id：直接按 body 的 weight_grams 记行（source=manual/scale）。
+    """
+    await _require_merchant(request, principal)
+    from app.ext.hardware_webhook import confirm_weigh_event, record_weigh_event
+    from app.weigh import MAX_WEIGHT_GRAMS
+
+    pool = _pool(request)
+    source = body.get("source", "manual")
+    if source not in ("manual", "scale"):
+        raise HTTPException(400, "source must be 'manual' or 'scale'")
+    weight_grams = body.get("weight_grams")
+    weigh_message_id = body.get("weigh_message_id")
+    try:
+        async with pool.acquire() as conn:
+            ticket = await _counter_require_ticket(conn, ticket_id, str(principal["customer_id"]))
+            if ticket["status"] != "open":
+                raise HTTPException(409, f"ticket not open: status={ticket['status']}")
+            if weigh_message_id:
+                event = await conn.fetchrow(
+                    'SELECT weight_grams FROM "hardware_event" WHERE message_id = $1',
+                    weigh_message_id,
+                )
+                if event is None:
+                    raise HTTPException(404, "weigh event not found")
+                if weight_grams is not None and (
+                    not isinstance(weight_grams, int)
+                    or int(weight_grams) != int(event["weight_grams"])
+                ):
+                    raise HTTPException(422, "weight_grams mismatches weigh event")
+                line = await confirm_weigh_event(
+                    conn,
+                    message_id=weigh_message_id,
+                    batch_id=body.get("batch_id"),
+                    variant_id=body.get("variant_id"),
+                    ticket_id=str(ticket["id"]),
+                )
+                from app.ext.hardware_webhook import _weigh_event_dict
+
+                joined = await conn.fetchrow(
+                    'SELECT he.*, p.title FROM "hardware_event" he '
+                    "LEFT JOIN inventory_batch b ON b.id = he.batch_id "
+                    "LEFT JOIN product_variant pv ON pv.id = b.variant_id "
+                    "LEFT JOIN product p ON p.id = pv.product_id "
+                    "WHERE he.message_id = $1",
+                    weigh_message_id,
+                )
+                if joined is not None:
+                    line = _weigh_event_dict(joined)
+            else:
+                if weight_grams is None:
+                    raise HTTPException(400, "weight_grams is required")
+                if not isinstance(weight_grams, int) or not 1 <= weight_grams <= MAX_WEIGHT_GRAMS:
+                    raise HTTPException(400, f"weight_grams out of range 1..{MAX_WEIGHT_GRAMS}")
+                import uuid as _uuid
+
+                line = await record_weigh_event(
+                    conn,
+                    message_id=f"ui-{_uuid.uuid4().hex}",
+                    weight_grams=int(weight_grams),
+                    tote_id=ticket["tote_id"],
+                    ticket_id=str(ticket["id"]),
+                    batch_id=body.get("batch_id"),
+                    variant_id=body.get("variant_id"),
+                    node_id=None,
+                    source=source,
+                    payload={"source": "counter-ui", "ticket_id": str(ticket["id"])},
+                )
+            total = await _counter_ticket_total(conn, ticket["id"])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"line": line, "ticket_id": str(ticket["id"]), "total_cents": total}
+
+
+@router.get("/counter/latest-weight")
+async def counter_latest_weight(
+    request: Request,
+    ticket_id: str | None = None,
+    tote_id: str | None = None,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """柜台轮询：该单据/筐的最新一条称重读数（秤或模拟器发的都算）。"""
+    await _require_merchant(request, principal)
+    from app.ext.hardware_webhook import _weigh_event_dict
+
+    if not ticket_id and not tote_id:
+        raise HTTPException(400, "ticket_id or tote_id is required")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        if ticket_id:
+            import uuid
+
+            try:
+                ticket_uuid = uuid.UUID(str(ticket_id))
+            except ValueError:
+                raise HTTPException(400, "invalid ticket_id") from None
+            row = await conn.fetchrow(
+                'SELECT * FROM "hardware_event" WHERE ticket_id = $1 '
+                "AND event_type = 'weigh' ORDER BY created_at DESC LIMIT 1",
+                ticket_uuid,
+            )
+        else:
+            row = await conn.fetchrow(
+                'SELECT * FROM "hardware_event" WHERE tote_id = $1 '
+                "AND event_type = 'weigh' ORDER BY created_at DESC LIMIT 1",
+                tote_id,
+            )
+    if row is None:
+        return {"weight_grams": None}
+    return _weigh_event_dict(row)
+
+
+@router.post("/counter/simulate-weigh")
+async def counter_simulate_weigh(
+    request: Request,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """模拟器（演示/验证专用，明确标记 simulator）：注入一条称重事件。
+
+    与真实秤走同一记账函数、同一本账，唯一区别是 source='simulator'。
+    真实秤接入后停用本端点（契约见 docs/weigh-scale-contract.md）。
+    """
+    await _require_merchant(request, principal)
+    from app.ext.hardware_webhook import record_weigh_event
+
+    pool = _pool(request)
+    weight_grams = body.get("weight_grams")
+    if not isinstance(weight_grams, int):
+        raise HTTPException(400, "weight_grams must be an integer")
+    try:
+        import uuid as _uuid
+
+        async with pool.acquire() as conn:
+            event = await record_weigh_event(
+                conn,
+                message_id=f"sim-{_uuid.uuid4().hex}",
+                weight_grams=weight_grams,
+                tote_id=body.get("tote_id"),
+                ticket_id=body.get("ticket_id"),
+                batch_id=body.get("batch_id"),
+                variant_id=body.get("variant_id"),
+                node_id=body.get("node_id"),
+                source="simulator",
+                payload={"simulator": True, "by": str(principal["customer_id"])},
+            )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    event["simulator"] = True
+    return event
+
+
+@router.post("/counter/tickets/{ticket_id}/pending-settlement")
+async def counter_mark_pending_settlement(
+    request: Request,
+    ticket_id: str,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """挂单待结算：open → pending_settlement。只改状态，不创建支付单据，
+    不扣款、不发券——收款在收银台完成，结算闭环另行立项。"""
+    await _require_merchant(request, principal)
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        ticket = await _counter_require_ticket(conn, ticket_id, str(principal["customer_id"]))
+        if ticket["status"] == "pending_settlement":
+            total = await _counter_ticket_total(conn, ticket["id"])
+            return _counter_ticket_dict(ticket, total) | {
+                "payment": None,
+                "note": "already pending settlement; no payment created",
+            }
+        if ticket["status"] != "open":
+            raise HTTPException(409, f"ticket not open: status={ticket['status']}")
+        row = await conn.fetchrow(
+            "UPDATE \"counter_ticket\" SET status = 'pending_settlement', "
+            "updated_at = NOW() WHERE id = $1 RETURNING *",
+            ticket["id"],
+        )
+        total = await _counter_ticket_total(conn, ticket["id"])
+    return _counter_ticket_dict(row, total) | {
+        "payment": None,
+        "note": "pending settlement: no payment created; settle at the counter",
+    }
+
+
+@router.post("/counter/tickets/{ticket_id}/void")
+async def counter_void_ticket(
+    request: Request,
+    ticket_id: str,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """作废单据：仅 open 态可作废，行项留痕备查。"""
+    await _require_merchant(request, principal)
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        ticket = await _counter_require_ticket(conn, ticket_id, str(principal["customer_id"]))
+        if ticket["status"] != "open":
+            raise HTTPException(409, f"ticket not open: status={ticket['status']}")
+        row = await conn.fetchrow(
+            "UPDATE \"counter_ticket\" SET status = 'void', updated_at = NOW() "
+            "WHERE id = $1 RETURNING *",
+            ticket["id"],
+        )
+        total = await _counter_ticket_total(conn, ticket["id"])
+    return _counter_ticket_dict(row, total)
