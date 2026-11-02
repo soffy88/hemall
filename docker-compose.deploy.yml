@@ -1,6 +1,6 @@
 services:
   api:
-    image: registry.sxueji.com/hemall/backend:0.6.13-prod
+    image: registry.sxueji.com/hemall/backend:0.6.14-prod
     volumes:
       - hemall-spider-media:/app/var/omodul_output/ext_bespoke/spider_media
     environment:
