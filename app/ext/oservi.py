@@ -111,8 +111,10 @@ from .oskill import (
     normalize_sku_price,
 )
 from .spider_hygiene import (
+    brand_screen_to_inspection,
     clean_spider_description,
     clean_spider_title,
+    localize_and_screen_spider_image,
     localize_spider_image,
 )
 from .spider_targets import extract_unit_from_text
@@ -2183,7 +2185,11 @@ def build_spider_listing_engine(
             f"EXT-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{str(uuid7()).replace('-', '')[:8]}"
         )
         # 商品图本地化: 下载失败保留原 URL, 由 tick 回填重试。
-        local_image = await localize_spider_image(image_url, output_root=settings.output_root)
+        # 新下载图片过 OCR 品牌门: 命中 -> failed(禁售), 干净 -> passed, 未筛出 -> pending。
+        local_image, brand_screen = await localize_and_screen_spider_image(
+            image_url, output_root=settings.output_root
+        )
+        inspection_status, inspection_note = brand_screen_to_inspection(brand_screen)
         shelf_url = local_image or image_url or None
         media_json = json.dumps([shelf_url] if shelf_url else [])
         curve_json = json.dumps(build_default_vwap_curve(stock_qty))
@@ -2193,9 +2199,10 @@ def build_spider_listing_engine(
                     'INSERT INTO "inventory_batch" '
                     "(id, variant_id, location_id, batch_no, video_url, "
                     "cost_price_cents, retail_price_cents, stock_qty, currency, "
-                    "media_assets, shelf_image_url, vwap_target_curve, status) "
+                    "media_assets, shelf_image_url, vwap_target_curve, status, "
+                    "inspection_status, inspection_note) "
                     "VALUES ($1, $2, $3, $4, '', $5, $6, $7, 'CNY', "
-                    "$8::jsonb, $9, $10::jsonb, 'active')",
+                    "$8::jsonb, $9, $10::jsonb, 'active', $11, $12)",
                     uuid7(),
                     row["variant_id"],
                     location_id,
@@ -2206,6 +2213,8 @@ def build_spider_listing_engine(
                     media_json,
                     shelf_url,
                     curve_json,
+                    inspection_status,
+                    inspection_note,
                 )
                 await conn.execute(
                     "UPDATE \"product\" SET status = 'published' WHERE id = $1",
