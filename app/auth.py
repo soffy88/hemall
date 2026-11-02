@@ -921,6 +921,7 @@ class CustomerRegisterInput(BaseModel):
     password: str = Field(..., description="明文密码")
     phone: str | None = Field(None, description="手机号")
     name: str | None = Field(None, description="姓名")
+    referral_code: str = Field("", description="推荐人推荐码（选填，绑定后不可改）")
 
 
 class CustomerTokenResponse(BaseModel):
@@ -1064,19 +1065,36 @@ async def customer_register(
     if existing:
         raise HTTPException(status_code=409, detail="email already registered")
 
-    # 创建 customer
+    # 仓主试点：推荐码先解析（无效直接 400，不产生孤儿账号），与 storefront 注册一致。
+    from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
+
+    referrer_id: str | None = None
+    if (body.referral_code or "").strip():
+        async with pool.acquire() as conn:
+            try:
+                referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # 创建 customer（建号 + 推荐绑定 + 本人推荐码同一事务）
     password_hash = CryptoUtil.hash_password(password=body.password)
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            'INSERT INTO "customer" (email, password_hash, phone, name, status) '
-            "VALUES ($1, $2, $3, $4, 'active') RETURNING id, email",
-            body.email,
-            password_hash,
-            body.phone,
-            body.name,
-        )
-
-    customer_id = str(row["id"])
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                'INSERT INTO "customer" (id, email, password_hash, phone, name, status) '
+                "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'active') RETURNING id, email",
+                body.email,
+                password_hash,
+                body.phone,
+                body.name,
+            )
+            customer_id = str(row["id"])
+            if referrer_id is not None:
+                try:
+                    await bind_referral(conn, customer_id=customer_id, referrer_id=referrer_id)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            await ensure_referral_code(conn, customer_id)
 
     access_token = sign_token(
         {"customer_id": customer_id, "email": row["email"]},

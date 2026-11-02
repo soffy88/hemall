@@ -2194,7 +2194,10 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
     referrer_id: str | None = None
     if (body.referral_code or "").strip():
         async with _pool(request).acquire() as conn:
-            referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            try:
+                referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
     from omodul.create_customer import (
         CreateCustomerConfig,
         CreateCustomerInput,
@@ -2340,7 +2343,10 @@ async def wechat_login_customer(body: WeChatLoginRequest, request: Request):
     wx_referrer_id: str | None = None
     if (body.referral_code or "").strip():
         async with pool.acquire() as conn:
-            wx_referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            try:
+                wx_referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
 
     placeholder_email = f"wx_{openid}@mp.local"
     result = await create_customer(
