@@ -26,6 +26,9 @@ import type {
   GiftCard,
   Health,
   IngestResult,
+  CounterProduct,
+  CounterTicket,
+  CounterWeighLine,
   MerchantReserveItem,
   MerchantReserveOrderResult,
   MyReferral,
@@ -623,6 +626,64 @@ export const api = {
     request<MerchantReserveOrderResult>('/store/merchant/reserve-order', {
       method: 'POST',
       body: JSON.stringify({ items }),
+    }, 'customer'),
+
+  // ── 柜台称重试点：照片格 + 单据 + 模拟器（仅商家账号） ─────────────
+
+  counterProducts: () =>
+    request<{ products: CounterProduct[] }>('/store/counter/products', {}, 'customer'),
+
+  counterCreateTicket: (data: { tote_id?: string; note?: string }) =>
+    request<CounterTicket>('/store/counter/tickets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterListTickets: () =>
+    request<{ tickets: CounterTicket[] }>('/store/counter/tickets', {}, 'customer'),
+
+  counterGetTicket: (ticketId: string) =>
+    request<{ ticket: CounterTicket; lines: CounterWeighLine[] }>(
+      `/store/counter/tickets/${ticketId}`, {}, 'customer',
+    ),
+
+  counterAddLine: (ticketId: string, data: {
+    batch_id?: string; variant_id?: string; weight_grams?: number;
+    source?: string; weigh_message_id?: string;
+  }) =>
+    request<{ line: CounterWeighLine; ticket_id: string; total_cents: number }>(
+      `/store/counter/tickets/${ticketId}/lines`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }, 'customer',
+    ),
+
+  counterLatestWeight: (params: { ticket_id?: string; tote_id?: string }) =>
+    request<CounterWeighLine | { weight_grams: null }>(
+      `/store/counter/latest-weight?${new URLSearchParams(
+        Object.fromEntries(Object.entries(params).filter(([, v]) => v != null)),
+      ).toString()}`, {}, 'customer',
+    ),
+
+  counterSimulateWeigh: (data: {
+    weight_grams: number; ticket_id?: string; tote_id?: string;
+    batch_id?: string; variant_id?: string;
+  }) =>
+    request<CounterWeighLine & { simulator: boolean }>('/store/counter/simulate-weigh', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterMarkPendingSettlement: (ticketId: string) =>
+    request<CounterTicket & { payment: null; note: string }>(
+      `/store/counter/tickets/${ticketId}/pending-settlement`, {
+        method: 'POST',
+      }, 'customer',
+    ),
+
+  counterVoidTicket: (ticketId: string) =>
+    request<CounterTicket>(`/store/counter/tickets/${ticketId}/void`, {
+      method: 'POST',
     }, 'customer'),
 
   // ── 后台：商家标记 + 预订配货 ─────────────────────────────────

@@ -199,6 +199,9 @@ export default function MerchantReservePage() {
       <div>
         <h1 className="text-2xl font-bold">商家预订</h1>
         <p className="text-sm text-gray-400 mt-1">常购清单直接填数量下单；有货先留货，缺货部分自动转预订，到货后配货。</p>
+        <p className="text-sm mt-1">
+          <Link href="/shop/counter" className="text-emerald-600 hover:underline">柜台称重试点 →</Link>
+        </p>
       </div>
 
       {/* 提交结果 */}

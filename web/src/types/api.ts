@@ -319,6 +319,50 @@ export interface MerchantReserveOrderResult {
   lines: MerchantReserveOrderLine[];
 }
 
+/** 柜台称重：照片格一行（后端已筛掉无价/无计价基准的商品） */
+export interface CounterProduct {
+  batch_id: string;
+  variant_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  unit_price_cents: number;
+  price_basis_grams: number;
+  available_qty: number;
+}
+
+/** 称重行项（hardware_event event_type='weigh'，title 仅详情接口带） */
+export interface CounterWeighLine {
+  message_id: string;
+  event_type: string;
+  status: string;
+  settlement_status: string | null;
+  weight_grams: number | null;
+  unit_price_cents: number | null;
+  price_basis_grams: number | null;
+  amount_cents: number | null;
+  source: string | null;
+  batch_id: string | null;
+  ticket_id: string | null;
+  tote_id: string | null;
+  node_id: string | null;
+  title?: string | null;
+  created_at: string | null;
+}
+
+/** 柜台单据头（行项在详情接口里，合计为已计价行项金额之和） */
+export interface CounterTicket {
+  ticket_id: string;
+  status: string;
+  tote_id: string | null;
+  customer_id: string | null;
+  created_by: string;
+  note: string;
+  total_cents: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 /** 库存批次（后台质检列表一行） */
 export interface InventoryBatch {
   id: string;
