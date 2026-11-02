@@ -8,6 +8,8 @@ from typing import Any
 
 from obase.persistence.pool import PgPool
 
+from app.cangzhu import finalize_redemption, release_redemption, settle_accrual
+
 from .models import (
     ConcurrentOrderTransitionError,
     OrderSnapshot,
@@ -291,6 +293,7 @@ class OrderService:
             old_status.value,
             new_status.value,
         )
+        await self._run_voucher_hook(order_id, new_status)
         result = await self.get_order(order_id)
         if result is None:  # pragma: no cover - row was just updated in the transaction
             raise OrderNotFoundError(order_id)
@@ -376,6 +379,19 @@ class OrderService:
             reason="order completed",
             operator_id=operator_id,
         )
+
+    async def _run_voucher_hook(self, order_id: str, new_status: OrderStatus) -> None:
+        """仓主试点账本钩子（提交后、幂等）：确认→核销持有券，取消→返还，
+        完成→结算推荐奖励。钩子失败只记日志，绝不破坏订单状态机。"""
+        try:
+            if new_status == OrderStatus.CONFIRMED:
+                await finalize_redemption(self._pool, order_id)
+            elif new_status == OrderStatus.CANCELLED:
+                await release_redemption(self._pool, order_id)
+            elif new_status == OrderStatus.COMPLETED:
+                await settle_accrual(self._pool, order_id)
+        except Exception:
+            logger.exception("cangzhu voucher hook failed for order %s", order_id)
 
     # ── 精确库存联动 (与订单 transition 共用同一事务) ───────────────
 

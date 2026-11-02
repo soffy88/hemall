@@ -15,12 +15,23 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
+from app.cangzhu import choose_discount, get_voucher_balance, hold_redemption
 from app.db_recovery import kick_pool_recovery
 from app.deps import get_current_customer, get_settings
 from app.recommend.models import UserBehaviorEvent, UserBehaviorType
@@ -1369,14 +1380,59 @@ async def _create_order_from_cart(
                     }
                 )
 
+            # 仓主试点：会员 9 折与券抵扣互斥取最优（购物车已有其他折扣时不动）。
+            # 券抵扣在同一事务内持有余额；事务回滚时持有同步撤销。
+            _cz_discount_kind = "none"
+            _cz_discount_cents = int(cart["discount_cents"] or 0)
+            _cz_grand_total = int(cart["grand_total_cents"])
+            if _cz_discount_cents == 0:
+                _cz_customer_id = customer_id or (
+                    str(cart["customer_id"]) if cart["customer_id"] else None
+                )
+                if _cz_customer_id is not None:
+                    _excluded_variants = {
+                        str(r["id"])
+                        for r in await conn.fetch(
+                            "SELECT pv.id FROM product_variant pv "
+                            "JOIN product p ON p.id = pv.product_id "
+                            "WHERE pv.id = ANY($1) AND COALESCE(p.voucher_excluded, false)",
+                            [prep["variant_id"] for prep in prepared],
+                        )
+                    }
+                    _eligible = sum(
+                        int(prep["line_total_cents"])
+                        for prep in prepared
+                        if str(prep["variant_id"]) not in _excluded_variants
+                    )
+                    _balance = await get_voucher_balance(conn, _cz_customer_id)
+                    _cz_discount_kind, _cz_discount_cents = choose_discount(
+                        _eligible, _balance, is_member=True
+                    )
+                    if _cz_discount_cents > 0:
+                        _cz_grand_total = max(
+                            0,
+                            int(cart["subtotal_cents"])
+                            - _cz_discount_cents
+                            + int(cart["tax_cents"])
+                            + int(cart["shipping_cents"]),
+                        )
+                        if _cz_discount_kind == "voucher":
+                            await hold_redemption(
+                                conn,
+                                customer_id=_cz_customer_id,
+                                order_id=str(order_id),
+                                amount_cents=_cz_discount_cents,
+                            )
+
             await conn.execute(
                 """
                 INSERT INTO customer_order
                     (id, cart_id, customer_id, region_code, currency, status,
                      subtotal_cents, discount_cents, tax_cents, shipping_cents,
-                     grand_total_cents, billing_address, shipping_address)
+                     grand_total_cents, billing_address, shipping_address,
+                     discount_kind, voucher_redeemed_cents)
                 VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10,
-                        $11::jsonb, $12::jsonb)
+                        $11::jsonb, $12::jsonb, $13, $14)
                 """,
                 order_id,
                 cart["id"],
@@ -1388,12 +1444,14 @@ async def _create_order_from_cart(
                 cart["region_code"],
                 str(cart["currency"] or "CNY").upper(),
                 cart["subtotal_cents"],
-                cart["discount_cents"],
+                _cz_discount_cents,
                 cart["tax_cents"],
                 cart["shipping_cents"],
-                cart["grand_total_cents"],
+                _cz_grand_total,
                 json.dumps(cart["billing_address"] or {}, ensure_ascii=False),
                 json.dumps(cart["shipping_address"] or {}, ensure_ascii=False),
+                _cz_discount_kind,
+                _cz_discount_cents if _cz_discount_kind == "voucher" else 0,
             )
             for prep in prepared:
                 batch = prep["batch"]
@@ -1462,7 +1520,7 @@ async def _create_order_from_cart(
             )
             return {
                 "order_id": str(order_id),
-                "grand_total_cents": int(cart["grand_total_cents"]),
+                "grand_total_cents": _cz_grand_total,
                 "currency": str(cart["currency"] or "CNY").upper(),
             }
 
@@ -2116,6 +2174,7 @@ class CustomerRegisterRequest(BaseModel):
     password: str
     phone: str = ""
     name: str = ""
+    referral_code: str = ""
 
 
 class CustomerTokenResponse(BaseModel):
@@ -2128,6 +2187,14 @@ class CustomerTokenResponse(BaseModel):
 @router.post("/customers/register", response_model=CustomerTokenResponse)
 async def register_customer(body: CustomerRegisterRequest, request: Request):
     from obase.auth.password import bcrypt_hash
+
+    from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
+
+    # 仓主试点：推荐码先解析，绑定只在注册时一次写入。
+    referrer_id: str | None = None
+    if (body.referral_code or "").strip():
+        async with _pool(request).acquire() as conn:
+            referrer_id = await resolve_referrer_id(conn, body.referral_code)
     from omodul.create_customer import (
         CreateCustomerConfig,
         CreateCustomerInput,
@@ -2152,6 +2219,12 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
             password_hash,
             customer_id,
         )
+
+    async with _pool(request).acquire() as conn:
+        async with conn.transaction():
+            if referrer_id is not None:
+                await bind_referral(conn, customer_id=customer_id, referrer_id=referrer_id)
+            await ensure_referral_code(conn, customer_id)
 
     token = _sign_customer_token(customer_id, body.email, cfg.jwt_secret, cfg.jwt_algorithm)
     return CustomerTokenResponse(access_token=token, customer_id=customer_id, email=body.email)
@@ -2186,6 +2259,7 @@ async def login_customer(body: CustomerLoginRequest, request: Request):
 
 class WeChatLoginRequest(BaseModel):
     code: str
+    referral_code: str = ""
 
 
 class WeChatBindRequest(BaseModel):
@@ -2261,6 +2335,13 @@ async def wechat_login_customer(body: WeChatLoginRequest, request: Request):
         create_customer,
     )
 
+    from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
+
+    wx_referrer_id: str | None = None
+    if (body.referral_code or "").strip():
+        async with pool.acquire() as conn:
+            wx_referrer_id = await resolve_referrer_id(conn, body.referral_code)
+
     placeholder_email = f"wx_{openid}@mp.local"
     result = await create_customer(
         _cfg(request, CreateCustomerConfig),
@@ -2304,6 +2385,13 @@ async def wechat_login_customer(body: WeChatLoginRequest, request: Request):
             unionid,
             customer_id,
         )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if wx_referrer_id is not None:
+                await bind_referral(conn, customer_id=customer_id, referrer_id=wx_referrer_id)
+            await ensure_referral_code(conn, customer_id)
+
     issued = _sign_customer_token(customer_id, placeholder_email, cfg.jwt_secret, cfg.jwt_algorithm)
     return CustomerTokenResponse(
         **{
@@ -2420,6 +2508,316 @@ async def get_my_orders(request: Request, principal: dict = Depends(get_current_
 @router.get("/customers/me/preorders")
 async def get_my_preorders(request: Request, principal: dict = Depends(get_current_customer)):
     return await queries.list_customer_preorders(_pool(request), principal["customer_id"])
+
+
+# ── 仓主试点：推荐、券账本、点货、邀请礼、裂变账本 ───────────────────
+# 规则依据见 app/cangzhu.py。管理端（仓管家）沿用 is_merchant 门禁。
+
+
+class PurchaseRequestCreate(BaseModel):
+    product_name: str
+    brand: str = ""
+    spec_packaging: str = ""
+    price_min_cents: int | None = None
+    price_max_cents: int | None = None
+    expected_qty: int = 1
+    willing_preorder: bool = False
+
+
+class PurchaseRequestUpdate(BaseModel):
+    status: str
+    admin_note: str = ""
+    failure_reason: str = ""
+
+
+class VoucherExclusionUpdate(BaseModel):
+    excluded: bool
+
+
+class InviteGiftClaimRequest(BaseModel):
+    gift_kind: str
+
+
+def _cangzhu_bad_request(exc: ValueError) -> HTTPException:
+    return HTTPException(400, str(exc))
+
+
+@router.get("/customers/me/referral")
+async def get_my_referral(request: Request, principal: dict = Depends(get_current_customer)):
+    from app.cangzhu import ensure_referral_code
+
+    customer_id = str(principal["customer_id"])
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            code = await ensure_referral_code(conn, customer_id)
+            row = await conn.fetchrow(
+                'SELECT invited_by, voucher_balance_cents FROM "customer" WHERE id = $1',
+                customer_id,
+            )
+            referred = await conn.fetchval(
+                'SELECT COUNT(*) FROM "customer" WHERE invited_by = $1 AND deleted_at IS NULL',
+                customer_id,
+            )
+    return {
+        "customer_id": customer_id,
+        "referral_code": code,
+        "invited_by": str(row["invited_by"]) if row["invited_by"] else None,
+        "voucher_balance_cents": int(row["voucher_balance_cents"] or 0),
+        "referred_count": int(referred or 0),
+    }
+
+
+@router.get("/vouchers")
+async def list_my_vouchers(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    customer_id = str(principal["customer_id"])
+    async with _pool(request).acquire() as conn:
+        balance = await conn.fetchval(
+            'SELECT voucher_balance_cents FROM "customer" WHERE id = $1', customer_id
+        )
+        rows = await conn.fetch(
+            "SELECT id, kind, status, order_id, ref_id, amount_cents, base_cents,"
+            " balance_after_cents, idempotency_key, created_at FROM voucher_ledger"
+            " WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+            customer_id,
+            limit,
+            offset,
+        )
+    return {
+        "voucher_balance_cents": int(balance or 0),
+        "entries": [dict(r) for r in rows],
+    }
+
+
+@router.post("/purchase-requests", status_code=201)
+async def create_my_purchase_request(
+    body: PurchaseRequestCreate,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.cangzhu import create_purchase_request
+
+    try:
+        request_id = await create_purchase_request(
+            _pool(request),
+            customer_id=str(principal["customer_id"]),
+            body=body.model_dump(),
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+    return {"request_id": request_id, "status": "collected"}
+
+
+@router.get("/purchase-requests/mine")
+async def list_my_purchase_requests(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.cangzhu import list_purchase_requests
+
+    return await list_purchase_requests(
+        _pool(request),
+        customer_id=str(principal["customer_id"]),
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/purchase-requests/leaderboard")
+async def get_purchase_request_leaderboard(
+    request: Request,
+    days: int = Query(7, ge=1, le=30),
+    limit: int = Query(20, ge=1, le=100),
+):
+    from app.cangzhu import purchase_request_leaderboard
+
+    return await purchase_request_leaderboard(_pool(request), days=days, limit=limit)
+
+
+@router.get("/purchase-requests")
+async def list_all_purchase_requests(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.cangzhu import list_purchase_requests
+
+    await _require_merchant(request, principal)
+    return await list_purchase_requests(
+        _pool(request), customer_id=None, status=status, limit=limit, offset=offset
+    )
+
+
+@router.patch("/purchase-requests/{request_id}")
+async def update_purchase_request_status(
+    request_id: str,
+    body: PurchaseRequestUpdate,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.cangzhu import update_purchase_request
+
+    await _require_merchant(request, principal)
+    try:
+        return await update_purchase_request(
+            _pool(request),
+            request_id=request_id,
+            to_status=body.status,
+            admin_note=body.admin_note,
+            failure_reason=body.failure_reason,
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+
+
+@router.get("/growth-ledger")
+async def get_growth_ledger(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    day: str | None = Query(None, description="YYYY-MM-DD，默认今天"),
+):
+    from datetime import date as _date
+
+    from app.cangzhu import growth_ledger
+
+    await _require_merchant(request, principal)
+    try:
+        target = _date.fromisoformat(day) if day else _date.today()
+    except ValueError as exc:
+        raise HTTPException(400, f"invalid day: {day}") from exc
+    return await growth_ledger(_pool(request), target)
+
+
+@router.post("/orders/{order_id}/voucher-freeze")
+async def freeze_order_voucher(
+    order_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.cangzhu import freeze_accrual
+
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        exists = await conn.fetchval("SELECT id FROM customer_order WHERE id = $1", order_id)
+    if exists is None:
+        raise HTTPException(404, "order not found")
+    frozen = await freeze_accrual(_pool(request), order_id)
+    return {"order_id": order_id, "voucher_accrual_frozen": True, "changed": frozen}
+
+
+@router.post("/orders/{order_id}/voucher-unfreeze")
+async def unfreeze_order_voucher(
+    order_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.cangzhu import unfreeze_accrual
+
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        exists = await conn.fetchval("SELECT id FROM customer_order WHERE id = $1", order_id)
+    if exists is None:
+        raise HTTPException(404, "order not found")
+    result = await unfreeze_accrual(_pool(request), order_id)
+    return {"order_id": order_id, "voucher_accrual_frozen": False, **result}
+
+
+@router.get("/invite-gift/status")
+async def get_invite_gift_status(request: Request, principal: dict = Depends(get_current_customer)):
+    from app.cangzhu import check_invite_gift_eligibility
+
+    customer_id = str(principal["customer_id"])
+    claim = None
+    async with _pool(request).acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, order_id, gift_kind, status, cost_cap_cents, created_at"
+            " FROM invite_gift_claim WHERE customer_id = $1",
+            customer_id,
+        )
+        if row is not None:
+            claim = dict(row)
+    eligibility = await check_invite_gift_eligibility(_pool(request), customer_id)
+    return {"claim": claim, **eligibility}
+
+
+@router.post("/invite-gift/claim", status_code=201)
+async def claim_my_invite_gift(
+    body: InviteGiftClaimRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.cangzhu import claim_invite_gift
+
+    try:
+        return await claim_invite_gift(
+            _pool(request), str(principal["customer_id"]), body.gift_kind
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+
+
+@router.patch("/products/{product_id}/voucher-exclusion")
+async def set_product_voucher_exclusion(
+    product_id: str,
+    body: VoucherExclusionUpdate,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE product SET voucher_excluded = $1 WHERE id = $2 RETURNING id",
+            body.excluded,
+            product_id,
+        )
+    if row is None:
+        raise HTTPException(404, "product not found")
+    return {"product_id": product_id, "voucher_excluded": body.excluded}
+
+
+@router.post("/ingest")
+async def ingest_my_product(
+    request: Request,
+    file: UploadFile,
+    retail_price_cents: int | None = Form(None),
+    stock_qty: int | None = Form(None),
+    category_slug: str = Form("daily"),
+    principal: dict = Depends(get_current_customer),
+):
+    """仓主传货：照片/短视频上传，命中既有商品则原地更新，否则新建。
+
+    与员工端 POST /agent/ingest 共用 ingest_media，差异：顾客鉴权、文件名
+    确定性标题匹配（不依赖 VLM）、匹配时原地更新最新批次而非只补新批次。
+    未提供的价格/库存不覆盖既有值；新建时沿用默认价 ¥12.99 / 库存 30。
+    不设商家门禁：全体注册仓主可用。
+    """
+    from app.ext.agent_gateway import ingest_media
+
+    if retail_price_cents is not None and retail_price_cents <= 0:
+        raise HTTPException(400, "retail_price_cents must be positive")
+    if stock_qty is not None and stock_qty < 0:
+        raise HTTPException(400, "stock_qty must be non-negative")
+    customer_id = str(principal["customer_id"])
+    return await ingest_media(
+        file,
+        location_id="",
+        pool=_pool(request),
+        out_root=_output_dir(request, "ext_bespoke/agent_ingest"),
+        principal={"user_id": f"customer-{customer_id}"},
+        retail_price_cents=retail_price_cents,
+        stock_qty=stock_qty,
+        category_slug=category_slug,
+        deterministic_match=True,
+        update_in_place=True,
+        actor_ref=f"c_{customer_id}",
+    )
 
 
 # ── 商家预订 ─────────────────────────────────────────────────────

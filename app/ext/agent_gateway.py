@@ -1051,6 +1051,105 @@ async def _insert_ingest_batch(
     )
 
 
+async def _match_existing_product_by_title(
+    conn: Any,
+    title: str,
+) -> tuple[str, str, str, str, float | None] | None:
+    """确定性标题匹配 (仓主入口, 不依赖 VLM): 归一化标题完全相等即命中。
+
+    取最新 published 商品的 active variant; 同名商品无 active variant 时
+    顺延下一个。返回与 _match_existing_product 相同的 5 元组。
+    """
+    norm_new = _normalize_title(title)
+    if not norm_new:
+        return None
+    rows = await conn.fetch(
+        'SELECT id, title FROM "product" '
+        "WHERE status = $1 AND deleted_at IS NULL "
+        "ORDER BY created_at DESC LIMIT 500",
+        "published",
+    )
+    for row in rows:
+        ptitle = str(_row_value(row, "title") or "")
+        if _normalize_title(ptitle) != norm_new:
+            continue
+        product_id = str(_row_value(row, "id"))
+        variant_id = await conn.fetchval(
+            'SELECT id FROM "product_variant" '
+            "WHERE product_id = $1 AND status = $2 AND deleted_at IS NULL "
+            "ORDER BY created_at LIMIT 1",
+            product_id,
+            "active",
+        )
+        if variant_id:
+            return product_id, str(variant_id), ptitle, "title_exact", None
+    return None
+
+
+async def _update_ingest_batch(
+    conn: Any,
+    *,
+    variant_id: Any,
+    media_url: str,
+    is_video: bool,
+    retail_price_cents: int | None,
+    stock_qty: int | None,
+) -> tuple[Any | None, list[str], dict[str, int] | None]:
+    """原地更新最新 active 批次 (仓主以图更新): 只改显式提供的字段。
+
+    图片: shelf_image_url + media_assets; 视频: video_url (保留原图)。
+    价格提供时 retail + cost (沿用 6 成成本惯例) 一起改; 库存提供时改
+    stock_qty。未提供的一律保留。无 active 批次返回 (None, [], None)，
+    调用方回落为补新批次。返回 (batch_id, 更新字段, 实际值)。
+    """
+    row = await conn.fetchrow(
+        'SELECT id FROM "inventory_batch" '
+        "WHERE variant_id = $1 AND status = $2 AND deleted_at IS NULL "
+        "ORDER BY created_at DESC LIMIT 1",
+        variant_id,
+        "active",
+    )
+    if row is None:
+        return None, [], None
+    batch_id = _row_value(row, "id")
+    sets: list[str] = []
+    args: list[Any] = []
+    fields: list[str] = []
+    if is_video:
+        sets.append(f"video_url = ${len(args) + 1}")
+        args.append(media_url)
+        fields.append("video_url")
+    else:
+        sets.append(f"shelf_image_url = ${len(args) + 1}")
+        args.append(media_url)
+        sets.append(f"media_assets = ${len(args) + 1}::jsonb")
+        args.append(f'["{media_url}"]')
+        fields += ["shelf_image_url", "media_assets"]
+    if retail_price_cents is not None:
+        sets.append(f"retail_price_cents = ${len(args) + 1}")
+        args.append(retail_price_cents)
+        sets.append(f"cost_price_cents = ${len(args) + 1}")
+        args.append(int(retail_price_cents * 0.6))
+        fields += ["retail_price_cents", "cost_price_cents"]
+    if stock_qty is not None:
+        sets.append(f"stock_qty = ${len(args) + 1}")
+        args.append(stock_qty)
+        fields.append("stock_qty")
+    args.append(batch_id)
+    updated = await conn.fetchrow(
+        f'UPDATE "inventory_batch" SET {", ".join(sets)} '
+        f"WHERE id = ${len(args)} "
+        "RETURNING retail_price_cents, cost_price_cents, stock_qty",
+        *args,
+    )
+    actuals = {
+        "retail_price_cents": int(_row_value(updated, "retail_price_cents")),
+        "cost_price_cents": int(_row_value(updated, "cost_price_cents")),
+        "stock_qty": int(_row_value(updated, "stock_qty")),
+    }
+    return batch_id, fields, actuals
+
+
 async def ingest_media(
     file: UploadFile,
     *,
@@ -1059,8 +1158,11 @@ async def ingest_media(
     out_root: Path,
     principal: dict[str, Any],
     retail_price_cents: int | None = None,
-    stock_qty: int = 30,
+    stock_qty: int | None = None,
     category_slug: str = "daily",
+    deterministic_match: bool = False,
+    update_in_place: bool = False,
+    actor_ref: str | None = None,
 ) -> dict[str, Any]:
     """视频/图片传货: 保存实景文件 → (图片先 VLM 识货) → 自动上架/以图更新。
 
@@ -1087,7 +1189,7 @@ async def ingest_media(
     content_type = file.content_type or ""
     if not content_type.startswith(_ALLOWED_UPLOAD_CONTENT_PREFIXES):
         raise HTTPException(400, f"unsupported content type: {content_type or '(none)'}")
-    user_ref = str(principal.get("user_id") or "anonymous")[:8]
+    user_ref = actor_ref or str(principal.get("user_id") or "anonymous")[:8]
     ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     ingest_dir = out_root / "agent_ingest" / user_ref
     ingest_dir.mkdir(parents=True, exist_ok=True)
@@ -1100,7 +1202,8 @@ async def ingest_media(
     dest.write_bytes(content)
 
     # 2. 商品名 + SKU (加随机后缀防止同秒同名文件冲突)
-    title = _clean_filename(safe_name)
+    filename_title = _clean_filename(safe_name)
+    title = filename_title
     import uuid
 
     sku = f"AGT-{uuid.uuid4().hex[:12]}"
@@ -1108,6 +1211,7 @@ async def ingest_media(
     # 3. 上架 (整个过程放在一个事务里)
     is_video = (file.content_type or "").startswith("video/")
     media_url = f"/media/agent_ingest/{user_ref}/{dest.name}"
+    effective_stock = stock_qty if stock_qty is not None else 30
     cost = int((retail_price_cents or 1000) * 0.6)
     retail = retail_price_cents or 1299
     description = f"手机实景传货 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')} 上传, 实拍直供。"
@@ -1159,6 +1263,17 @@ async def ingest_media(
                 logger.warning("ingest match pre-phase failed (fallback to create): %s", exc)
                 matched = None
 
+    # ── 确定性标题匹配 (仓主入口, 不依赖 VLM): 文件名清洗标题全等即命中 ──
+    matched_via_deterministic = False
+    if matched is None and deterministic_match:
+        try:
+            async with pool.acquire() as conn:
+                matched = await _match_existing_product_by_title(conn, filename_title)
+                matched_via_deterministic = matched is not None
+        except Exception as exc:  # noqa: BLE001 - 匹配失败回落新建
+            logger.warning("ingest deterministic match failed (fallback to create): %s", exc)
+            matched = None
+
     # ── 以图更新: 命中同一商品 → 只给其 active variant 补一个新批次 ──
     if matched is not None:
         m_pid, m_vid, m_title, match_via, match_confidence = matched
@@ -1176,17 +1291,37 @@ async def ingest_media(
                         "系统没有可用仓位 (stock_location)，请先创建仓位再上架",
                     )
                 batch_no = f"AGT-{ts}-{uuid.uuid4().hex[:8]}"
-                batch_id = await _insert_ingest_batch(
-                    conn,
-                    variant_id=m_vid,
-                    location_id=resolved_location_id,
-                    batch_no=batch_no,
-                    media_url=media_url,
-                    is_video=False,
-                    cost=cost,
-                    retail=retail,
-                    stock_qty=stock_qty,
-                )
+                batch_action = "appended"
+                updated_fields: list[str] = []
+                batch_actuals: dict[str, int] | None = None
+                batch_id = None
+                if update_in_place:
+                    batch_id, updated_fields, batch_actuals = await _update_ingest_batch(
+                        conn,
+                        variant_id=m_vid,
+                        media_url=media_url,
+                        is_video=is_video,
+                        retail_price_cents=retail_price_cents,
+                        stock_qty=stock_qty,
+                    )
+                    batch_action = "updated" if batch_id is not None else "appended"
+                if batch_id is None:
+                    batch_id = await _insert_ingest_batch(
+                        conn,
+                        variant_id=m_vid,
+                        location_id=resolved_location_id,
+                        batch_no=batch_no,
+                        media_url=media_url,
+                        is_video=is_video,
+                        cost=cost,
+                        retail=retail,
+                        stock_qty=effective_stock,
+                    )
+                    batch_actuals = {
+                        "retail_price_cents": retail,
+                        "cost_price_cents": cost,
+                        "stock_qty": effective_stock,
+                    }
         return {
             "status": "updated",
             "title": m_title,
@@ -1195,19 +1330,25 @@ async def ingest_media(
             "variant_id": m_vid,
             "batch_id": str(batch_id),
             "location_id": str(resolved_location_id),
-            "retail_price_cents": retail,
-            "cost_price_cents": cost,
-            "stock_qty": stock_qty,
+            "retail_price_cents": (batch_actuals or {}).get("retail_price_cents", retail),
+            "cost_price_cents": (batch_actuals or {}).get("cost_price_cents", cost),
+            "stock_qty": (batch_actuals or {}).get("stock_qty", effective_stock),
             "media_url": media_url,
-            "media_type": "image",
+            "media_type": "video" if is_video else "image",
             "saved_path": str(dest),
             "recognition": recognition,
             "identified_title": identified_title,
             "matched": True,
             "match_via": match_via,
             "match_confidence": match_confidence,
+            "batch_action": batch_action,
+            "updated_fields": updated_fields,
             "hint": (
-                "VLM 已识别为同一商品, 本次照片作为新批次入库 (含做市曲线); 如需改价请在后台调整。"
+                "文件名与既有商品标题一致, 本次上传已原地更新该商品最新批次 "
+                "(图/价格/库存, 未提供的字段保持不变); 无 active 批次时补新批次。"
+                if matched_via_deterministic
+                else "VLM 已识别为同一商品, 本次照片作为新批次入库 "
+                "(含做市曲线); 如需改价请在后台调整。"
             ),
         }
 
@@ -1265,7 +1406,7 @@ async def ingest_media(
                 is_video=is_video,
                 cost=cost,
                 retail=retail,
-                stock_qty=stock_qty,
+                stock_qty=effective_stock,
             )
 
     return {
@@ -1277,7 +1418,7 @@ async def ingest_media(
         "location_id": str(location_id),
         "retail_price_cents": retail,
         "cost_price_cents": cost,
-        "stock_qty": stock_qty,
+        "stock_qty": effective_stock,
         "media_url": media_url,
         "media_type": "video" if is_video else "image",
         "saved_path": str(dest),
