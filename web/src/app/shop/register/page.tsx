@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { customerRegister } from '@/lib/customer-auth-store';
@@ -13,8 +13,14 @@ export default function CustomerRegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [referralCode, setReferralCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const ref = new URLSearchParams(window.location.search).get('ref');
+    if (ref) setReferralCode(ref);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -25,7 +31,7 @@ export default function CustomerRegisterPage() {
     }
     setLoading(true);
     try {
-      await customerRegister({ email, password, name, phone });
+      await customerRegister({ email, password, name, phone, referral_code: referralCode || undefined });
       router.push('/shop/account');
     } catch (err) {
       setError(errMessage(err) || '注册失败');
@@ -67,6 +73,16 @@ export default function CustomerRegisterPage() {
               onChange={(e) => setPhone(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
             />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">推荐人（选填）</label>
+            <input
+              value={referralCode}
+              onChange={(e) => setReferralCode(e.target.value)}
+              placeholder="推荐码，如 HM123456"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
+            />
+            <p className="mt-1 text-xs text-gray-500">填写推荐人的推荐码；绑定后不可更改，推荐人可获得您合资格消费 10% 的购物券。</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">密码</label>

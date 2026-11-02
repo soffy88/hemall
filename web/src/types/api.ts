@@ -675,6 +675,86 @@ export interface CustomerGroup {
   member_count: number;
 }
 
+
+export interface MyReferral {
+  customer_id: string;
+  referral_code: string;
+  invited_by: string | null;
+  voucher_balance_cents: number;
+  referred_count: number;
+}
+
+export interface VoucherLedgerEntry {
+  id: string;
+  kind: string;
+  status: string;
+  order_id: string | null;
+  ref_id: string | null;
+  amount_cents: number;
+  base_cents: number | null;
+  balance_after_cents: number;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface VoucherList {
+  voucher_balance_cents: number;
+  entries: VoucherLedgerEntry[];
+}
+
+export interface PurchaseRequest {
+  id: string;
+  customer_id: string;
+  product_name: string;
+  brand: string;
+  spec_packaging: string;
+  price_min_cents: number | null;
+  price_max_cents: number | null;
+  expected_qty: number;
+  willing_preorder: boolean;
+  status: string;
+  admin_note: string;
+  failure_reason: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InviteGiftClaim {
+  id: string;
+  order_id: string;
+  gift_kind: string;
+  status: string;
+  cost_cap_cents: number;
+  created_at: string;
+}
+
+export interface InviteGiftStatus {
+  claim: InviteGiftClaim | null;
+  eligible: boolean;
+  order_id?: string | null;
+  net_paid_cents?: number;
+  threshold_cents?: number;
+  reason?: string | null;
+}
+
+export interface IngestResult {
+  status: string;
+  title: string;
+  product_id: string;
+  variant_id: string;
+  batch_id: string;
+  retail_price_cents: number;
+  cost_price_cents: number;
+  stock_qty: number;
+  media_url: string;
+  media_type: string;
+  matched: boolean;
+  match_via?: string | null;
+  batch_action?: string;
+  updated_fields?: string[];
+  hint?: string;
+}
+
 export interface CustomerAddress extends Address {
   id: string;
   customer_id: string;
