@@ -305,9 +305,9 @@ class TestHardwareWeighDb:
         assert confirmed["status"] == "processed"
         assert confirmed["amount_cents"] == 293
         assert confirmed["ticket_id"] == str(ticket_id)
-        # 二次认领拒绝
+        # 二次认领拒绝（已计价的事件不再可确认）
         async with pool.acquire() as conn:
-            with pytest.raises(ValueError, match="already claimed"):
+            with pytest.raises(ValueError, match="not confirmable"):
                 await confirm_weigh_event(
                     conn,
                     message_id="wtest-weigh-005",
@@ -409,12 +409,12 @@ class TestCounterFlowDb:
         with pytest.raises(Exception, match="not open"):
             await sf.counter_void_ticket(req, ticket_id, principal)
 
-    async def test_products_lists_only_priced(self, weigh_pool):
+    async def test_products_lists_only_priced_with_basis(self, weigh_pool):
         import app.storefront as sf
 
         pool, state = weigh_pool
         await _seed_batch(pool, state, "e", price=419, spec="500g/份")
-        await _seed_batch(pool, state, "f", price=None, spec="500g/份")
+        await _seed_batch(pool, state, "f", price=419, spec="散装")
         merchant_id = await _seed_merchant(pool, state, "m3")
         result = await sf.counter_products(_fake_request(pool), {"customer_id": merchant_id})
         titles = [p["title"] for p in result["products"]]
