@@ -4,6 +4,7 @@ import type {
   Address,
   AdminPreorder,
   InventoryBatch,
+  InviteGiftStatus,
   AdminRegion,
   AgentCommandResult,
   AgentIngestResult,
@@ -24,8 +25,10 @@ import type {
   Fulfillment,
   GiftCard,
   Health,
+  IngestResult,
   MerchantReserveItem,
   MerchantReserveOrderResult,
+  MyReferral,
   NearbyFeedResponse,
   Order,
   OmodulResult,
@@ -36,6 +39,7 @@ import type {
   Product,
   ProductCategory,
   ProductCollection,
+  PurchaseRequest,
   RecommendationResult,
   RefundAuditEntry,
   RefundCreateBody,
@@ -51,6 +55,7 @@ import type {
   Swap,
   TaxRate,
   TokenResponse,
+  VoucherList,
 } from '@/types/api';
 
 import { errMessage } from '@/lib/errors';
@@ -545,6 +550,58 @@ export const api = {
     request<{ ok: boolean }>(`/store/customers/me/addresses/${addressId}`, {
       method: 'DELETE',
     }, 'customer'),
+
+  // ── 仓主试点：推荐 / 券 / 点货 / 邀请礼 / 传货 ──
+
+  getMyReferral: () =>
+    request<MyReferral>('/store/customers/me/referral', {}, 'customer'),
+
+  listMyVouchers: () =>
+    request<VoucherList>('/store/vouchers', {}, 'customer'),
+
+  createPurchaseRequest: (data: {
+    product_name: string;
+    brand?: string;
+    spec_packaging?: string;
+    price_min_cents?: number;
+    price_max_cents?: number;
+    expected_qty?: number;
+    willing_preorder?: boolean;
+  }) =>
+    request<{ request_id: string; status: string }>('/store/purchase-requests', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  listMyPurchaseRequests: () =>
+    request<PurchaseRequest[]>('/store/purchase-requests/mine', {}, 'customer'),
+
+  getInviteGiftStatus: () =>
+    request<InviteGiftStatus>('/store/invite-gift/status', {}, 'customer'),
+
+  claimInviteGift: (giftKind: string) =>
+    request<{ claim_id: string; gift_kind: string; status: string }>('/store/invite-gift/claim', {
+      method: 'POST',
+      body: JSON.stringify({ gift_kind: giftKind }),
+    }, 'customer'),
+
+  uploadMyProduct: async (form: FormData): Promise<IngestResult> => {
+    const headers: Record<string, string> = {};
+    const csrf = await ensureCsrfToken();
+    if (csrf) headers[CSRF_HEADER_NAME] = csrf;
+    const res = await fetchWithSession(
+      '/store/ingest',
+      { method: 'POST', body: form, headers, credentials: 'include' },
+      'customer',
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(errorMessage(body, res.status));
+    }
+    const data = await res.json();
+    assertNotBusinessFailure(data);
+    return data as IngestResult;
+  },
 
   // ── 商家预订：常购清单 + 整单预订（仅商家账号，非商家后端 403） ──
 
