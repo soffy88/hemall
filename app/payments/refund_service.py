@@ -122,6 +122,25 @@ async def _save_refund_request(pool: PgPool, refund: RefundRequest) -> None:
         )
 
 
+async def _reverse_voucher_for_refund(pool: PgPool, refund: RefundRequest) -> None:
+    """仓主试点：退款成功后按比例冲回已发推荐奖励。
+
+    失败只记日志，不动退款结果；冲回本身幂等（reversal:{refund_id}）。
+    """
+
+    try:
+        from app.cangzhu import reverse_for_refund
+
+        await reverse_for_refund(
+            pool,
+            refund_id=refund.id,
+            order_id=refund.order_id,
+            refund_cents=int(refund.actual_refunded_amount or 0),
+        )
+    except Exception:
+        logger.exception("cangzhu voucher reversal failed for refund %s", refund.id)
+
+
 async def _append_audit_log(pool: PgPool, log: RefundAuditLog) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
@@ -625,6 +644,9 @@ async def execute_refund(pool: PgPool, refund_id: str) -> RefundRequest:
             ),
         )
 
+    if refund.status == RefundStatus.SUCCEEDED:
+        await _reverse_voucher_for_refund(pool, refund)
+
     return refund
 
 
@@ -912,6 +934,9 @@ async def process_refund_callback(
             metadata={"provider": provider, "callback_status": callback_status},
         ),
     )
+
+    if target == RefundStatus.SUCCEEDED:
+        await _reverse_voucher_for_refund(pool, refund)
 
     # 退货退款: 回调成功后若已登记收货批次且未回补, 由 mark_refund_returned 负责
     return {"status": "processed", "refund_id": refund.id, "to": target.value}

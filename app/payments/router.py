@@ -237,6 +237,7 @@ async def _settle_payment_and_order(
             "payment settlement rejected: missing verified amount session=%s", session_id
         )
         return
+    settled_order_id: str | None = None
     async with pool.acquire() as conn:
         async with conn.transaction():
             intent = await conn.fetchrow(
@@ -364,6 +365,7 @@ async def _settle_payment_and_order(
                     intent["order_id"],
                 )
                 if updated_order is not None:
+                    settled_order_id = str(intent["order_id"])
                     await conn.execute(
                         """
                         INSERT INTO order_status_history
@@ -374,6 +376,18 @@ async def _settle_payment_and_order(
                         intent["order_status"],
                         json.dumps({"payment_intent_id": session_id}, ensure_ascii=False),
                     )
+
+        # 仓主试点：支付确认后，持有券转为已核销（幂等；失败只记日志）。
+        if settled_order_id is not None:
+            try:
+                from app.cangzhu import finalize_redemption
+
+                await finalize_redemption(pool, settled_order_id)
+            except Exception:
+                logger.exception(
+                    "voucher redemption finalize failed for order %s",
+                    settled_order_id,
+                )
 
 
 @router.post("/wechat/notify")
