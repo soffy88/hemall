@@ -29,6 +29,9 @@ import type {
   CounterProduct,
   CounterTicket,
   CounterWeighLine,
+  CounterSettlement,
+  CounterShift,
+  CounterDailyReport,
   MerchantReserveItem,
   MerchantReserveOrderResult,
   MyReferral,
@@ -685,6 +688,41 @@ export const api = {
     request<CounterTicket>(`/store/counter/tickets/${ticketId}/void`, {
       method: 'POST',
     }, 'customer'),
+
+  counterSettleTicket: (ticketId: string, data: {
+    method: string;
+    amount_received_cents: number;
+  }) =>
+    request<CounterTicket & { settlement: CounterSettlement }>(
+      `/store/counter/tickets/${ticketId}/settle`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      },
+      'customer',
+    ),
+
+  counterOpenShift: (data: { opening_float_cents: number; note?: string }) =>
+    request<{ shift: CounterShift }>('/store/counter/shifts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterListShifts: () =>
+    request<{ shifts: CounterShift[] }>('/store/counter/shifts', {}, 'customer'),
+
+  counterCloseShift: (shiftId: string, data: {
+    counted_cash_cents: number;
+    handover_to?: string;
+    note?: string;
+  }) =>
+    request<{ shift: CounterShift }>(`/store/counter/shifts/${shiftId}/close`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterDailyReport: (date: string) =>
+    request<CounterDailyReport>(`/store/counter/daily-report?date=${date}`, {}, 'customer'),
 
   // ── 后台：商家标记 + 预订配货 ─────────────────────────────────
 

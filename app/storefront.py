@@ -3411,8 +3411,9 @@ async def list_my_claims(request: Request, principal: dict = Depends(get_current
 # ── 柜台称重试点 ─────────────────────────────────────────────────────────
 # 店员柜台页 /shop/counter 的后端：照片格商品、单据、行项、模拟器。
 # 门禁：顾客登录 + is_merchant（仓管家），与点货/裂变账本同一道门。
-# 结算语义：本试点只到“待结算”（pending_settlement），不创建支付单据、
-# 不碰券账本与 9 折逻辑；收款在收银台完成，结算闭环另行立项。
+# 结算语义：挂单待结算（pending_settlement）后现金结算（counter_settle_ticket）
+# 落结算记录、单据置 settled；不创建 customer_order、不扣库存、不碰券账本
+# 与 9 折逻辑（建单链路缺口见 app/counter_closeout.py 模块注释）。
 
 
 def _counter_first_media_ref(value: object) -> str | None:
@@ -3792,7 +3793,7 @@ async def counter_mark_pending_settlement(
     principal: dict = Depends(get_current_customer),
 ) -> dict:
     """挂单待结算：open → pending_settlement。只改状态，不创建支付单据，
-    不扣款、不发券——收款在收银台完成，结算闭环另行立项。"""
+    不扣款、不发券——收款在收银台完成，现金结算见 counter_settle_ticket。"""
     await _require_merchant(request, principal)
     pool = _pool(request)
     async with pool.acquire() as conn:
@@ -3814,6 +3815,326 @@ async def counter_mark_pending_settlement(
     return _counter_ticket_dict(row, total) | {
         "payment": None,
         "note": "pending settlement: no payment created; settle at the counter",
+    }
+
+
+def _counter_settlement_dict(row: Any) -> dict:
+    return {
+        "settlement_id": str(row["id"]),
+        "ticket_id": str(row["ticket_id"]),
+        "cashier_id": row["cashier_id"],
+        "method": row["method"],
+        "amount_due_cents": int(row["amount_due_cents"]),
+        "amount_received_cents": int(row["amount_received_cents"]),
+        "change_cents": int(row["change_cents"]),
+        "settled_at": row["settled_at"].isoformat() if row["settled_at"] else None,
+    }
+
+
+def _counter_shift_dict(row: Any) -> dict:
+    return {
+        "shift_id": str(row["id"]),
+        "cashier_id": row["cashier_id"],
+        "status": row["status"],
+        "opening_float_cents": int(row["opening_float_cents"]),
+        "opened_at": row["opened_at"].isoformat() if row["opened_at"] else None,
+        "closed_at": row["closed_at"].isoformat() if row["closed_at"] else None,
+        "counted_cash_cents": (
+            int(row["counted_cash_cents"]) if row["counted_cash_cents"] is not None else None
+        ),
+        "expected_cash_cents": (
+            int(row["expected_cash_cents"]) if row["expected_cash_cents"] is not None else None
+        ),
+        "variance_cents": int(row["variance_cents"]) if row["variance_cents"] is not None else None,
+        "handover_to": row["handover_to"],
+        "note": row["note"],
+    }
+
+
+@router.post("/counter/tickets/{ticket_id}/settle")
+async def counter_settle_ticket(
+    request: Request,
+    ticket_id: str,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """现金结算：open/pending_settlement → settled，落一条结算记录。
+
+    只收现金：method 缺失 400、非 cash 422。应收取自服务端重算的单据合计，
+    实收小于应收 422，找零 = 实收 - 应收。结算只记结算事实：不创建
+    customer_order、不扣库存、不碰券账本与 9 折逻辑（建单链路缺口见
+    app/counter_closeout.py 模块注释——订单只能从购物车快照创建，库存扣减
+    只扣已有预留，称重行项两者皆无，干净复用不可能）。
+    """
+    from app.counter_closeout import SETTLE_METHOD_CASH, compute_change_cents
+
+    await _require_merchant(request, principal)
+    method = body.get("method")
+    if method is None:
+        raise HTTPException(400, "method is required")
+    if method != SETTLE_METHOD_CASH:
+        raise HTTPException(422, f"only cash settlement is supported, got method={method}")
+    received = body.get("amount_received_cents")
+    if not isinstance(received, int) or isinstance(received, bool) or received < 0:
+        raise HTTPException(400, "amount_received_cents must be a non-negative integer")
+    pool = _pool(request)
+    cashier_id = str(principal["customer_id"])
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            ticket = await _counter_require_ticket(conn, ticket_id, cashier_id)
+            if ticket["status"] not in ("open", "pending_settlement"):
+                raise HTTPException(409, f"ticket not settleable: status={ticket['status']}")
+            due = await _counter_ticket_total(conn, ticket["id"])
+            try:
+                change = compute_change_cents(due, received)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            row = await conn.fetchrow(
+                'INSERT INTO "counter_settlement" '
+                "(ticket_id, cashier_id, method, amount_due_cents, "
+                "amount_received_cents, change_cents) VALUES ($1, $2, 'cash', $3, $4, $5) "
+                "RETURNING *",
+                ticket["id"],
+                cashier_id,
+                due,
+                received,
+                change,
+            )
+            updated = await conn.fetchrow(
+                "UPDATE \"counter_ticket\" SET status = 'settled', updated_at = NOW() "
+                "WHERE id = $1 RETURNING *",
+                ticket["id"],
+            )
+            await conn.execute(
+                "UPDATE \"hardware_event\" SET settlement_status = 'settled' "
+                "WHERE ticket_id = $1 AND event_type = 'weigh' AND status = 'processed'",
+                ticket["id"],
+            )
+    return _counter_ticket_dict(updated, due) | {"settlement": _counter_settlement_dict(row)}
+
+
+@router.post("/counter/shifts")
+async def counter_open_shift(
+    request: Request,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """开班：收银员 + 备用金；同一收银员已有未交班次时 409。"""
+    await _require_merchant(request, principal)
+    opening_float = body.get("opening_float_cents")
+    if not isinstance(opening_float, int) or isinstance(opening_float, bool) or opening_float < 0:
+        raise HTTPException(400, "opening_float_cents must be a non-negative integer")
+    note = body.get("note") or ""
+    if not isinstance(note, str):
+        raise HTTPException(400, "note must be a string")
+    pool = _pool(request)
+    cashier_id = str(principal["customer_id"])
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval(
+            "SELECT id FROM \"counter_shift\" WHERE cashier_id = $1 AND status = 'open'",
+            cashier_id,
+        )
+        if existing is not None:
+            raise HTTPException(409, "cashier already has an open shift")
+        row = await conn.fetchrow(
+            'INSERT INTO "counter_shift" (cashier_id, opening_float_cents, note) '
+            "VALUES ($1, $2, $3) RETURNING *",
+            cashier_id,
+            opening_float,
+            note,
+        )
+    return {"shift": _counter_shift_dict(row)}
+
+
+@router.get("/counter/shifts")
+async def counter_list_shifts(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """交接班列表：只看自己的班次，最新在前。"""
+    await _require_merchant(request, principal)
+    pool = _pool(request)
+    cashier_id = str(principal["customer_id"])
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT * FROM "counter_shift" WHERE cashier_id = $1 '
+            "ORDER BY opened_at DESC, id DESC LIMIT 50",
+            cashier_id,
+        )
+    return {"shifts": [_counter_shift_dict(r) for r in rows]}
+
+
+@router.post("/counter/shifts/{shift_id}/close")
+async def counter_close_shift(
+    request: Request,
+    shift_id: str,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """交班：实盘现金 + 交接给下一收银员；差异 = 实盘 - 应有，正负如实记录。
+
+    系统应有现金 = 备用金 + 本班内该收银员现金结算的应收合计（实收 - 找零
+    = 应收，故用应收合计）。只算本班窗口内、本人的结算，别人的不算。
+    """
+    from app.counter_closeout import compute_shift_expected_cents, compute_shift_variance_cents
+
+    await _require_merchant(request, principal)
+    counted = body.get("counted_cash_cents")
+    if not isinstance(counted, int) or isinstance(counted, bool) or counted < 0:
+        raise HTTPException(400, "counted_cash_cents must be a non-negative integer")
+    handover_to = body.get("handover_to")
+    if handover_to is not None and not isinstance(handover_to, str):
+        raise HTTPException(400, "handover_to must be a string")
+    note = body.get("note")
+    if note is not None and not isinstance(note, str):
+        raise HTTPException(400, "note must be a string")
+    pool = _pool(request)
+    cashier_id = str(principal["customer_id"])
+    import uuid
+
+    try:
+        shift_uuid = uuid.UUID(str(shift_id))
+    except ValueError:
+        raise HTTPException(400, "invalid shift_id") from None
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow('SELECT * FROM "counter_shift" WHERE id = $1', shift_uuid)
+            if row is None:
+                raise HTTPException(404, "shift not found")
+            if str(row["cashier_id"]) != cashier_id:
+                raise HTTPException(403, "shift belongs to another cashier")
+            if row["status"] != "open":
+                raise HTTPException(409, f"shift not open: status={row['status']}")
+            due_sum = await conn.fetchval(
+                'SELECT COALESCE(SUM(amount_due_cents), 0)::int FROM "counter_settlement" '
+                "WHERE cashier_id = $1 AND settled_at >= $2 AND settled_at <= NOW()",
+                cashier_id,
+                row["opened_at"],
+            )
+            expected = compute_shift_expected_cents(
+                int(row["opening_float_cents"]), int(due_sum or 0)
+            )
+            variance = compute_shift_variance_cents(counted, expected)
+            updated = await conn.fetchrow(
+                "UPDATE \"counter_shift\" SET status = 'closed', closed_at = NOW(), "
+                "counted_cash_cents = $2, expected_cash_cents = $3, variance_cents = $4, "
+                "handover_to = COALESCE($5, handover_to), note = COALESCE($6, note), "
+                "updated_at = NOW() WHERE id = $1 RETURNING *",
+                shift_uuid,
+                counted,
+                expected,
+                variance,
+                handover_to,
+                note,
+            )
+    return {"shift": _counter_shift_dict(updated)}
+
+
+@router.get("/counter/daily-report")
+async def counter_daily_report(
+    request: Request,
+    date: str | None = None,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """日结报表：当日已结算单据、按支付方式分列、交班现金差异、毛利口径。
+
+    毛利只计有批次成本价与计价基准的已结算称重行（成本 = 重量 × 成本价 /
+    计价基准），无成本价/无基准的行排除并计数（margin_excluded_lines），
+    绝不估算。日期缺省为当天（DB 日期）；格式错误 400。
+    """
+    await _require_merchant(request, principal)
+    import datetime
+
+    if date is not None:
+        try:
+            day_param: datetime.date | None = datetime.date.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(400, "date must be YYYY-MM-DD") from None
+    else:
+        day_param = None
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        settled = await conn.fetchrow(
+            "SELECT COUNT(*)::int AS tickets, "
+            "COALESCE(SUM(amount_due_cents), 0)::int AS total_due_cents "
+            'FROM "counter_settlement" WHERE settled_at::date = COALESCE($1::date, CURRENT_DATE)',
+            day_param,
+        )
+        by_method_rows = await conn.fetch(
+            "SELECT method, COUNT(*)::int AS tickets, "
+            "COALESCE(SUM(amount_due_cents), 0)::int AS total_cents "
+            'FROM "counter_settlement" WHERE settled_at::date = COALESCE($1::date, CURRENT_DATE) '
+            "GROUP BY method ORDER BY method",
+            day_param,
+        )
+        margin = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(he.amount_cents), 0)::int AS revenue_cents,
+                   COALESCE(SUM(ROUND(
+                       he.weight_grams::numeric * ib.cost_price_cents
+                       / he.price_basis_grams)), 0)::int AS cost_cents,
+                   COUNT(*)::int AS costed_lines
+            FROM hardware_event he
+            JOIN counter_ticket t ON t.id = he.ticket_id
+            JOIN counter_settlement s ON s.ticket_id = t.id
+            JOIN inventory_batch ib ON ib.id = he.batch_id
+            WHERE he.event_type = 'weigh' AND he.status = 'processed'
+              AND he.amount_cents IS NOT NULL
+              AND he.weight_grams IS NOT NULL AND he.price_basis_grams IS NOT NULL
+              AND ib.cost_price_cents IS NOT NULL
+              AND s.settled_at::date = COALESCE($1::date, CURRENT_DATE)
+            """,
+            day_param,
+        )
+        total_lines = await conn.fetchval(
+            """
+            SELECT COUNT(*)::int
+            FROM hardware_event he
+            JOIN counter_ticket t ON t.id = he.ticket_id
+            JOIN counter_settlement s ON s.ticket_id = t.id
+            WHERE he.event_type = 'weigh' AND he.status = 'processed'
+              AND he.amount_cents IS NOT NULL
+              AND s.settled_at::date = COALESCE($1::date, CURRENT_DATE)
+            """,
+            day_param,
+        )
+        shifts = await conn.fetchrow(
+            "SELECT COUNT(*)::int AS closed_shifts, "
+            "COALESCE(SUM(variance_cents), 0)::int AS variance_total_cents "
+            "FROM \"counter_shift\" WHERE status = 'closed' "
+            "AND closed_at::date = COALESCE($1::date, CURRENT_DATE)",
+            day_param,
+        )
+        day_text = day_param.isoformat() if day_param is not None else None
+        if day_text is None:
+            day_text = (await conn.fetchval("SELECT CURRENT_DATE::text")) or ""
+    revenue = int(margin["revenue_cents"])
+    cost = int(margin["cost_cents"])
+    costed = int(margin["costed_lines"])
+    excluded = int(total_lines or 0) - costed
+    return {
+        "date": day_text,
+        "settled_tickets": int(settled["tickets"]),
+        "total_sales_cents": int(settled["total_due_cents"]),
+        "by_method": [
+            {
+                "method": r["method"],
+                "tickets": int(r["tickets"]),
+                "total_cents": int(r["total_cents"]),
+            }
+            for r in by_method_rows
+        ],
+        "margin_revenue_cents": revenue,
+        "margin_cost_cents": cost,
+        "margin_cents": revenue - cost,
+        "margin_costed_lines": costed,
+        "margin_excluded_lines": excluded,
+        "margin_basis": (
+            "毛利仅计有批次成本价与计价基准的已结算称重行；无成本价/无基准的行"
+            f"不计入（{excluded} 行），口径偏高；成本 = 重量 × 批次成本价 / 计价基准"
+        ),
+        "shifts_closed": int(shifts["closed_shifts"]),
+        "cash_variance_total_cents": int(shifts["variance_total_cents"]),
     }
 
 
