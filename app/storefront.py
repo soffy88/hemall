@@ -3853,7 +3853,7 @@ def _counter_vision_dir(request: Request, subdir: str) -> Path:
     return _output_dir(request, subdir)
 
 
-async def _counter_read_upload(file: UploadFile, *, field: str = "file") -> bytes:
+async def _counter_read_upload(file: Any, *, field: str = "file") -> bytes:
     """读上传文件字节，10MB 封顶（超限 413，读一半不落盘）。"""
     from app.counter_vision import MAX_IMAGE_BYTES
 
@@ -3882,9 +3882,11 @@ async def _counter_image_payload(request: Request) -> tuple[bytes, dict[str, Any
 
     content_type = request.headers.get("content-type", "")
     if content_type.startswith("multipart/form-data"):
+        from starlette.datastructures import UploadFile as _StarletteUploadFile
+
         form = await request.form()
         upload = form.get("file")
-        if upload is None or not hasattr(upload, "read"):
+        if not isinstance(upload, _StarletteUploadFile):
             raise HTTPException(400, "file is required")
         fields = {key: form[key] for key in form if key != "file"}
         return await _counter_read_upload(upload), fields
