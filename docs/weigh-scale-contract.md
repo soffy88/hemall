@@ -54,7 +54,8 @@
 1. 重量数据出口形式：串口 / USB / HTTP / MQTT / 全封闭？
 2. 串口参数（波特率/数据位/校验/停止位）与帧格式（含稳定位、单位、去皮标志）。
 3. 称重模块与主板之间是否还有厂商私有协议，Windows 侧有无 SDK/虚拟串口。
-4. AI 摄像头取流方式（RTSP / USB UVC / 封闭），视觉识别立项时再定。
+4. AI 摄像头取流方式——已定：通用摄像头，不用商祺的（2026-11-03 Soffy 定）。
+   UVC / RTSP 标准取流，网关契约见 §6；不用问卖家。
 5. 支付通道（扫码/刷卡/现金）与结算回调形式（结算闭环立项时再定）。
 
 ## 4. 模拟器（试点专用）
@@ -65,6 +66,59 @@
 
 ## 5. 试点边界（本次不做）
 
-- 视觉识别（另立项）；库存扣减（结算建单时随订单扣，不在这里改库存）；
+- 视觉识别接线已建（识别端点 + 帧采集 + 数据集上传 + 评估账本，见 §6），
+  模型未训、识别未通，待柜台实拍数据集后另案训练；库存扣减（结算建单时
+  随订单扣，不在这里改库存）；
 - 支付与结算闭环（单据只到 `pending_settlement` 待结算态）；
 - 闸口“重量 × 支付”双维裁决（IoT 报告 §4.3，结算闭环立项时建）。
+
+## 6. 通用摄像头网关契约：帧采集 + 识别接线（模型未训）
+
+决定：通用摄像头（UVC / RTSP），不用商祺的 AI 摄像头。网关（店内一台
+联网主机上的采集进程）负责取流、抓帧、POST 上报；后端只收帧、不直接
+碰摄像头硬件。认证：商家 JWT（同柜台页门禁），网关用商家账号登录取 token。
+
+### 6.1 帧采集 `POST /store/counter/frames`
+
+入参二选一：
+
+- multipart：`file` 字段为图（jpeg/png/webp，魔数校验，≤10MB），其余字段
+  为表单字段。
+- JSON：`image_base64`（标准 base64）+ 其余字段。
+
+字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `file` / `image_base64` | 二选一 | 一帧图；只认 jpeg/png/webp 魔数，其余 400 拒收 |
+| `ticket_id` | 否 | 柜台单据 UUID；给了须存在，否则 404 |
+| `weigh_message_id` | 否 | 称重事件 message_id；给了须对应真实称重事件，否则 404 |
+| `camera_id` | 否 | 摄像头编号（≤64 字符），留痕 |
+| `captured_at` | 否 | 拍摄时间 ISO 8601，留痕 |
+| `client_frame_id` | 否 | 网关生成唯一 ID（`cam-<uuid>`），重发靠它幂等 |
+
+响应：`{frame_id, frame_path, ..., duplicate}`；重发同一 `client_frame_id`
+返回已存行 + `duplicate: true`，不重复落盘。帧存本地卷
+`<output_root>/counter_frames/<日期>/<文件>`，不进商品媒体库。
+
+### 6.2 识别 `POST /store/counter/recognize`
+
+入参与 §6.1 同形，另加必填 `weight_grams`（整数克，1..15000）。
+返回 `{recognition_id, frame_id, candidates: [{variant_id, score}], ...}`，
+candidates 最多 3 个、按分数降序。**模型未训时返回 200 空候选 +
+`model_configured: false`**，调用方退回拍照点选；识别超时 3 秒同样
+返回空候选。绝不编分数、绝不瞎猜。每次调用写评估账本
+`counter_recognition_event`（帧、候选、分数、重量、确认结果）。
+
+### 6.3 数据集照片 `POST /store/counter/dataset-photos`
+
+multipart：`file`（图）+ 表单字段 `sku`（必填，目录名白名单）、
+`photographer`、`note`、`captured_at`、`variant_id`（可选，给了须存在）。
+存 `<output_root>/counter_dataset/<sku>/` + 该目录 `manifest.json`
+（sku、拍摄时间、拍摄人、备注、sha256）。数据集单独存放，不进商品库、
+不进蜘蛛图目录。**上传成功只代表照片入库，不代表可训练**，训练另案。
+
+### 6.4 确认口子 `POST /store/counter/recognitions/{id}/confirm`
+
+商家鉴权，JSON `{variant_id}` 或 `{none_correct: true}`，把店员最终确认
+结果写进评估账本（供将来柜台页确认时调用，本次不接前端）。

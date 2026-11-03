@@ -4158,3 +4158,529 @@ async def counter_void_ticket(
         )
         total = await _counter_ticket_total(conn, ticket["id"])
     return _counter_ticket_dict(row, total)
+
+
+# ── 柜台视觉识别接线 ─────────────────────────────────────────────────────
+# 设计稿《收银台电子称 + 系统自动识别》§5：识别只给前 3 候选、店员点确认，
+# 达标前不自动确认。本线只建后端接线（识别端点 + 帧采集 + 数据集上传 +
+# 评估账本），不改 /shop/counter 页面；UI 接入等模型有了以后另案。
+# 模型未训：默认识别器返回空候选，调用方退回拍照点选，绝不编识别结果。
+# 图像存本地卷（output_root 下 counter_frames / counter_dataset），不进商品
+# 媒体库、不进蜘蛛图目录；数据集照片只认柜台实拍，上传成功不代表可训练。
+
+
+def _counter_vision_dir(request: Request, subdir: str) -> Path:
+    """识别接线的文件根：<output_root>/<subdir>，与 agent_ingest 同一持久化机制。"""
+    return _output_dir(request, subdir)
+
+
+async def _counter_read_upload(file: Any, *, field: str = "file") -> bytes:
+    """读上传文件字节，10MB 封顶（超限 413，读一半不落盘）。"""
+    from app.counter_vision import MAX_IMAGE_BYTES
+
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_IMAGE_BYTES:
+            raise HTTPException(413, f"{field} too large: over {MAX_IMAGE_BYTES} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _counter_image_payload(request: Request) -> tuple[bytes, dict[str, Any]]:
+    """从 multipart 或 JSON 请求体里取出一帧图 + 其余字段。
+
+    multipart：file 字段为图，其余表单字段进 fields。
+    JSON：image_base64（标准 base64）+ 其余字段。
+    其它 content-type → 415。图字节本身不做格式判定，调用方以魔数校验。
+    """
+    import base64
+    import binascii
+
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data"):
+        from starlette.datastructures import UploadFile as _StarletteUploadFile
+
+        form = await request.form()
+        upload = form.get("file")
+        if not isinstance(upload, _StarletteUploadFile):
+            raise HTTPException(400, "file is required")
+        fields = {key: form[key] for key in form if key != "file"}
+        return await _counter_read_upload(upload), fields
+    if content_type.startswith("application/json"):
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(400, "invalid JSON body") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "JSON object body is required")
+        b64 = payload.get("image_base64")
+        if not isinstance(b64, str) or not b64.strip():
+            raise HTTPException(400, "image_base64 is required")
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except (ValueError, binascii.Error):
+            raise HTTPException(400, "image_base64 is not valid base64") from None
+        from app.counter_vision import MAX_IMAGE_BYTES
+
+        if len(data) > MAX_IMAGE_BYTES:
+            raise HTTPException(413, f"image too large: over {MAX_IMAGE_BYTES} bytes")
+        fields = {key: value for key, value in payload.items() if key != "image_base64"}
+        return data, fields
+    raise HTTPException(415, "content-type must be multipart/form-data or application/json")
+
+
+def _counter_parse_weight_grams(fields: dict[str, Any]) -> int:
+    """recognize 的 weight_grams：必填整数，1..15000 克（秤量程）。"""
+    from app.weigh import MAX_WEIGHT_GRAMS
+
+    raw = fields.get("weight_grams")
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw.lstrip("-").isdigit():
+            raise HTTPException(400, "weight_grams must be an integer")
+        raw = int(raw)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise HTTPException(400, "weight_grams is required and must be an integer")
+    if not 1 <= raw <= MAX_WEIGHT_GRAMS:
+        raise HTTPException(400, f"weight_grams out of range 1..{MAX_WEIGHT_GRAMS}")
+    return raw
+
+
+def _counter_parse_optional_uuid(fields: dict[str, Any], key: str) -> Any | None:
+    """可选 UUID 字段：给了须为合法 UUID 串，返回 UUID 对象；没给返回 None。"""
+    raw = fields.get(key)
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise HTTPException(400, f"{key} must be a UUID string")
+    try:
+        return uuid.UUID(raw)
+    except ValueError:
+        raise HTTPException(400, f"invalid {key}") from None
+
+
+def _counter_parse_captured_at(raw: object) -> Any | None:
+    """可选拍摄时间：ISO 8601 串；没给返回 None，格式非法 400。"""
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise HTTPException(400, "captured_at must be an ISO 8601 string")
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "captured_at is not ISO 8601") from None
+
+
+def _counter_parse_camera_id(fields: dict[str, Any]) -> str | None:
+    camera_id = fields.get("camera_id")
+    if camera_id is None or camera_id == "":
+        return None
+    if not isinstance(camera_id, str) or len(camera_id) > 64:
+        raise HTTPException(400, "camera_id must be a string of at most 64 chars")
+    return camera_id
+
+
+async def _counter_check_ticket_exists(conn: Any, ticket_uuid: Any) -> None:
+    """ticket_id 给了须对应一张真实单据（只验存在，不验归属——帧是留痕证据）。"""
+    row = await conn.fetchrow('SELECT id FROM "counter_ticket" WHERE id = $1', ticket_uuid)
+    if row is None:
+        raise HTTPException(404, "ticket not found")
+
+
+async def _counter_check_weigh_message(conn: Any, message_id: object) -> None:
+    """weigh_message_id 给了须对应一条真实称重事件，否则 404（防挂错账）。"""
+    if message_id is None or message_id == "":
+        return
+    if not isinstance(message_id, str):
+        raise HTTPException(400, "weigh_message_id must be a string")
+    row = await conn.fetchrow(
+        "SELECT message_id FROM \"hardware_event\" WHERE message_id = $1 AND event_type = 'weigh'",
+        message_id,
+    )
+    if row is None:
+        raise HTTPException(404, "weigh event not found")
+
+
+def _counter_frame_dict(row: Any) -> dict:
+    return {
+        "frame_id": str(row["id"]),
+        "frame_path": row["frame_path"],
+        "content_type": row["content_type"],
+        "byte_size": row["byte_size"],
+        "sha256": row["sha256"],
+        "camera_id": row["camera_id"],
+        "captured_at": row["captured_at"].isoformat() if row["captured_at"] else None,
+        "weigh_message_id": row["weigh_message_id"],
+        "ticket_id": str(row["ticket_id"]) if row["ticket_id"] else None,
+        "client_frame_id": row["client_frame_id"],
+        "source": row["source"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }
+
+
+def _counter_recognition_dict(row: Any) -> dict:
+    import json as _json
+
+    candidates = row["candidates"]
+    if isinstance(candidates, str):
+        candidates = _json.loads(candidates)
+    return {
+        "recognition_id": str(row["id"]),
+        "frame_id": str(row["frame_id"]),
+        "weight_grams": row["weight_grams"],
+        "candidates": candidates,
+        "model_name": row["model_name"],
+        "model_configured": row["model_configured"],
+        "confirmed_variant_id": (
+            str(row["confirmed_variant_id"]) if row["confirmed_variant_id"] else None
+        ),
+        "confirmed_none": row["confirmed_none"],
+        "confirmed_at": row["confirmed_at"].isoformat() if row["confirmed_at"] else None,
+        "confirmed_by": row["confirmed_by"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }
+
+
+async def _counter_store_frame(
+    conn: Any,
+    *,
+    frame_dir: Path,
+    rel_prefix: str,
+    data: bytes,
+    image_format: str,
+    ext: str,
+    camera_id: str | None,
+    captured_at: Any,
+    weigh_message_id: str | None,
+    ticket_uuid: Any,
+    client_frame_id: str | None,
+    source: str,
+    created_by: str,
+) -> tuple[Any, bool]:
+    """帧落盘 + 写 counter_frame 行，返回 (row, duplicate)。
+
+    client_frame_id 命中已存行时返回旧行 + duplicate=True，不重复落盘、
+    不重复记账（网关重发幂等）。先落盘再写行：行永远指向已存在的文件；
+    唯一约束撞上的竞态下重查，孤儿文件（uuid 名、无引用）无害。
+    """
+    from datetime import datetime
+
+    from asyncpg import UniqueViolationError
+
+    from app.counter_vision import frame_filename, sha256_hex
+
+    if client_frame_id:
+        existing = await conn.fetchrow(
+            'SELECT * FROM "counter_frame" WHERE client_frame_id = $1', client_frame_id
+        )
+        if existing is not None:
+            return existing, True
+    frame_id = str(uuid.uuid4())
+    day = datetime.now().strftime("%Y%m%d")
+    day_dir = frame_dir / day
+    day_dir.mkdir(parents=True, exist_ok=True)
+    filename = frame_filename(frame_id, ext)
+    (day_dir / filename).write_bytes(data)
+    rel_path = f"{rel_prefix}/{day}/{filename}"
+    try:
+        row = await conn.fetchrow(
+            'INSERT INTO "counter_frame" (id, frame_path, content_type, byte_size, '
+            "sha256, camera_id, captured_at, weigh_message_id, ticket_id, "
+            "client_frame_id, source, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, "
+            "$8, $9, $10, $11, $12) RETURNING *",
+            uuid.UUID(frame_id),
+            rel_path,
+            f"image/{image_format}",
+            len(data),
+            sha256_hex(data),
+            camera_id,
+            captured_at,
+            weigh_message_id,
+            ticket_uuid,
+            client_frame_id,
+            source,
+            created_by,
+        )
+    except UniqueViolationError:
+        existing = await conn.fetchrow(
+            'SELECT * FROM "counter_frame" WHERE client_frame_id = $1', client_frame_id
+        )
+        if existing is not None:
+            return existing, True
+        raise
+    return row, False
+
+
+@router.post("/counter/recognize")
+async def counter_recognize(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """识别一帧：返回前 3 候选 {variant_id, score}，结果写评估账本。
+
+    模型未训时返回 200 空候选 + model_configured=false，调用方退回拍照点选；
+    识别超时 3 秒同样返回空候选。绝不编分数、绝不瞎猜。
+    """
+    await _require_merchant(request, principal)
+    from app.counter_vision import (
+        get_recognizer,
+        run_recognition,
+        validate_image_bytes,
+    )
+
+    data, fields = await _counter_image_payload(request)
+    try:
+        image_format, ext = validate_image_bytes(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    weight_grams = _counter_parse_weight_grams(fields)
+    ticket_uuid = _counter_parse_optional_uuid(fields, "ticket_id")
+    camera_id = _counter_parse_camera_id(fields)
+    captured_at = _counter_parse_captured_at(fields.get("captured_at"))
+    weigh_message_id = fields.get("weigh_message_id")
+    if weigh_message_id is not None and not isinstance(weigh_message_id, str):
+        raise HTTPException(400, "weigh_message_id must be a string")
+
+    recognizer = get_recognizer()
+    pool = _pool(request)
+    frame_dir = _counter_vision_dir(request, "counter_frames")
+    async with pool.acquire() as conn:
+        if ticket_uuid is not None:
+            await _counter_check_ticket_exists(conn, ticket_uuid)
+        await _counter_check_weigh_message(conn, weigh_message_id)
+        frame_row, _duplicate = await _counter_store_frame(
+            conn,
+            frame_dir=frame_dir,
+            rel_prefix="counter_frames",
+            data=data,
+            image_format=image_format,
+            ext=ext,
+            camera_id=camera_id,
+            captured_at=captured_at,
+            weigh_message_id=weigh_message_id,
+            ticket_uuid=ticket_uuid,
+            client_frame_id=None,
+            source="recognize",
+            created_by=str(principal["customer_id"]),
+        )
+        candidates, configured = await run_recognition(recognizer, data, weight_grams)
+        rec_row = await conn.fetchrow(
+            'INSERT INTO "counter_recognition_event" (frame_id, weight_grams, '
+            "candidates, model_name, model_configured, created_by) "
+            "VALUES ($1, $2, $3::jsonb, $4, $5, $6) RETURNING *",
+            frame_row["id"],
+            weight_grams,
+            json.dumps(candidates),
+            getattr(recognizer, "name", "unknown"),
+            configured,
+            str(principal["customer_id"]),
+        )
+    if not configured:
+        logger.info(
+            "counter recognize: no model configured; empty candidates (recognition_id=%s)",
+            rec_row["id"],
+        )
+    return {
+        "recognition_id": str(rec_row["id"]),
+        "frame_id": str(frame_row["id"]),
+        "candidates": candidates,
+        "weight_grams": weight_grams,
+        "model_configured": configured,
+    }
+
+
+@router.post("/counter/frames")
+async def counter_frames(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """通用摄像头帧采集：网关推帧 → 存本地卷 → 返回帧 ID。
+
+    multipart 的 file 字段或 JSON 的 image_base64，二选一。
+    可选关联 ticket_id / weigh_message_id（给了须存在，否则 404）；
+    client_frame_id 供网关重发幂等（命中已存行返回 duplicate=true）。
+    """
+    await _require_merchant(request, principal)
+    from app.counter_vision import validate_image_bytes
+
+    data, fields = await _counter_image_payload(request)
+    try:
+        image_format, ext = validate_image_bytes(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    ticket_uuid = _counter_parse_optional_uuid(fields, "ticket_id")
+    camera_id = _counter_parse_camera_id(fields)
+    captured_at = _counter_parse_captured_at(fields.get("captured_at"))
+    weigh_message_id = fields.get("weigh_message_id")
+    if weigh_message_id is not None and not isinstance(weigh_message_id, str):
+        raise HTTPException(400, "weigh_message_id must be a string")
+    client_frame_id = fields.get("client_frame_id")
+    if client_frame_id is not None and (
+        not isinstance(client_frame_id, str) or not client_frame_id or len(client_frame_id) > 128
+    ):
+        raise HTTPException(400, "client_frame_id must be a non-empty string of at most 128 chars")
+
+    pool = _pool(request)
+    frame_dir = _counter_vision_dir(request, "counter_frames")
+    async with pool.acquire() as conn:
+        if ticket_uuid is not None:
+            await _counter_check_ticket_exists(conn, ticket_uuid)
+        await _counter_check_weigh_message(conn, weigh_message_id)
+        frame_row, duplicate = await _counter_store_frame(
+            conn,
+            frame_dir=frame_dir,
+            rel_prefix="counter_frames",
+            data=data,
+            image_format=image_format,
+            ext=ext,
+            camera_id=camera_id,
+            captured_at=captured_at,
+            weigh_message_id=weigh_message_id,
+            ticket_uuid=ticket_uuid,
+            client_frame_id=client_frame_id,
+            source="camera",
+            created_by=str(principal["customer_id"]),
+        )
+    return _counter_frame_dict(frame_row) | {"duplicate": duplicate}
+
+
+@router.post("/counter/dataset-photos")
+async def counter_dataset_photo(
+    request: Request,
+    file: UploadFile,
+    sku: str = Form(...),
+    photographer: str = Form(""),
+    note: str = Form(""),
+    captured_at: str | None = Form(None),
+    variant_id: str | None = Form(None),
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """数据集照片上传：按 SKU 分目录存 + manifest.json 留痕。
+
+    只接受图片（魔数校验）；SKU 目录名白名单防穿越；variant_id 给了须真实存在。
+    上传成功只代表照片入库，不代表可训练——训练另案，待柜台实拍照片到位。
+    """
+    await _require_merchant(request, principal)
+    from app.counter_vision import (
+        append_manifest_entry,
+        build_manifest_entry,
+        dataset_filename,
+        sanitize_sku,
+        sha256_hex,
+        validate_image_bytes,
+    )
+
+    try:
+        sku_clean = sanitize_sku(sku)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if len(photographer) > 64:
+        raise HTTPException(400, "photographer must be at most 64 chars")
+    if len(note) > 500:
+        raise HTTPException(400, "note must be at most 500 chars")
+    captured = _counter_parse_captured_at(captured_at)
+    variant_uuid = None
+    if variant_id:
+        try:
+            variant_uuid = uuid.UUID(variant_id)
+        except ValueError:
+            raise HTTPException(400, "invalid variant_id") from None
+    data = await _counter_read_upload(file)
+    try:
+        _image_format, ext = validate_image_bytes(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        if variant_uuid is not None:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM product_variant WHERE id = $1", variant_uuid
+            )
+            if not exists:
+                raise HTTPException(404, "variant not found")
+    root = _counter_vision_dir(request, "counter_dataset") / sku_clean
+    root.mkdir(parents=True, exist_ok=True)
+    entry_uuid = str(uuid.uuid4())
+    filename = dataset_filename(entry_uuid, ext)
+    (root / filename).write_bytes(data)
+    entry = build_manifest_entry(
+        filename=filename,
+        sku=sku_clean,
+        variant_id=str(variant_uuid) if variant_uuid else None,
+        captured_at=captured.isoformat() if captured else None,
+        photographer=photographer,
+        note=note,
+        uploaded_by=str(principal["customer_id"]),
+        sha256=sha256_hex(data),
+        byte_size=len(data),
+    )
+    append_manifest_entry(root / "manifest.json", entry)
+    return {
+        "stored": True,
+        "sku": sku_clean,
+        "file": filename,
+        "path": f"counter_dataset/{sku_clean}/{filename}",
+        "manifest": entry,
+        "note": "photo stored; training is a separate step pending real counter photos",
+    }
+
+
+@router.post("/counter/recognitions/{recognition_id}/confirm")
+async def counter_confirm_recognition(
+    request: Request,
+    recognition_id: str,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """评估账本确认口子（供将来柜台页确认时调用，本次不接前端）：
+    记下店员最终确认的 variant，或 none_correct=true 表示候选全错。
+    允许重复确认（以最后一次为准，便于纠错）。"""
+    await _require_merchant(request, principal)
+    try:
+        rec_uuid = uuid.UUID(str(recognition_id))
+    except ValueError:
+        raise HTTPException(400, "invalid recognition_id") from None
+    none_correct = body.get("none_correct", False)
+    if not isinstance(none_correct, bool):
+        raise HTTPException(400, "none_correct must be a boolean")
+    variant_uuid = None
+    if not none_correct:
+        raw_variant = body.get("variant_id")
+        if not isinstance(raw_variant, str) or not raw_variant.strip():
+            raise HTTPException(400, "variant_id is required unless none_correct is true")
+        try:
+            variant_uuid = uuid.UUID(raw_variant)
+        except ValueError:
+            raise HTTPException(400, "invalid variant_id") from None
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT * FROM "counter_recognition_event" WHERE id = $1', rec_uuid
+        )
+        if row is None:
+            raise HTTPException(404, "recognition event not found")
+        if variant_uuid is not None:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM product_variant WHERE id = $1", variant_uuid
+            )
+            if not exists:
+                raise HTTPException(404, "variant not found")
+        updated = await conn.fetchrow(
+            'UPDATE "counter_recognition_event" SET confirmed_variant_id = $1, '
+            "confirmed_none = $2, confirmed_at = NOW(), confirmed_by = $3 "
+            "WHERE id = $4 RETURNING *",
+            variant_uuid,
+            none_correct,
+            str(principal["customer_id"]),
+            rec_uuid,
+        )
+    return _counter_recognition_dict(updated)
