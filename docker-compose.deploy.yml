@@ -1,6 +1,6 @@
 services:
   api:
-    image: registry.sxueji.com/hemall/backend:0.6.15-prod
+    image: registry.sxueji.com/hemall/backend:0.6.16-prod
     volumes:
       - hemall-spider-media:/app/var/omodul_output/ext_bespoke/spider_media
     environment:
@@ -8,7 +8,7 @@ services:
       HEMALL_VLM_SCREENSHOT_URL: http://172.17.0.1:8799/shot
       HEMALL_VLM_SCREENSHOT_TOKEN: ${HEMALL_VLM_SCREENSHOT_TOKEN:?set shotd token in .env}
   web:
-    image: registry.sxueji.com/hemall/frontend:0.5.9-prod
+    image: registry.sxueji.com/hemall/frontend:0.5.10-prod
     environment:
       HEMALL_BACKEND_URL: http://hemal-api-1:8000
       # BFF 同源闸门放行真实浏览器来源: NextRequest.nextUrl.origin 在
