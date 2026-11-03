@@ -2544,6 +2544,17 @@ class InviteGiftClaimRequest(BaseModel):
     gift_kind: str
 
 
+class PointsReverseRequest(BaseModel):
+    refund_id: str
+    refund_cents: int
+
+
+class StoredValueTopupRequest(BaseModel):
+    amount_cents: int
+    external_payment_ref: str
+    note: str = ""
+
+
 def _cangzhu_bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(400, str(exc))
 
@@ -2598,6 +2609,141 @@ async def list_my_vouchers(
         "voucher_balance_cents": int(balance or 0),
         "entries": [dict(r) for r in rows],
     }
+
+
+# ── 会员补齐（缺口 4）：等级 / 积分 / 储值 ──────────────────────────
+# 口径与默认值见 app/membership.py 与 docs/membership.md。等级只作身份统计，
+# 不给价格折扣；积分只积不兑；储值只记账不接支付网关；短信不做。
+
+
+@router.get("/customers/me/membership")
+async def get_my_membership(request: Request, principal: dict = Depends(get_current_customer)):
+    from app.membership import get_membership_summary
+
+    async with _pool(request).acquire() as conn:
+        try:
+            return await get_membership_summary(conn, str(principal["customer_id"]))
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/points")
+async def list_my_points(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.membership import list_points_entries
+
+    async with _pool(request).acquire() as conn:
+        try:
+            return await list_points_entries(
+                conn, str(principal["customer_id"]), limit=limit, offset=offset
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/stored-value")
+async def list_my_stored_value(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.membership import list_stored_value_entries
+
+    async with _pool(request).acquire() as conn:
+        try:
+            return await list_stored_value_entries(
+                conn, str(principal["customer_id"]), limit=limit, offset=offset
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/customers/{customer_id}/membership")
+async def get_customer_membership(
+    customer_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.membership import get_membership_summary
+
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        try:
+            return await get_membership_summary(conn, customer_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/orders/{order_id}/points-accrue")
+async def accrue_order_points(
+    order_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.membership import accrue_points
+
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        exists = await conn.fetchval("SELECT id FROM customer_order WHERE id = $1", order_id)
+    if exists is None:
+        raise HTTPException(404, "order not found")
+    result = await accrue_points(_pool(request), order_id)
+    return {"order_id": order_id, **result}
+
+
+@router.post("/orders/{order_id}/points-reverse")
+async def reverse_order_points(
+    order_id: str,
+    body: PointsReverseRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.membership import reverse_points_for_refund
+
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        exists = await conn.fetchval("SELECT id FROM customer_order WHERE id = $1", order_id)
+    if exists is None:
+        raise HTTPException(404, "order not found")
+    try:
+        result = await reverse_points_for_refund(
+            _pool(request),
+            refund_id=body.refund_id,
+            order_id=order_id,
+            refund_cents=body.refund_cents,
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+    return {"order_id": order_id, **result}
+
+
+@router.post("/customers/{customer_id}/stored-value/topup")
+async def topup_customer_stored_value(
+    customer_id: str,
+    body: StoredValueTopupRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.membership import topup_stored_value
+
+    merchant = await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        exists = await conn.fetchval('SELECT id FROM "customer" WHERE id = $1', customer_id)
+    if exists is None:
+        raise HTTPException(404, "customer not found")
+    try:
+        result = await topup_stored_value(
+            _pool(request),
+            customer_id=customer_id,
+            amount_cents=body.amount_cents,
+            external_payment_ref=body.external_payment_ref,
+            operator_id=str(merchant["customer_id"]),
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+    return {"customer_id": customer_id, **result}
 
 
 @router.post("/purchase-requests", status_code=201)

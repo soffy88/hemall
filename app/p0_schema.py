@@ -13,6 +13,7 @@ from .counter_closeout import COUNTER_CLOSEOUT_DDL
 from .counter_settlement_order import COUNTER_SETTLEMENT_ORDER_DDL
 from .counter_vision import COUNTER_VISION_DDL
 from .ext.spider_hygiene import OCR_GATE_DDL
+from .membership import MEMBERSHIP_DDL
 from .weigh import WEIGH_DDL
 
 P0_SCHEMA_DDL = """
@@ -231,6 +232,8 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(P0_SCHEMA_DDL)
         # 仓主试点：推荐码/券账本/点货/邀请礼 DDL（幂等，见 app/cangzhu.py）。
         await conn.execute(CANGZHU_DDL)
+        # 会员补齐（缺口 4）：等级/积分/储值 DDL（幂等，见 app/membership.py）。
+        await conn.execute(MEMBERSHIP_DDL)
         # OCR 品牌门: inventory_batch.inspection_note 留痕列 (幂等, 见 spider_hygiene.py)。
         await conn.execute(OCR_GATE_DDL)
         # 柜台称重试点：hardware_event 账本列 + counter_ticket 单据头。
