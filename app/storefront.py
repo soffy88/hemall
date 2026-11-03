@@ -31,7 +31,14 @@ from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
-from app.cangzhu import choose_discount, get_voucher_balance, hold_redemption
+from app.cangzhu import (
+    choose_discount,
+    get_voucher_balance,
+    hold_redemption,
+    night_discount_cents,
+    night_now,
+    night_price_cents,
+)
 from app.db_recovery import kick_pool_recovery
 from app.deps import get_current_customer, get_settings
 from app.recommend.models import UserBehaviorEvent, UserBehaviorType
@@ -1380,8 +1387,10 @@ async def _create_order_from_cart(
                     }
                 )
 
-            # 仓主试点：会员 9 折与券抵扣互斥取最优（购物车已有其他折扣时不动）。
-            # 券抵扣在同一事务内持有余额；事务回滚时持有同步撤销。
+            # 仓主试点 + 缺口 6：夜市价、会员 9 折、券抵扣三者互斥取最优
+            # （购物车已有其他折扣时不动）。夜市行（night_clearance 标记）
+            # 不计入 9 折/券的合资格池，夜市折扣额按夜市行合计与当前北京
+            # 时间时段算；券抵扣在同一事务内持有余额，事务回滚时同步撤销。
             _cz_discount_kind = "none"
             _cz_discount_cents = int(cart["discount_cents"] or 0)
             _cz_grand_total = int(cart["grand_total_cents"])
@@ -1390,23 +1399,41 @@ async def _create_order_from_cart(
                     str(cart["customer_id"]) if cart["customer_id"] else None
                 )
                 if _cz_customer_id is not None:
-                    _excluded_variants = {
-                        str(r["id"])
+                    _variant_flags = {
+                        str(r["id"]): r
                         for r in await conn.fetch(
-                            "SELECT pv.id FROM product_variant pv "
+                            "SELECT pv.id, COALESCE(p.voucher_excluded, false) "
+                            "AS voucher_excluded, "
+                            "COALESCE(p.night_clearance, false) AS night_clearance "
+                            "FROM product_variant pv "
                             "JOIN product p ON p.id = pv.product_id "
-                            "WHERE pv.id = ANY($1) AND COALESCE(p.voucher_excluded, false)",
+                            "WHERE pv.id = ANY($1)",
                             [prep["variant_id"] for prep in prepared],
                         )
+                    }
+                    _excluded_variants = {
+                        vid
+                        for vid, flags in _variant_flags.items()
+                        if flags["voucher_excluded"] or flags["night_clearance"]
                     }
                     _eligible = sum(
                         int(prep["line_total_cents"])
                         for prep in prepared
                         if str(prep["variant_id"]) not in _excluded_variants
                     )
+                    _night_total = sum(
+                        int(prep["line_total_cents"])
+                        for prep in prepared
+                        if _variant_flags.get(str(prep["variant_id"]))
+                        and _variant_flags[str(prep["variant_id"])]["night_clearance"]
+                    )
+                    _night_discount = night_discount_cents(_night_total, night_now())
                     _balance = await get_voucher_balance(conn, _cz_customer_id)
                     _cz_discount_kind, _cz_discount_cents = choose_discount(
-                        _eligible, _balance, is_member=True
+                        _eligible,
+                        _balance,
+                        is_member=True,
+                        night_cents=_night_discount,
                     )
                     if _cz_discount_cents > 0:
                         _cz_grand_total = max(
@@ -2540,6 +2567,22 @@ class VoucherExclusionUpdate(BaseModel):
     excluded: bool
 
 
+class NightClearanceUpdate(BaseModel):
+    night_clearance: bool
+
+
+class PintuanGroupCreate(BaseModel):
+    variant_id: str
+    pintuan_price_cents: int
+    target_size: int
+    duration_minutes: int = 1440
+    quantity: int = 1
+
+
+class PintuanJoinRequest(BaseModel):
+    quantity: int = 1
+
+
 class InviteGiftClaimRequest(BaseModel):
     gift_kind: str
 
@@ -2924,6 +2967,20 @@ async def set_product_voucher_exclusion(
 ):
     await _require_merchant(request, principal)
     async with _pool(request).acquire() as conn:
+        # 缺口 6 不变式：夜市清货品须保持 voucher_excluded，否则夜市行
+        # 会重新计入推荐奖励合资格基数（规则 2）。先查后改，守卫在先。
+        existing = await conn.fetchrow(
+            "SELECT id, COALESCE(night_clearance, false) AS night_clearance "
+            "FROM product WHERE id = $1",
+            product_id,
+        )
+        if existing is None:
+            raise HTTPException(404, "product not found")
+        if existing["night_clearance"] and not body.excluded:
+            raise HTTPException(
+                400,
+                "night clearance product must stay voucher-excluded; clear night-clearance first",
+            )
         row = await conn.fetchrow(
             "UPDATE product SET voucher_excluded = $1 WHERE id = $2 RETURNING id",
             body.excluded,
@@ -2932,6 +2989,179 @@ async def set_product_voucher_exclusion(
     if row is None:
         raise HTTPException(404, "product not found")
     return {"product_id": product_id, "voucher_excluded": body.excluded}
+
+
+@router.patch("/products/{product_id}/night-clearance")
+async def set_product_night_clearance(
+    product_id: str,
+    body: NightClearanceUpdate,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """缺口 6：标记/取消当日临期清货品（商家）。
+
+    置标时同步 voucher_excluded=true（规则 2/3 不变式）；取消标记时
+    voucher_excluded 保持原值，由券排除端点单独管理。
+    """
+
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE product SET night_clearance = $1, "
+            "voucher_excluded = voucher_excluded OR $1 WHERE id = $2 "
+            "RETURNING id, night_clearance, voucher_excluded",
+            body.night_clearance,
+            product_id,
+        )
+    if row is None:
+        raise HTTPException(404, "product not found")
+    return {
+        "product_id": product_id,
+        "night_clearance": bool(row["night_clearance"]),
+        "voucher_excluded": bool(row["voucher_excluded"]),
+    }
+
+
+@router.get("/night-market")
+async def list_night_market(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    limit: int = Query(100, ge=1, le=200),
+):
+    """缺口 6：当前夜市清货品与本时段夜市价（只读）。
+
+    单价取变体 reference_price_cents；无价时夜市价为 null，不编造价格。
+    """
+
+    from app.cangzhu import night_discount_rate
+
+    now = night_now()
+    rate = night_discount_rate(now)
+    async with _pool(request).acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT p.id AS product_id, p.title, pv.id AS variant_id, "
+            "pv.reference_price_cents FROM product p "
+            "JOIN product_variant pv ON pv.product_id = p.id "
+            "AND pv.deleted_at IS NULL "
+            "WHERE p.deleted_at IS NULL AND COALESCE(p.night_clearance, false) "
+            "ORDER BY p.title LIMIT $1",
+            limit,
+        )
+    products = []
+    for row in rows:
+        ref = row["reference_price_cents"]
+        products.append(
+            {
+                "product_id": str(row["product_id"]),
+                "title": row["title"],
+                "variant_id": str(row["variant_id"]),
+                "reference_price_cents": int(ref) if ref is not None else None,
+                "night_price_cents": night_price_cents(int(ref), now) if ref is not None else None,
+            }
+        )
+    return {
+        "now": now.isoformat(),
+        "discount_rate": str(rate),
+        "products": products,
+    }
+
+
+@router.post("/pintuan/groups", status_code=201)
+async def create_pintuan_group_endpoint(
+    body: PintuanGroupCreate,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """缺口 6：发起拼单（意向登记，不收款、不建单）。"""
+
+    from app.night_pintuan import create_pintuan_group
+
+    try:
+        return await create_pintuan_group(
+            _pool(request),
+            creator_id=str(principal["customer_id"]),
+            variant_id=body.variant_id,
+            pintuan_price_cents=body.pintuan_price_cents,
+            target_size=body.target_size,
+            duration_minutes=body.duration_minutes,
+            quantity=body.quantity,
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+
+
+@router.post("/pintuan/groups/{group_id}/join")
+async def join_pintuan_group_endpoint(
+    group_id: str,
+    body: PintuanJoinRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """缺口 6：加入拼单；人头数达标即成团。"""
+
+    from app.night_pintuan import join_pintuan_group
+
+    try:
+        return await join_pintuan_group(
+            _pool(request),
+            group_id=group_id,
+            customer_id=str(principal["customer_id"]),
+            quantity=body.quantity,
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+
+
+@router.get("/pintuan/groups")
+async def list_pintuan_groups_endpoint(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """缺口 6：拼单团列表（读时批量过期已到期未成团的团）。"""
+
+    from app.night_pintuan import list_pintuan_groups
+
+    try:
+        return {
+            "groups": await list_pintuan_groups(
+                _pool(request), status=status, limit=limit, offset=offset
+            )
+        }
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+
+
+@router.get("/pintuan/groups/{group_id}")
+async def get_pintuan_group_endpoint(
+    group_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """缺口 6：拼单团详情（读时懒过期）。"""
+
+    from app.night_pintuan import get_pintuan_group
+
+    group = await get_pintuan_group(_pool(request), group_id)
+    if group is None:
+        raise HTTPException(404, "pintuan group not found")
+    return group
+
+
+@router.post("/pintuan/sweep-expired")
+async def sweep_expired_pintuan_groups_endpoint(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """缺口 6：商家批量过期已到期未成团的拼单团。"""
+
+    from app.night_pintuan import sweep_expired_pintuan_groups
+
+    await _require_merchant(request, principal)
+    expired = await sweep_expired_pintuan_groups(_pool(request))
+    return {"expired_groups": expired}
 
 
 @router.post("/ingest")

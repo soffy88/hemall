@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import secrets
 import string
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -30,6 +30,19 @@ logger = logging.getLogger("hemall.cangzhu")
 REFERRAL_REWARD_RATE = Decimal("0.10")  # 被推荐人合资格消费 10% 返推荐人
 MEMBER_DISCOUNT_RATE = Decimal("0.10")  # 会员 9 折
 VOUCHER_REDEEM_CAP_RATE = Decimal("0.20")  # 每单券抵扣上限：合资格金额 20%
+# ── 夜市阶梯价（规则 1，缺口 6 二期）────────────────────────────────
+# 时段语义：北京时间（UTC+8 固定偏移，无夏令时，等价 Asia/Shanghai）
+# 当日 20:00（含）起 8 折、21:00（含）起 7 折、22:00（含）起 6 折，
+# 23:00 起恢复原价（与门店 23:00 打烊一致）。仅 night_clearance 标记的
+# 当日临期清货品参与；时段外、未标记均无夜市价。
+NIGHT_MARKET_TZ = timezone(timedelta(hours=8), name="UTC+08:00")
+NIGHT_MARKET_START_HOUR = 20
+NIGHT_MARKET_END_HOUR = 23
+NIGHT_MARKET_TIERS: tuple[tuple[int, Decimal], ...] = (
+    (20, Decimal("0.20")),  # 20:00–20:59：8 折，折扣额 20%
+    (21, Decimal("0.30")),  # 21:00–21:59：7 折，折扣额 30%
+    (22, Decimal("0.40")),  # 22:00–22:59：6 折，折扣额 40%
+)
 # 邀请礼默认值（规则 6）：待当地采购价锁定后复核。
 INVITE_GIFT_THRESHOLD_CENTS = 5000  # 首单实付满 50 元
 INVITE_GIFT_COST_CAP_CENTS = 800  # 单份成本上限 8 元
@@ -153,16 +166,73 @@ def voucher_redeemable_cents(eligible_cents: int, balance_cents: int) -> int:
     return min(balance_cents, cap)
 
 
-def choose_discount(eligible_cents: int, balance_cents: int, *, is_member: bool) -> tuple[str, int]:
-    """互斥取最优：9 折与券抵扣二选一；平局优先 9 折（不动余额）。
+def night_now() -> datetime:
+    """当前北京时间（UTC+8 固定偏移的 aware 时间）。"""
 
-    返回 (discount_kind, discount_cents)，kind ∈ none/member/voucher。
+    return datetime.now(NIGHT_MARKET_TZ)
+
+
+def night_discount_rate(now: datetime | None = None) -> Decimal:
+    """当前时段的夜市折扣率（0 / 0.20 / 0.30 / 0.40）。
+
+    now 为 None 取当前北京时间；naive 时间按北京时间墙上时间理解；
+    aware 时间先换算到北京时间再取小时。边界：20:00 整进 8 折档，
+    21:00 整切 7 折档，22:00 整切 6 折档，23:00 整出夜市。
+    """
+
+    current = now if now is not None else night_now()
+    if current.tzinfo is None:
+        local_hour = current.hour
+    else:
+        local_hour = current.astimezone(NIGHT_MARKET_TZ).hour
+    if local_hour < NIGHT_MARKET_START_HOUR or local_hour >= NIGHT_MARKET_END_HOUR:
+        return Decimal("0")
+    for start_hour, rate in NIGHT_MARKET_TIERS:
+        if local_hour == start_hour:
+            return rate
+    return Decimal("0")
+
+
+def night_discount_cents(line_total_cents: int, now: datetime | None = None) -> int:
+    """夜市行合计的折扣额（分，四舍五入）；非夜市时段为 0。"""
+
+    if line_total_cents <= 0:
+        return 0
+    return _round_cents(Decimal(line_total_cents) * night_discount_rate(now))
+
+
+def night_price_cents(unit_price_cents: int, now: datetime | None = None) -> int:
+    """单件夜市价（分）；非夜市时段等于原价。"""
+
+    if unit_price_cents <= 0:
+        return 0
+    return max(0, unit_price_cents - night_discount_cents(unit_price_cents, now))
+
+
+def choose_discount(
+    eligible_cents: int,
+    balance_cents: int,
+    *,
+    is_member: bool,
+    night_cents: int = 0,
+) -> tuple[str, int]:
+    """互斥取最优：夜市价、9 折、券抵扣三选一，取折扣额最大者。
+
+    night_cents 是调用方按夜市行合计算好的夜市折扣额（夜市标记行、
+    当前时段）；night_cents 缺省 0 时行为与旧版完全一致。平局优先
+    顺序：夜市 > 9 折 > 券（前两者不动券余额）。夜市品不可用券由
+    调用方保证：夜市行不计入 eligible_cents，券抵扣额只按合资格行算。
+
+    返回 (discount_kind, discount_cents)，kind ∈ none/member/voucher/night。
     """
 
     member = member_discount_cents(eligible_cents) if is_member else 0
     voucher = voucher_redeemable_cents(eligible_cents, balance_cents)
-    if member <= 0 and voucher <= 0:
+    night = max(0, night_cents)
+    if member <= 0 and voucher <= 0 and night <= 0:
         return "none", 0
+    if night >= member and night >= voucher:
+        return "night", night
     if voucher > member:
         return "voucher", voucher
     return "member", member
@@ -398,7 +468,8 @@ async def compute_eligible_base(conn: Any, order_id: str) -> int:
     """订单合资格基数：非排除商品行合计 − 券抵扣 − 运费 − 已成功退款。
 
     排除口径：product.voucher_excluded（特价/清仓/礼品卡/限促等由管理端标记；
-    夜市价商品尚未接入，接入时须同步标记排除）。预订行（batch 为空）按行合计
+    夜市价商品以 product.night_clearance 标记，置标时同步 voucher_excluded=true，
+    故按 voucher_excluded 排除即含夜市品）。预订行（batch 为空）按行合计
     计入，后续退款冲回时再扣减。
     """
 
