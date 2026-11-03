@@ -10,6 +10,7 @@ from obase.persistence.pool import PgPool
 
 from .cangzhu import CANGZHU_DDL
 from .counter_closeout import COUNTER_CLOSEOUT_DDL
+from .counter_settlement_order import COUNTER_SETTLEMENT_ORDER_DDL
 from .counter_vision import COUNTER_VISION_DDL
 from .ext.spider_hygiene import OCR_GATE_DDL
 from .weigh import WEIGH_DDL
@@ -238,3 +239,5 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(COUNTER_CLOSEOUT_DDL)
         # 柜台视觉识别接线：帧存档 + 识别评估账本（幂等，见 app/counter_vision.py）。
         await conn.execute(COUNTER_VISION_DDL)
+        # counter-settlement-order: 柜台结算建单（渠道列 + 单据↔订单链 + 行项重量列）。
+        await conn.execute(COUNTER_SETTLEMENT_ORDER_DDL)

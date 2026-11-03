@@ -3412,8 +3412,9 @@ async def list_my_claims(request: Request, principal: dict = Depends(get_current
 # 店员柜台页 /shop/counter 的后端：照片格商品、单据、行项、模拟器。
 # 门禁：顾客登录 + is_merchant（仓管家），与点货/裂变账本同一道门。
 # 结算语义：挂单待结算（pending_settlement）后现金结算（counter_settle_ticket）
-# 落结算记录、单据置 settled；不创建 customer_order、不扣库存、不碰券账本
-# 与 9 折逻辑（建单链路缺口见 app/counter_closeout.py 模块注释）。
+# 落结算记录、单据置 settled，并在同一事务内建 customer_order（渠道 counter）
+# 与直接扣库存（不建预留，见 app/counter_settlement_order.py）；不碰券账本
+# 与 9 折逻辑（券/9 折只走线上建单链路）。
 
 
 def _counter_first_media_ref(value: object) -> str | None:
@@ -3851,6 +3852,181 @@ def _counter_shift_dict(row: Any) -> dict:
     }
 
 
+async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> dict | None:
+    """结算事务内建柜台订单并直接扣库存（调用方须已在同一事务内）。
+
+    只取已计价行（status='processed'）；无计价行时返回 None（不造空单）。
+    每行按重量/计价基准向上取整折算库存份数（见
+    app/counter_settlement_order.weigh_stock_units），先按预留账本协议写
+    inventory_reservation，再随即标记 consumed 并写 shipment movement、扣
+    批次 stock_qty——货物离柜，不留预留等待。任一行缺价/缺批次/库存不足即
+    raise ValueError，整笔结算回滚。
+    """
+    from app.counter_settlement_order import (
+        COUNTER_ORDER_STATUS,
+        ORDER_CHANNEL_COUNTER,
+        require_weigh_line_pricing,
+        weigh_stock_units,
+    )
+
+    lines = await conn.fetch(
+        "SELECT he.*, pv.product_id, ib.variant_id AS batch_variant_id, "
+        'ib.location_id AS batch_location_id FROM "hardware_event" he '
+        'LEFT JOIN "inventory_batch" ib ON ib.id = he.batch_id '
+        'LEFT JOIN "product_variant" pv ON pv.id = ib.variant_id '
+        "WHERE he.ticket_id = $1 AND he.event_type = 'weigh' AND he.status = 'processed' "
+        "ORDER BY he.created_at ASC, he.message_id ASC",
+        ticket["id"],
+    )
+    if not lines:
+        return None
+    for line in lines:
+        require_weigh_line_pricing(
+            batch_id=line["batch_id"],
+            weight_grams=line["weight_grams"],
+            unit_price_cents=line["unit_price_cents"],
+            price_basis_grams=line["price_basis_grams"],
+            amount_cents=line["amount_cents"],
+        )
+    subtotal = sum(int(line["amount_cents"]) for line in lines)
+    if subtotal != int(due_cents):
+        raise ValueError(
+            f"counter order subtotal {subtotal} does not match ticket total {due_cents}"
+        )
+    order_id = uuid7()
+    customer_id = str(ticket["customer_id"]) if ticket["customer_id"] else None
+    await conn.execute(
+        'INSERT INTO "customer_order" '
+        "(id, cart_id, customer_id, region_code, currency, status, "
+        "subtotal_cents, discount_cents, tax_cents, shipping_cents, "
+        "grand_total_cents, billing_address, shipping_address, "
+        "discount_kind, voucher_redeemed_cents, channel, counter_ticket_id) "
+        "VALUES ($1, NULL, $2, NULL, 'CNY', $3, $4, 0, 0, 0, $4, "
+        "'{}'::jsonb, '{}'::jsonb, 'none', 0, $5, $6)",
+        order_id,
+        customer_id,
+        COUNTER_ORDER_STATUS,
+        subtotal,
+        ORDER_CHANNEL_COUNTER,
+        ticket["id"],
+    )
+    lines_out: list[dict] = []
+    for line in lines:
+        units = weigh_stock_units(int(line["weight_grams"]), int(line["price_basis_grams"]))
+        batch = await conn.fetchrow(
+            "SELECT id, variant_id, location_id, stock_qty, reserved_qty, status, "
+            'inspection_status, deleted_at FROM "inventory_batch" WHERE id = $1 FOR UPDATE',
+            line["batch_id"],
+        )
+        if batch is None:
+            raise ValueError(f"batch {line['batch_id']} not found")
+        if (
+            batch["deleted_at"] is not None
+            or batch["status"] != "active"
+            or batch["inspection_status"] != "passed"
+        ):
+            raise ValueError(
+                f"batch {line['batch_id']} is not sellable: status={batch['status']} "
+                f"inspection={batch['inspection_status']}"
+            )
+        product_id = await conn.fetchval(
+            'SELECT product_id FROM "product_variant" WHERE id = $1',
+            batch["variant_id"],
+        )
+        if product_id is None:
+            raise ValueError(f"variant {batch['variant_id']} not found for batch")
+        line_id = uuid7()
+        await conn.execute(
+            'INSERT INTO "order_line_item" '
+            "(id, order_id, batch_id, variant_id, quantity, preorder_qty, "
+            "unit_price_cents, line_total_cents, location_id, weight_grams) "
+            "VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)",
+            line_id,
+            order_id,
+            batch["id"],
+            batch["variant_id"],
+            units,
+            int(line["unit_price_cents"]),
+            int(line["amount_cents"]),
+            batch["location_id"],
+            int(line["weight_grams"]),
+        )
+        reservation_id = await _reserve_batch_qty(
+            conn,
+            order_id=order_id,
+            line_id=line_id,
+            product_id=product_id,
+            variant_id=batch["variant_id"],
+            batch=batch,
+            quantity=units,
+            reason="counter settlement: goods leave at counter",
+        )
+        if reservation_id is None:
+            raise ValueError(
+                f"insufficient stock for batch {line['batch_id']}: needs {units} units"
+            )
+        # 随即核销：与 _ship_order_inventory 的逐预留核销写同一组账（批次
+        # stock/reserved 双扣 + 预留 consumed + shipment movement），货物已离柜。
+        shipped = await conn.fetchrow(
+            'UPDATE "inventory_batch" '
+            "SET stock_qty = stock_qty - $1, reserved_qty = reserved_qty - $1, "
+            "updated_at = NOW() WHERE id = $2 AND stock_qty >= $1 AND reserved_qty >= $1 "
+            "RETURNING id",
+            units,
+            batch["id"],
+        )
+        if shipped is None:
+            raise ValueError(f"batch {line['batch_id']} reservation is inconsistent while shipping")
+        consumed = await conn.fetchrow(
+            'UPDATE "inventory_reservation" '
+            "SET consumed_qty = $1, status = 'consumed', updated_at = NOW() "
+            "WHERE id = $2 RETURNING id",
+            units,
+            reservation_id,
+        )
+        if consumed is None:
+            raise ValueError(f"reservation {reservation_id} could not be marked consumed")
+        await conn.execute(
+            'INSERT INTO "stock_movement" '
+            "(product_id, variant_id, location_id, batch_id, "
+            "movement_type, quantity, reference_type, reference_id, "
+            "reason, idempotency_key) "
+            "VALUES ($1, $2, $3, $4, 'shipment', $5, 'order', $6, $7, $8) "
+            "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+            str(product_id),
+            str(batch["variant_id"]) if batch["variant_id"] else None,
+            batch["location_id"],
+            batch["id"],
+            units,
+            str(order_id),
+            "counter settlement shipment",
+            f"shipment:{order_id}:{reservation_id}:{units}",
+        )
+        lines_out.append(
+            {
+                "line_id": str(line_id),
+                "batch_id": str(batch["id"]),
+                "variant_id": str(batch["variant_id"]),
+                "quantity": units,
+                "weight_grams": int(line["weight_grams"]),
+                "price_basis_grams": int(line["price_basis_grams"]),
+                "unit_price_cents": int(line["unit_price_cents"]),
+                "line_total_cents": int(line["amount_cents"]),
+            }
+        )
+    return {
+        "order_id": str(order_id),
+        "status": COUNTER_ORDER_STATUS,
+        "channel": ORDER_CHANNEL_COUNTER,
+        "customer_id": customer_id,
+        "counter_ticket_id": str(ticket["id"]),
+        "subtotal_cents": subtotal,
+        "discount_cents": 0,
+        "grand_total_cents": subtotal,
+        "lines": lines_out,
+    }
+
+
 @router.post("/counter/tickets/{ticket_id}/settle")
 async def counter_settle_ticket(
     request: Request,
@@ -3858,14 +4034,18 @@ async def counter_settle_ticket(
     body: dict,
     principal: dict = Depends(get_current_customer),
 ) -> dict:
-    """现金结算：open/pending_settlement → settled，落一条结算记录。
+    """现金结算：open/pending_settlement → settled，落一条结算记录，并在同一
+    事务内建 customer_order（渠道 counter）与直接扣库存。
 
     只收现金：method 缺失 400、非 cash 422。应收取自服务端重算的单据合计，
-    实收小于应收 422，找零 = 实收 - 应收。结算只记结算事实：不创建
-    customer_order、不扣库存、不碰券账本与 9 折逻辑（建单链路缺口见
-    app/counter_closeout.py 模块注释——订单只能从购物车快照创建，库存扣减
-    只扣已有预留，称重行项两者皆无，干净复用不可能）。
+    实收小于应收 422，找零 = 实收 - 应收。建单不碰券账本与 9 折逻辑
+    （discount 0 / kind none / 券核销 0），不伪造 payment_intent，散客订单
+    customer_id 为空。幂等：单据行锁 + 状态守卫 + counter_settlement /
+    counter_ticket_id 唯一约束，重结 409；任一称重行缺价/缺批次/库存不足
+    时整笔回滚（409），单据保持可结算态。
     """
+    from asyncpg import UniqueViolationError
+
     from app.counter_closeout import SETTLE_METHOD_CASH, compute_change_cents
 
     await _require_merchant(request, principal)
@@ -3879,38 +4059,60 @@ async def counter_settle_ticket(
         raise HTTPException(400, "amount_received_cents must be a non-negative integer")
     pool = _pool(request)
     cashier_id = str(principal["customer_id"])
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            ticket = await _counter_require_ticket(conn, ticket_id, cashier_id)
-            if ticket["status"] not in ("open", "pending_settlement"):
-                raise HTTPException(409, f"ticket not settleable: status={ticket['status']}")
-            due = await _counter_ticket_total(conn, ticket["id"])
-            try:
-                change = compute_change_cents(due, received)
-            except ValueError as exc:
-                raise HTTPException(422, str(exc)) from exc
-            row = await conn.fetchrow(
-                'INSERT INTO "counter_settlement" '
-                "(ticket_id, cashier_id, method, amount_due_cents, "
-                "amount_received_cents, change_cents) VALUES ($1, $2, 'cash', $3, $4, $5) "
-                "RETURNING *",
-                ticket["id"],
-                cashier_id,
-                due,
-                received,
-                change,
-            )
-            updated = await conn.fetchrow(
-                "UPDATE \"counter_ticket\" SET status = 'settled', updated_at = NOW() "
-                "WHERE id = $1 RETURNING *",
-                ticket["id"],
-            )
-            await conn.execute(
-                "UPDATE \"hardware_event\" SET settlement_status = 'settled' "
-                "WHERE ticket_id = $1 AND event_type = 'weigh' AND status = 'processed'",
-                ticket["id"],
-            )
-    return _counter_ticket_dict(updated, due) | {"settlement": _counter_settlement_dict(row)}
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                ticket = await _counter_require_ticket(conn, ticket_id, cashier_id)
+                locked = await conn.fetchrow(
+                    'SELECT id FROM "counter_ticket" WHERE id = $1 FOR UPDATE',
+                    ticket["id"],
+                )
+                if locked is None:
+                    raise HTTPException(404, "ticket not found")
+                if ticket["status"] not in ("open", "pending_settlement"):
+                    raise HTTPException(409, f"ticket not settleable: status={ticket['status']}")
+                existing_order = await conn.fetchval(
+                    'SELECT id FROM "customer_order" WHERE counter_ticket_id = $1',
+                    ticket["id"],
+                )
+                if existing_order is not None:
+                    raise HTTPException(409, "ticket already has an order")
+                due = await _counter_ticket_total(conn, ticket["id"])
+                try:
+                    change = compute_change_cents(due, received)
+                except ValueError as exc:
+                    raise HTTPException(422, str(exc)) from exc
+                try:
+                    order = await _create_counter_order(conn, ticket=ticket, due_cents=due)
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+                row = await conn.fetchrow(
+                    'INSERT INTO "counter_settlement" '
+                    "(ticket_id, cashier_id, method, amount_due_cents, "
+                    "amount_received_cents, change_cents) VALUES ($1, $2, 'cash', $3, $4, $5) "
+                    "RETURNING *",
+                    ticket["id"],
+                    cashier_id,
+                    due,
+                    received,
+                    change,
+                )
+                updated = await conn.fetchrow(
+                    "UPDATE \"counter_ticket\" SET status = 'settled', updated_at = NOW() "
+                    "WHERE id = $1 RETURNING *",
+                    ticket["id"],
+                )
+                await conn.execute(
+                    "UPDATE \"hardware_event\" SET settlement_status = 'settled' "
+                    "WHERE ticket_id = $1 AND event_type = 'weigh' AND status = 'processed'",
+                    ticket["id"],
+                )
+    except UniqueViolationError:
+        raise HTTPException(409, "ticket already settled: duplicate settlement or order") from None
+    return _counter_ticket_dict(updated, due) | {
+        "settlement": _counter_settlement_dict(row),
+        "order": order,
+    }
 
 
 @router.post("/counter/shifts")
