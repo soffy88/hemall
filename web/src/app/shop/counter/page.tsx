@@ -18,11 +18,23 @@ import { getSelectedRegion } from '@/lib/region-store';
 import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
-import type { CounterProduct, CounterTicket, CounterWeighLine } from '@/types/api';
+import type {
+  CounterDailyReport,
+  CounterProduct,
+  CounterShift,
+  CounterTicket,
+  CounterWeighLine,
+} from '@/types/api';
 import { errMessage } from '@/lib/errors';
 
 function basisLabel(grams: number): string {
   return grams >= 1000 ? `${grams / 1000}kg` : `${grams}g`;
+}
+
+function yuanToCents(input: string): number | null {
+  const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(input.trim());
+  if (!m) return null;
+  return Number(m[1]) * 100 + Number((m[2] ?? '0').padEnd(2, '0'));
 }
 
 function sourceBadge(source: string | null): string {
@@ -50,6 +62,14 @@ export default function CounterPage() {
   const [simWeight, setSimWeight] = useState('');
   const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [settleReceived, setSettleReceived] = useState('');
+  const [shifts, setShifts] = useState<CounterShift[]>([]);
+  const [floatInput, setFloatInput] = useState('');
+  const [countedInput, setCountedInput] = useState('');
+  const [handoverInput, setHandoverInput] = useState('');
+  const [shiftNote, setShiftNote] = useState('');
+  const [reportDate, setReportDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [report, setReport] = useState<CounterDailyReport | null>(null);
 
   const loadTicket = useCallback(async (ticketId: string) => {
     const { ticket: t, lines: ls } = await api.counterGetTicket(ticketId);
@@ -61,6 +81,15 @@ export default function CounterPage() {
     const { tickets: list } = await api.counterListTickets();
     setTickets(list);
     return list;
+  }, []);
+
+  const loadShifts = useCallback(async () => {
+    try {
+      const { shifts: list } = await api.counterListShifts();
+      setShifts(list);
+    } catch {
+      // 交接班列表失败不打断柜台操作
+    }
   }, []);
 
   useEffect(() => {
@@ -118,6 +147,20 @@ export default function CounterPage() {
       clearInterval(timer);
     };
   }, [ticket?.ticket_id, ticket?.status]);
+
+  // 进入柜台后加载交接班与当日报表（失败不打断柜台操作）
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    void loadShifts();
+    (async () => {
+      try {
+        setReport(await api.counterDailyReport(reportDate));
+      } catch {
+        // 报表失败不打断柜台操作，手动点查询重试
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   const filtered = products.filter((p) => !filter.trim() || p.title.includes(filter.trim()));
 
@@ -206,6 +249,86 @@ export default function CounterPage() {
     }
   }
 
+  async function handleCashSettle() {
+    if (!ticket) return;
+    const received = yuanToCents(settleReceived);
+    if (received == null) {
+      showToast('实收金额格式不对，请输入元（最多两位小数）', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.counterSettleTicket(ticket.ticket_id, {
+        method: 'cash',
+        amount_received_cents: received,
+      });
+      setTicket(updated);
+      setSettleReceived('');
+      showToast(`已现金结算，找零 ${fmt(updated.settlement.change_cents)}`);
+      void loadTickets();
+    } catch (e) {
+      showToast(errMessage(e, '结算失败'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleOpenShift() {
+    const floatCents = yuanToCents(floatInput);
+    if (floatCents == null) {
+      showToast('备用金格式不对，请输入元（最多两位小数）', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.counterOpenShift({ opening_float_cents: floatCents, note: shiftNote });
+      setFloatInput('');
+      setShiftNote('');
+      showToast('已开班');
+      await loadShifts();
+    } catch (e) {
+      showToast(errMessage(e, '开班失败'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCloseShift(shiftId: string) {
+    const counted = yuanToCents(countedInput);
+    if (counted == null) {
+      showToast('实盘现金格式不对，请输入元（最多两位小数）', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.counterCloseShift(shiftId, {
+        counted_cash_cents: counted,
+        handover_to: handoverInput || undefined,
+        note: shiftNote || undefined,
+      });
+      setCountedInput('');
+      setHandoverInput('');
+      setShiftNote('');
+      showToast('已交班，差异已如实记录');
+      await loadShifts();
+    } catch (e) {
+      showToast(errMessage(e, '交班失败'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleLoadReport() {
+    setBusy(true);
+    try {
+      setReport(await api.counterDailyReport(reportDate));
+    } catch (e) {
+      showToast(errMessage(e, '报表加载失败'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleVoid() {
     if (!ticket) return;
     setBusy(true);
@@ -237,6 +360,9 @@ export default function CounterPage() {
   }
 
   const ticketOpen = ticket?.status === 'open';
+  const settleReceivedCents = yuanToCents(settleReceived);
+  const settleChangePreview =
+    settleReceivedCents == null ? '—' : fmt(settleReceivedCents - (ticket?.total_cents ?? 0));
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -254,7 +380,7 @@ export default function CounterPage() {
             单据 {ticket ? `#${ticket.ticket_id.slice(0, 8)}` : '—'}
           </span>
           <span className="text-sm text-gray-500">
-            状态：{ticket?.status === 'open' ? '进行中' : ticket?.status === 'pending_settlement' ? '待结算' : ticket?.status ?? '—'}
+            状态：{ticket?.status === 'open' ? '进行中' : ticket?.status === 'pending_settlement' ? '待结算' : ticket?.status === 'settled' ? '已结算' : ticket?.status ?? '—'}
           </span>
           <span className="ml-auto text-lg font-bold">合计 {fmt(ticket?.total_cents)}</span>
           <button
@@ -314,6 +440,33 @@ export default function CounterPage() {
           ))}
         </div>
       </div>
+
+      {/* 现金结算（只收现金） */}
+      {(ticket?.status === 'open' || ticket?.status === 'pending_settlement') && (
+        <div className="rounded-2xl border bg-white p-4 shadow-sm">
+          <p className="text-sm font-semibold">现金结算（只收现金）</p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <span className="text-sm text-gray-600">应收 {fmt(ticket?.total_cents)}</span>
+            <input
+              value={settleReceived}
+              onChange={(e) => setSettleReceived(e.target.value)}
+              inputMode="decimal"
+              placeholder="实收（元）"
+              className="w-36 rounded-lg border px-3 py-1.5 text-sm"
+            />
+            <span className="text-sm text-gray-600">找零 {settleChangePreview}</span>
+            <button
+              type="button"
+              onClick={handleCashSettle}
+              disabled={busy}
+              className="rounded-full bg-emerald-600 px-5 py-1.5 text-sm text-white disabled:opacity-50"
+            >
+              现金结算
+            </button>
+            <span className="text-xs text-gray-400">结算只记结算事实，不建订单、不扣库存。</span>
+          </div>
+        </div>
+      )}
 
       {/* 选中商品 + 重量确认 */}
       {selected && (
@@ -380,6 +533,120 @@ export default function CounterPage() {
           </button>
           <span className="text-xs text-gray-400">真实秤接入后停用本区；接入契约见 docs/weigh-scale-contract.md</span>
         </div>
+      </div>
+
+      {/* 交接班 */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm">
+        <p className="text-sm font-semibold">交接班</p>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <input
+            value={floatInput}
+            onChange={(e) => setFloatInput(e.target.value)}
+            inputMode="decimal"
+            placeholder="备用金（元）"
+            className="w-36 rounded-lg border px-3 py-1.5 text-sm"
+          />
+          <input
+            value={shiftNote}
+            onChange={(e) => setShiftNote(e.target.value)}
+            placeholder="备注"
+            className="w-48 rounded-lg border px-3 py-1.5 text-sm"
+          />
+          <button
+            type="button"
+            onClick={handleOpenShift}
+            disabled={busy || shifts.some((s) => s.status === 'open')}
+            className="rounded-full bg-emerald-600 px-4 py-1.5 text-sm text-white disabled:opacity-50"
+          >
+            开班
+          </button>
+        </div>
+        <div className="mt-3 divide-y">
+          {shifts.length === 0 && <p className="py-2 text-sm text-gray-400">暂无班次记录。</p>}
+          {shifts.map((s) => (
+            <div key={s.shift_id} className="py-2 text-sm">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="font-medium">{s.status === 'open' ? '进行中' : '已交班'}</span>
+                <span className="text-gray-500">备用金 {fmt(s.opening_float_cents)}</span>
+                {s.status === 'closed' && (
+                  <>
+                    <span className="text-gray-500">实盘 {fmt(s.counted_cash_cents)}</span>
+                    <span className="text-gray-500">应有 {fmt(s.expected_cash_cents)}</span>
+                    <span>差异 {fmt(s.variance_cents)}</span>
+                    {s.handover_to && <span className="text-gray-500">交接给 {s.handover_to}</span>}
+                  </>
+                )}
+              </div>
+              {s.status === 'open' && (
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <input
+                    value={countedInput}
+                    onChange={(e) => setCountedInput(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="实盘现金（元）"
+                    className="w-36 rounded-lg border px-3 py-1.5 text-sm"
+                  />
+                  <input
+                    value={handoverInput}
+                    onChange={(e) => setHandoverInput(e.target.value)}
+                    placeholder="交接给（下一收银员）"
+                    className="w-48 rounded-lg border px-3 py-1.5 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleCloseShift(s.shift_id)}
+                    disabled={busy}
+                    className="rounded-full bg-amber-500 px-4 py-1.5 text-sm text-white disabled:opacity-50"
+                  >
+                    交班
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 日结报表 */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm">
+        <p className="text-sm font-semibold">日结报表</p>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <input
+            type="date"
+            value={reportDate}
+            onChange={(e) => setReportDate(e.target.value)}
+            className="rounded-lg border px-3 py-1.5 text-sm"
+          />
+          <button
+            type="button"
+            onClick={() => void handleLoadReport()}
+            disabled={busy}
+            className="rounded-full bg-gray-800 px-4 py-1.5 text-sm text-white disabled:opacity-50"
+          >
+            查询
+          </button>
+        </div>
+        {report && (
+          <div className="mt-3 space-y-1 text-sm">
+            <p>
+              日期 {report.date} · 已结算单据 {report.settled_tickets} · 销售总额{' '}
+              {fmt(report.total_sales_cents)}
+            </p>
+            {report.by_method.map((m) => (
+              <p key={m.method} className="text-gray-600">
+                {m.method}：{m.tickets} 单 · {fmt(m.total_cents)}
+              </p>
+            ))}
+            <p>
+              毛利 {fmt(report.margin_cents)}（收入 {fmt(report.margin_revenue_cents)} －
+              成本 {fmt(report.margin_cost_cents)}）
+            </p>
+            <p className="text-xs text-gray-400">{report.margin_basis}</p>
+            <p>
+              已交班 {report.shifts_closed} · 现金差异合计 {fmt(report.cash_variance_total_cents)}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* 照片格 */}
