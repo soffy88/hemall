@@ -6,8 +6,8 @@
   非现金 422、实收不足 422、非本人 403、结算行落账、行项 settlement_status）、
   交接班流（重复开班 409、差异正负如实记、只算本班本人结算、他人班次 403）、
   日结报表（合计/分列/毛利口径与排除计数/日期格式 400）。
-- 不建单：结算不创建 customer_order、不扣库存（建单链路缺口见
-  app/counter_closeout.py 模块注释）。
+- 建单：结算建 customer_order（渠道 counter）并直接扣库存
+  （缺口 3，见 app/counter_settlement_order.py）。
 """
 
 from __future__ import annotations
@@ -104,6 +104,28 @@ async def closeout_pool():
     state: dict = {"tickets": [], "batches": [], "variants": [], "products": [], "customers": []}
     yield pool, state
     async with pool.acquire() as conn:
+        await conn.execute(
+            'DELETE FROM "order_line_item" WHERE order_id IN '
+            '(SELECT id FROM "customer_order" '
+            "WHERE counter_ticket_id = ANY($1::uuid[]))",
+            state["tickets"],
+        )
+        await conn.execute(
+            'DELETE FROM "inventory_reservation" WHERE order_id IN '
+            '(SELECT id::text FROM "customer_order" '
+            "WHERE counter_ticket_id = ANY($1::uuid[]))",
+            state["tickets"],
+        )
+        await conn.execute(
+            "DELETE FROM \"stock_movement\" WHERE reference_type = 'order' "
+            'AND reference_id IN (SELECT id::text FROM "customer_order" '
+            "WHERE counter_ticket_id = ANY($1::uuid[]))",
+            state["tickets"],
+        )
+        await conn.execute(
+            'DELETE FROM "customer_order" WHERE counter_ticket_id = ANY($1::uuid[])',
+            state["tickets"],
+        )
         await conn.execute(
             'DELETE FROM "counter_settlement" WHERE ticket_id = ANY($1::uuid[])',
             state["tickets"],
@@ -234,8 +256,6 @@ class TestCashSettleDb:
         ticket_id, total = await _ticket_with_line(pool, state, merchant_id, batch_id)
         assert total == 293
 
-        async with pool.acquire() as conn:
-            orders_before = await conn.fetchval("SELECT COUNT(*) FROM customer_order")
         settled = await sf.counter_settle_ticket(
             req, ticket_id, {"method": "cash", "amount_received_cents": 300}, principal
         )
@@ -245,10 +265,23 @@ class TestCashSettleDb:
         assert settled["settlement"]["change_cents"] == 7
         assert settled["settlement"]["method"] == "cash"
 
+        assert settled["order"] is not None
+        assert settled["order"]["channel"] == "counter"
+        assert settled["order"]["grand_total_cents"] == 293
         async with pool.acquire() as conn:
-            assert (
-                await conn.fetchval("SELECT COUNT(*) FROM customer_order") == orders_before
-            )  # 结算不造单
+            order_row = await conn.fetchrow(
+                'SELECT channel, status, grand_total_cents FROM "customer_order" '
+                "WHERE counter_ticket_id = $1",
+                ticket_id,
+            )
+            assert order_row is not None
+            assert order_row["channel"] == "counter"
+            assert order_row["status"] == "completed"
+            assert int(order_row["grand_total_cents"]) == 293
+            batch_stock = await conn.fetchval(
+                "SELECT stock_qty FROM inventory_batch WHERE id = $1", batch_id
+            )
+            assert int(batch_stock) == 49
             line_status = await conn.fetchval(
                 "SELECT settlement_status FROM hardware_event WHERE ticket_id = $1",
                 ticket_id,
