@@ -363,6 +363,51 @@ export interface CounterTicket {
   updated_at: string | null;
 }
 
+/**
+ * 柜台收尾件：现金结算记录（一单一结算，金额单位分）
+ */
+export interface CounterSettlement {
+  settlement_id: string;
+  ticket_id: string;
+  cashier_id: string;
+  method: string;
+  amount_due_cents: number;
+  amount_received_cents: number;
+  change_cents: number;
+  settled_at: string | null;
+}
+
+/** 柜台收尾件：交接班（差异正负如实记，不抹平） */
+export interface CounterShift {
+  shift_id: string;
+  cashier_id: string;
+  status: string;
+  opening_float_cents: number;
+  opened_at: string | null;
+  closed_at: string | null;
+  counted_cash_cents: number | null;
+  expected_cash_cents: number | null;
+  variance_cents: number | null;
+  handover_to: string | null;
+  note: string;
+}
+
+/** 柜台收尾件：日结报表（毛利口径见 margin_basis） */
+export interface CounterDailyReport {
+  date: string;
+  settled_tickets: number;
+  total_sales_cents: number;
+  by_method: { method: string; tickets: number; total_cents: number }[];
+  margin_revenue_cents: number;
+  margin_cost_cents: number;
+  margin_cents: number;
+  margin_costed_lines: number;
+  margin_excluded_lines: number;
+  margin_basis: string;
+  shifts_closed: number;
+  cash_variance_total_cents: number;
+}
+
 /** 库存批次（后台质检列表一行） */
 export interface InventoryBatch {
   id: string;
