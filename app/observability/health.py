@@ -84,6 +84,26 @@ async def health_ready(
     if redis_result["status"] == "down":
         overall_status = "degraded"
 
+    # 微信小程序登录配置提示（信息性检查，不影响 overall_status）：
+    # AppID/Secret 未配齐时 /store/customers/wechat-login 与 wechat-bind
+    # 本就返回 503；这里只让运维在 /health/ready 一眼看到配置状态，无需
+    # 拿真实小程序 code 去探。只回“配齐与否”，不回 AppID/Secret 的值。
+    mp_configured = bool(
+        str(getattr(settings, "wechat_mp_app_id", "") or "").strip()
+        and str(getattr(settings, "wechat_mp_app_secret", "") or "").strip()
+    )
+    checks["wechat_mp_login"] = (
+        {"status": "configured"}
+        if mp_configured
+        else {
+            "status": "unconfigured",
+            "message": (
+                "wechat mp login not configured "
+                "(HEMALL_WECHAT_MP_APP_ID / HEMALL_WECHAT_MP_APP_SECRET_FILE)"
+            ),
+        }
+    )
+
     if overall_status != "healthy":
         response.status_code = 503
     return {
