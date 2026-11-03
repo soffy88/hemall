@@ -9,6 +9,7 @@ from __future__ import annotations
 from obase.persistence.pool import PgPool
 
 from .cangzhu import CANGZHU_DDL
+from .counter_vision import COUNTER_VISION_DDL
 from .ext.spider_hygiene import OCR_GATE_DDL
 from .weigh import WEIGH_DDL
 
@@ -232,3 +233,5 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(OCR_GATE_DDL)
         # 柜台称重试点：hardware_event 账本列 + counter_ticket 单据头。
         await conn.execute(WEIGH_DDL)
+        # 柜台视觉识别接线：帧存档 + 识别评估账本（幂等，见 app/counter_vision.py）。
+        await conn.execute(COUNTER_VISION_DDL)
