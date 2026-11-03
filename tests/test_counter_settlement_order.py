@@ -56,12 +56,15 @@ class TestWeighStockUnits:
 
 class TestRequireWeighLinePricing:
     def test_valid_passes(self):
-        require_weigh_line_pricing(
-            batch_id="b",
-            weight_grams=350,
-            unit_price_cents=419,
-            price_basis_grams=500,
-            amount_cents=293,
+        assert (
+            require_weigh_line_pricing(
+                batch_id="b",
+                weight_grams=350,
+                unit_price_cents=419,
+                price_basis_grams=500,
+                amount_cents=293,
+            )
+            is None
         )
 
     def test_missing_fields_raise(self):
