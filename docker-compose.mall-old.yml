@@ -8,7 +8,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
-    image: registry.sxueji.com/hemall/backend:0.3.0
+    # 线上实际运行基线（回滚目标）。新版本由 build-release.sh 生成的
+    # docker-compose.release.yml 覆盖，不在这里手改。
+    image: registry.sxueji.com/hemall/backend:0.6.18-prod
     restart: unless-stopped
     environment:
       # Database (sslmode=disable: 容器内网连接无需 TLS，避免 asyncpg 读取 root 客户端证书失败)
@@ -129,7 +131,7 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: https://mall.sxueji.com
-    image: registry.sxueji.com/hemall/frontend:0.3.0
+    image: registry.sxueji.com/hemall/frontend:0.5.10-prod
     restart: unless-stopped
     networks:
       - hemall-backend

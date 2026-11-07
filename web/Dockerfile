@@ -24,6 +24,12 @@ FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18
 WORKDIR /app
 ENV NODE_ENV=production
 
+ARG GIT_SHA=unknown
+ARG BUILD_CREATED=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_CREATED}" \
+      org.opencontainers.image.title="hemall-frontend"
+
 RUN addgroup -g 1001 -S hemall && adduser -u 1001 -S hemall -G hemall
 
 COPY --from=builder /app/public ./public

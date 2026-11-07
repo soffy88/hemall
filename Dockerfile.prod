@@ -45,6 +45,12 @@ RUN uv sync --frozen --no-dev --extra observability --extra phase2
 # ── 生产阶段 ────────────────────────────────────────────────────────────
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
+ARG GIT_SHA=unknown
+ARG BUILD_CREATED=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_CREATED}" \
+      org.opencontainers.image.title="hemall-backend"
+
 # 创建非 root 用户
 #
 # uid/gid 必须**写死**。`useradd -r` 不带 -u 时会挑一个空闲的系统号

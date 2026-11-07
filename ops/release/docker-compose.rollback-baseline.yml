@@ -1,0 +1,7 @@
+# Last known production images (2026-11-08). Use only to roll back a failed
+# fix/launch-p0 release; this file deliberately does not build from source.
+services:
+  api:
+    image: registry.sxueji.com/hemall/backend:0.6.18-prod
+  web:
+    image: registry.sxueji.com/hemall/frontend:0.5.10-prod
