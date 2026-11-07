@@ -275,9 +275,9 @@ describe('退款状态机端点（/aftersales/refunds*）', () => {
     await api.adminRetryRefund('rf1');
     expect(calls[2].url).toBe('/api/aftersales/refunds/rf1/retry');
 
-    await api.adminReturnReceivedRefund('rf1', { tracking_no: 'SF1', batch_id: 'b1' });
+    await api.adminReturnReceivedRefund('rf1', { tracking_no: 'SF1', quantity: 1 });
     expect(calls[3].url).toBe('/api/aftersales/refunds/rf1/return-received');
-    expect(JSON.parse(String(calls[3].init.body))).toEqual({ tracking_no: 'SF1', batch_id: 'b1' });
+    expect(JSON.parse(String(calls[3].init.body))).toEqual({ tracking_no: 'SF1', quantity: 1 });
   });
 
   it('审计日志：GET audit，403 detail 透出（support 可看 / approve 需 admin）', async () => {

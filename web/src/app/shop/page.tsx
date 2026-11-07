@@ -19,6 +19,8 @@ import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
 import type { GroceryCategory, StorefrontProduct } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import { getSelectedRegion } from '@/lib/region-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 
 // 分类图标映射 (后端只存 name/slug，图标前端映射)
 const CATEGORY_ICONS: Record<string, string> = {
@@ -35,6 +37,7 @@ export default function ShopPage() {
   const [search, setSearch] = useState('');
   // 图片加载失败的 product id — 回落占位图而不是隐藏 (缺图不再留白块)
   const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
+  const [addingId, setAddingId] = useState<string | null>(null);
 
   // 社区小超市模型: 只显示模型内品类的商品, 其余仅前台隐藏 (数据保留)。
   const visibleProducts = useMemo(
@@ -123,12 +126,47 @@ export default function ShopPage() {
     return '';
   }
 
-  function addToCart(p: StorefrontProduct) {
-    if ((p.total_stock ?? 0) === 0) {
-      showToast(`可预订（缺货）: ${p.title}，点开详情即可预订`);
+  async function addToCart(p: StorefrontProduct) {
+    if (addingId) return;
+    const variant =
+      p.variants.find((v) => (v.total_stock ?? 0) > 0) || p.variants[0];
+    if (!variant) {
+      showToast('该商品暂无可选规格', 'error');
       return;
     }
-    showToast(`已加入购物车: ${p.title}`);
+    const batch =
+      variant.batches.find((b) => b.available_qty > 0) || variant.batches[0] || null;
+
+    setAddingId(p.id);
+    try {
+      let cartId = sessionStorage.getItem('hemall_cart_id');
+      if (!cartId) {
+        const region = getSelectedRegion();
+        const cart = region
+          ? await api.createCart(region.code, region.currency)
+          : await api.createCart();
+        cartId = cart.cart_id;
+        sessionStorage.setItem('hemall_cart_id', cartId);
+
+        await initCustomerAuth();
+        const customerAuth = getCustomerAuth();
+        if (customerAuth) {
+          await api.setCartCustomer(cartId, customerAuth.customerId).catch(() => {});
+        }
+      }
+
+      if (batch) {
+        await api.addLineItem(cartId, batch.id, 1);
+        showToast(`已加入购物车: ${p.title}`);
+      } else {
+        await api.addVariantLineItem(cartId, variant.id, 1);
+        showToast(`已按预订加入购物车: ${p.title}`);
+      }
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    } finally {
+      setAddingId(null);
+    }
   }
 
   return (
@@ -261,11 +299,12 @@ export default function ShopPage() {
                     <button
                       type="button"
                       onClick={() => addToCart(p)}
+                      disabled={addingId === p.id}
                       className={`mt-1.5 w-full rounded-lg py-1.5 text-[13px] font-bold text-white transition active:scale-95 ${
                         stock === 0 ? 'bg-amber-500' : 'bg-emerald-600'
-                      }`}
+                      } disabled:cursor-wait disabled:opacity-60`}
                     >
-                      {stock === 0 ? '预订' : '+ 加购'}
+                      {addingId === p.id ? '加入中...' : stock === 0 ? '预订' : '+ 加购'}
                     </button>
                   </div>
                 </div>
