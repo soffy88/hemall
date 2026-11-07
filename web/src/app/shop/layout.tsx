@@ -225,6 +225,11 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
 
       {/* Footer */}
       <footer className="border-t border-gray-200 mt-16 py-8 text-center text-xs text-gray-400">
+        <div className="mb-2">
+          <Link href="/shop/alcohol" className="text-gray-500 hover:text-emerald-700">
+            酒类专区（年龄确认）
+          </Link>
+        </div>
         Hemall Commerce · Powered by 3O
       </footer>
     </div>

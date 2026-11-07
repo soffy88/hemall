@@ -205,6 +205,7 @@ async def list_storefront_products(
     search: str | None = None,
     min_price: int | None = None,
     max_price: int | None = None,
+    include_alcohol: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
@@ -246,6 +247,8 @@ async def list_storefront_products(
             )
             """,
         ]
+        if not include_alcohol:
+            where_clauses.append("COALESCE(pc.slug, '') <> 'drinks'")
         params: list[Any] = []
 
         if search:
@@ -340,7 +343,9 @@ async def list_storefront_products(
         return results
 
 
-async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
+async def get_storefront_product(
+    pool: Any, product_id: str, *, include_alcohol: bool = False
+) -> dict | None:
     """商城商品详情：返回在售商品（含 0 库存——无货也可预订）。
 
     公开详情与列表使用同一套门禁：测试/演示商品、未过质检、已过期、
@@ -434,10 +439,12 @@ async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
                             AND ib_ok.shelf_life_days IS NOT NULL
                             AND ib_ok.shelf_life_days > 0
                         )
-                    )
+                  )
               )
+              AND ($2 OR COALESCE(pc.slug, '') <> 'drinks')
             """,
             product_id,
+            include_alcohol,
         )
         if row is None:
             return None

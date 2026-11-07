@@ -157,6 +157,11 @@ class Settings(BaseSettings):
     # provider: manual | wechat | stripe。沙盒/生产无缝切换 = 改这一个变量 +
     # 对应密钥，bootstrap 按此注册；真实密钥缺失时诚实回退 manual。
     payment_gateway_provider: str = "manual"
+    # P0-09: 酒类默认下架，直到用户明确确认并完成年龄校验。打开销售后，
+    # 前台仍需通过 /store/alcohol/verify-age 取得签名年龄凭证。
+    alcohol_sales_enabled: bool = False
+    alcohol_min_age: int = 18
+    alcohol_age_cookie_days: int = 30
     # 微信支付 v3 (值可为文件路径或内联 PEM 内容；用 str 而非 Path——
     # pathlib 会把 base64 里的 // 折叠成 / 破坏密钥)
     wechat_pay_appid: str = ""

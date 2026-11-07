@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,15 @@ from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
+from app.alcohol import (
+    ALCOHOL_AGE_COOKIE,
+    ALCOHOL_NOTICE,
+    age_verified,
+    alcohol_access_allowed,
+    calculate_age,
+    issue_age_token,
+    require_alcohol_access,
+)
 from app.cangzhu import (
     choose_discount,
     get_voucher_balance,
@@ -217,6 +228,58 @@ async def _authorize_cart(
             if current_owner is None or str(current_owner) != customer_id:
                 raise HTTPException(404, "cart not found")
         return customer_id
+
+
+async def _require_alcohol_line_access(
+    request: Request,
+    pool: Any,
+    *,
+    batch_id: str | None = None,
+    variant_id: str | None = None,
+) -> None:
+    """酒类行在加购前即校验开关与年龄凭证，避免绕过商品列表直调 API。"""
+    async with pool.acquire() as conn:
+        category_slug = await conn.fetchval(
+            """
+            SELECT pc.slug
+            FROM product_variant pv
+            JOIN product p ON p.id = pv.product_id
+            LEFT JOIN product_category pc
+              ON pc.id = p.category_id AND pc.deleted_at IS NULL
+            WHERE pv.id = COALESCE(
+                $2::uuid,
+                (SELECT ib.variant_id FROM inventory_batch ib WHERE ib.id = $1::uuid)
+            )
+            """,
+            batch_id,
+            variant_id,
+        )
+    if str(category_slug or "").lower() == "drinks":
+        require_alcohol_access(request)
+
+
+async def _require_cart_alcohol_access(request: Request, pool: Any, cart_id: str) -> None:
+    async with pool.acquire() as conn:
+        has_alcohol = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM cart_line_item cli
+                LEFT JOIN inventory_batch ib ON ib.id = cli.batch_id
+                JOIN product_variant pv
+                  ON pv.id = COALESCE(cli.variant_id, ib.variant_id)
+                JOIN product p ON p.id = pv.product_id
+                LEFT JOIN product_category pc
+                  ON pc.id = p.category_id AND pc.deleted_at IS NULL
+                WHERE cli.cart_id = $1
+                  AND cli.deleted_at IS NULL
+                  AND pc.slug = 'drinks'
+            )
+            """,
+            cart_id,
+        )
+    if has_alcohol:
+        require_alcohol_access(request)
 
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -701,6 +764,9 @@ async def add_line_item(
     if body.batch_id is None and body.variant_id is None:
         raise HTTPException(400, "batch_id or variant_id is required")
     pool = _pool(request)
+    await _require_alcohol_line_access(
+        request, pool, batch_id=body.batch_id, variant_id=body.variant_id
+    )
 
     batch_id = body.batch_id
     variant_row = None
@@ -862,6 +928,7 @@ async def update_line_item(
     )
 
     pool = _pool(request)
+    await _require_cart_alcohol_access(request, pool, body.cart_id)
     # 改量前先读本行数量与已记占位：omodul 按 (cart_id, batch_id) 定位行，
     # 并按 delta 同步调整批次 reserved_qty；成功后把行上记录的占位量按
     # 同一 delta 同步，结算转正才准确。
@@ -1597,6 +1664,7 @@ async def checkout(
     cfg_store = request.app.state.config
     out_root = _output_dir(request, "checkout")
     await _authorize_cart(request, body.cart_id, principal)
+    await _require_cart_alcohol_access(request, pool, body.cart_id)
 
     # 1. 设置地址
     if body.billing_address:
@@ -2195,6 +2263,54 @@ async def set_cart_region_route(
 # ── 公开商品浏览 ──────────────────────────────────────────────────────────
 
 
+class AgeVerificationRequest(BaseModel):
+    birth_date: date
+
+
+@router.get("/alcohol/status")
+async def alcohol_status(request: Request):
+    settings = request.app.state.config
+    return {
+        "enabled": bool(settings.alcohol_sales_enabled),
+        "min_age": int(settings.alcohol_min_age),
+        "verified": age_verified(request),
+        "notice": ALCOHOL_NOTICE,
+    }
+
+
+@router.post("/alcohol/verify-age")
+async def verify_alcohol_age(
+    body: AgeVerificationRequest,
+    request: Request,
+    response: Response,
+):
+    settings = request.app.state.config
+    if not settings.alcohol_sales_enabled:
+        raise HTTPException(403, "酒类商品当前已按合规要求下架")
+    age = calculate_age(body.birth_date)
+    if age < 0 or age > 120:
+        raise HTTPException(400, "出生日期不合法")
+    if age < int(settings.alcohol_min_age):
+        raise HTTPException(403, f"未满 {settings.alcohol_min_age} 周岁，禁止购买酒类")
+
+    expires_at = int(time.time()) + int(settings.alcohol_age_cookie_days) * 86400
+    response.set_cookie(
+        ALCOHOL_AGE_COOKIE,
+        issue_age_token(settings, expires_at=expires_at),
+        max_age=int(settings.alcohol_age_cookie_days) * 86400,
+        httponly=True,
+        secure=settings.environment.lower() == "production",
+        samesite="lax",
+        path="/store",
+    )
+    return {
+        "verified": True,
+        "min_age": int(settings.alcohol_min_age),
+        "expires_at": expires_at,
+        "notice": ALCOHOL_NOTICE,
+    }
+
+
 @router.get("/products")
 async def storefront_products(
     request: Request,
@@ -2204,11 +2320,13 @@ async def storefront_products(
     limit: int = 50,
     offset: int = 0,
 ):
+    include_alcohol = alcohol_access_allowed(request)
     return await queries.list_storefront_products(
         _pool(request),
         search=search,
         min_price=min_price,
         max_price=max_price,
+        include_alcohol=include_alcohol,
         limit=limit,
         offset=offset,
     )
@@ -2217,6 +2335,7 @@ async def storefront_products(
 @router.get("/categories")
 async def storefront_categories(request: Request):
     """商城公开分类列表 (菜单栏分类下拉用): 含各分类在售商品数。"""
+    include_alcohol = alcohol_access_allowed(request)
     async with _pool(request).acquire() as conn:
         rows = await conn.fetch(
             """
@@ -2225,9 +2344,11 @@ async def storefront_categories(request: Request):
             LEFT JOIN product p
               ON p.category_id = pc.id AND p.deleted_at IS NULL AND p.status = 'published'
             WHERE pc.deleted_at IS NULL
+              AND ($1 OR COALESCE(pc.slug, '') <> 'drinks')
             GROUP BY pc.id, pc.name, pc.slug, pc.created_at
             ORDER BY pc.created_at
-            """
+            """,
+            include_alcohol,
         )
     return [
         {"id": str(row["id"]), "name": row["name"], "slug": row["slug"], "count": int(row["count"])}
@@ -2238,7 +2359,11 @@ async def storefront_categories(request: Request):
 @router.get("/products/{product_id}")
 async def storefront_product(product_id: str, request: Request):
     _require_uuid(product_id, "product_id")
-    product = await queries.get_storefront_product(_pool(request), product_id)
+    product = await queries.get_storefront_product(
+        _pool(request),
+        product_id,
+        include_alcohol=alcohol_access_allowed(request),
+    )
     if product is None:
         raise HTTPException(404, "product not found")
     # 推荐行为旁路: 已登录顾客记 view, 喂协同过滤训练; 匿名跳过

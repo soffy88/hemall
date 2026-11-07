@@ -34,7 +34,7 @@ async def catalog_pool():
                     f"p0gate-loc-{token}",
                 )
             )
-            for slug in ("fresh", "daily"):
+            for slug in ("fresh", "daily", "drinks"):
                 ids[slug] = str(
                     await conn.fetchval(
                         """
@@ -70,7 +70,7 @@ async def catalog_pool():
             await conn.execute("DELETE FROM product WHERE slug LIKE $1", f"p0gate-%{token}%")
             await conn.execute(
                 "DELETE FROM product_category WHERE id = ANY($1::uuid[])",
-                [ids["fresh"], ids["daily"]],
+                [ids["fresh"], ids["daily"], ids["drinks"]],
             )
             await conn.execute("DELETE FROM stock_location WHERE name = $1", f"p0gate-loc-{token}")
         await pool.close()
@@ -155,6 +155,7 @@ async def test_storefront_catalog_gate(catalog_pool):
     test_product = await _make_product(pool, ids, tag="test", is_test=True, batch={})
     cmd_product = await _make_product(pool, ids, tag="cmd", title_prefix="CMD-081550", batch={})
     daily = await _make_product(pool, ids, tag="daily", category_slug="daily", batch={"origin": None})
+    alcohol = await _make_product(pool, ids, tag="alcohol", category_slug="drinks", batch={})
     zero_stock = await _make_product(pool, ids, tag="preorder", batch={"stock": 0})
 
     listed = await queries.list_storefront_products(pool, search=token, limit=100)
@@ -168,6 +169,7 @@ async def test_storefront_catalog_gate(catalog_pool):
     assert expired not in listed_ids
     assert test_product not in listed_ids
     assert cmd_product not in listed_ids
+    assert alcohol not in listed_ids
 
     assert await queries.get_storefront_product(pool, valid) is not None
     assert await queries.get_storefront_product(pool, daily) is not None
@@ -176,3 +178,10 @@ async def test_storefront_catalog_gate(catalog_pool):
     assert await queries.get_storefront_product(pool, expired) is None
     assert await queries.get_storefront_product(pool, test_product) is None
     assert await queries.get_storefront_product(pool, cmd_product) is None
+    assert await queries.get_storefront_product(pool, alcohol) is None
+
+    alcohol_listed = await queries.list_storefront_products(
+        pool, search=token, include_alcohol=True, limit=100
+    )
+    assert alcohol in {row["id"] for row in alcohol_listed}
+    assert await queries.get_storefront_product(pool, alcohol, include_alcohol=True) is not None

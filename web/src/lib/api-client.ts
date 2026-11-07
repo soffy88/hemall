@@ -394,6 +394,17 @@ export const api = {
   storeCategories: () =>
     request<Array<{ id: string; name: string; slug: string; count: number }>>('/store/categories'),
 
+  alcoholStatus: () =>
+    request<{ enabled: boolean; min_age: number; verified: boolean; notice: string }>(
+      '/store/alcohol/status',
+    ),
+
+  verifyAlcoholAge: (birth_date: string) =>
+    request<{ verified: boolean; min_age: number; expires_at: number; notice: string }>(
+      '/store/alcohol/verify-age',
+      { method: 'POST', body: JSON.stringify({ birth_date }) },
+    ),
+
   storeRegions: () =>
     request<Region[]>('/store/regions'),
 
