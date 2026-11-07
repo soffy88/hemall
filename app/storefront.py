@@ -1803,7 +1803,59 @@ def _resolve_store_payment_provider(settings: Any, requested_provider: str | Non
     provider = requested or configured or str(settings.default_payment_provider).lower()
     if provider not in {"manual", "wechat", "stripe"}:
         raise HTTPException(400, "unsupported payment provider")
+    if provider == "manual" and not bool(getattr(settings, "manual_payment_enabled", True)):
+        raise HTTPException(503, "manual payment is disabled")
+    if provider in {"wechat", "stripe"} and configured != provider:
+        raise HTTPException(503, f"{provider} payment gateway is not configured")
     return provider
+
+
+def _payment_options(settings: Any) -> dict[str, Any]:
+    """公开、无密钥的支付可用性；禁止把 manual 模拟单展示成在线支付。"""
+    configured = str(settings.payment_gateway_provider or "").strip().lower()
+    online_configured = False
+    if configured in {"wechat", "stripe", "alipay"}:
+        try:
+            from obase.provider_registry import ProviderRegistry
+
+            gateway = ProviderRegistry.get().generic("payment_gateway", configured)
+            online_configured = bool(getattr(gateway, "is_configured", False))
+        except Exception:  # noqa: BLE001 - no registry means no online payment
+            online_configured = False
+    manual_enabled = bool(getattr(settings, "manual_payment_enabled", True))
+    return {
+        "online_payment_available": online_configured,
+        "online_provider": configured if online_configured else None,
+        "manual_payment_enabled": manual_enabled,
+        "methods": [
+            *(
+                [
+                    {
+                        "code": configured,
+                        "name": {
+                            "wechat": "微信支付",
+                            "stripe": "银行卡支付",
+                            "alipay": "支付宝",
+                        }[configured],
+                        "mode": "online",
+                    }
+                ]
+                if online_configured
+                else []
+            ),
+            *(
+                [{"code": "manual", "name": "人工确认收款", "mode": "offline"}]
+                if manual_enabled
+                else []
+            ),
+        ],
+    }
+
+
+@router.get("/payment-options")
+async def payment_options(request: Request) -> dict[str, Any]:
+    """顾客结账前读取支付可用性，未配置真实网关时不展示“在线支付可用”。"""
+    return _payment_options(request.app.state.config)
 
 
 async def _assert_customer_order(pool: Any, customer_id: str, order_id: str) -> None:

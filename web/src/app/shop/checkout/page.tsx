@@ -28,6 +28,11 @@ export default function CheckoutPage() {
   const [shipping, setShipping] = useState<Address>({ ...emptyAddress });
   const [billing, setBilling] = useState<Address>({ ...emptyAddress });
   const [sameAddress, setSameAddress] = useState(true);
+  const [paymentOptions, setPaymentOptions] = useState<{
+    online_payment_available: boolean;
+    manual_payment_enabled: boolean;
+    methods: { code: string; name: string; mode: 'online' | 'offline' }[];
+  } | null>(null);
 
   useEffect(() => {
     const cartId = sessionStorage.getItem('hemall_cart_id');
@@ -62,12 +67,16 @@ export default function CheckoutPage() {
       }
 
       try {
-        const data = await api.getCart(cartId!);
+        const [data, options] = await Promise.all([
+          api.getCart(cartId!),
+          api.storePaymentOptions().catch(() => null),
+        ]);
         if (!data.line_items || data.line_items.length === 0) {
           router.push('/shop/cart');
           return;
         }
         setCart(data);
+        setPaymentOptions(options);
       } catch (e) {
         setError(errMessage(e));
       } finally {
@@ -261,13 +270,23 @@ export default function CheckoutPage() {
         )}
 
         {/* Payment Info */}
-        <div className="bg-blue-50 rounded-xl border border-blue-200 p-4 text-sm text-blue-700">
-          💳 支付方式由服务端配置（微信 Native / Stripe）。订单金额只由服务端计算，支付成功也必须经过 provider 回调验证。
+        <div className={`rounded-xl border p-4 text-sm ${
+          paymentOptions?.online_payment_available
+            ? 'bg-blue-50 border-blue-200 text-blue-700'
+            : 'bg-amber-50 border-amber-200 text-amber-800'
+        }`}>
+          {paymentOptions?.online_payment_available ? (
+            <>💳 在线支付已配置：{paymentOptions.methods.find((m) => m.mode === 'online')?.name}。订单金额只由服务端计算，支付成功也必须经过 provider 回调验证。</>
+          ) : paymentOptions?.manual_payment_enabled ? (
+            <>当前未配置真实在线支付，只支持“人工确认收款”。下单后不会显示支付成功，需工作人员线下确认。</>
+          ) : (
+            <>当前未配置可用的支付通道，暂不能在线下单支付。</>
+          )}
         </div>
 
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || (paymentOptions != null && paymentOptions.methods.length === 0)}
           className="w-full py-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 transition font-medium text-lg"
         >
           {submitting ? '处理中...' : '确认下单'}

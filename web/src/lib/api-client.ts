@@ -484,6 +484,14 @@ export const api = {
       body: JSON.stringify({ cart_id: cartId, method_name: methodName }),
     }),
 
+  storePaymentOptions: () =>
+    request<{
+      online_payment_available: boolean;
+      online_provider: string | null;
+      manual_payment_enabled: boolean;
+      methods: { code: string; name: string; mode: 'online' | 'offline' }[];
+    }>('/store/payment-options'),
+
   storeSetCartRegion: (cartId: string, regionCode: string, currency: string) =>
     request<{ ok: boolean }>('/store/carts/region', {
       method: 'PUT',
