@@ -18,6 +18,46 @@ umask 077
 mkdir -p "$BACKUP_ROOT/daily" "$BACKUP_ROOT/weekly"
 chmod 700 "$BACKUP_ROOT" "$BACKUP_ROOT/daily" "$BACKUP_ROOT/weekly"
 
+write_backup_metrics() {
+  local status="$1"
+  local timestamp
+  timestamp="$(date +%s)"
+  {
+    printf '# HELP hemal_backup_last_run_failed 1 when the latest backup failed.\n'
+    printf '# TYPE hemal_backup_last_run_failed gauge\n'
+    printf 'hemal_backup_last_run_failed %s\n' "$([[ "$status" == "ok" ]] && echo 0 || echo 1)"
+    printf '# HELP hemal_backup_last_success_timestamp_seconds Unix time of latest successful backup.\n'
+    printf '# TYPE hemal_backup_last_success_timestamp_seconds gauge\n'
+    if [[ "$status" == "ok" ]]; then
+      printf 'hemal_backup_last_success_timestamp_seconds %s\n' "$timestamp"
+    else
+      local previous="0"
+      [[ -f "$BACKUP_ROOT/last_success_timestamp" ]] \
+        && previous="$(cat "$BACKUP_ROOT/last_success_timestamp")"
+      printf 'hemal_backup_last_success_timestamp_seconds %s\n' "${previous:-0}"
+    fi
+  } > "$BACKUP_ROOT/hemall_backup.prom.tmp"
+  chmod 644 "$BACKUP_ROOT/hemall_backup.prom.tmp"
+  mv -- "$BACKUP_ROOT/hemall_backup.prom.tmp" "$BACKUP_ROOT/hemall_backup.prom"
+  if [[ "$status" == "ok" ]]; then
+    printf '%s\n' "$timestamp" > "$BACKUP_ROOT/last_success_timestamp"
+    chmod 600 "$BACKUP_ROOT/last_success_timestamp"
+  fi
+}
+
+tmp=""
+cleanup_backup() {
+  local rc=$?
+  if [[ -n "$tmp" && -d "$tmp" ]]; then
+    rm -rf -- "$tmp"
+  fi
+  if (( rc != 0 )); then
+    write_backup_metrics "failed" || true
+  fi
+  exit "$rc"
+}
+trap cleanup_backup EXIT
+
 exec 9>"$BACKUP_ROOT/backup.lock"
 if ! flock -n 9; then
   echo "[$(date -Is)] backup already running; exit" >&2
@@ -55,7 +95,6 @@ week="$(date '+%G-W%V')"
 dest="$BACKUP_ROOT/daily/$stamp"
 tmp="$dest.partial"
 mkdir -p "$tmp"
-trap 'rm -rf -- "$tmp"' EXIT
 
 log "backup start db=$DB_CONTAINER redis=$REDIS_CONTAINER dest=$dest"
 
@@ -82,7 +121,7 @@ sha256sum "$tmp/hemall_prod.dump" "$tmp/redis-dump.rdb" > "$tmp/SHA256SUMS"
 docker exec -i "$DB_CONTAINER" pg_restore -l < "$tmp/hemall_prod.dump" >/dev/null
 chmod 600 "$tmp/hemall_prod.dump" "$tmp/redis-dump.rdb" "$tmp/SHA256SUMS"
 mv -- "$tmp" "$dest"
-trap - EXIT
+tmp=""
 
 # Sunday backups are copied into a four-week set; hard links keep disk use low.
 if [[ "$(date '+%u')" == "7" ]]; then
@@ -96,4 +135,5 @@ fi
 prune_dirs "$BACKUP_ROOT/daily" "$DAILY_KEEP"
 prune_dirs "$BACKUP_ROOT/weekly" "$WEEKLY_KEEP"
 
+write_backup_metrics "ok"
 log "backup ok size=$(du -sh "$dest" | awk '{print $1}') sha256=$(cut -d' ' -f1 "$dest/SHA256SUMS" | paste -sd, -)"
