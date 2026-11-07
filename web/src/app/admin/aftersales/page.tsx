@@ -188,9 +188,18 @@ function RefundRow({ refund, onChanged }: { refund: RefundRequest; onChanged: ()
   function handleReturnReceived() {
     const tracking_no = prompt('退货物流单号');
     if (!tracking_no || !tracking_no.trim()) return;
-    const batch_id = prompt('回补库存的 batch_id');
-    if (!batch_id || !batch_id.trim()) return;
-    act(() => api.adminReturnReceivedRefund(refund.id, { tracking_no: tracking_no.trim(), batch_id: batch_id.trim() }));
+    const qtyText = prompt('退货数量（留空=原订单行数量）', '');
+    const quantity = qtyText?.trim() ? Number(qtyText.trim()) : undefined;
+    if (quantity !== undefined && (!Number.isInteger(quantity) || quantity <= 0)) {
+      alert('退货数量必须是正整数');
+      return;
+    }
+    act(() => api.adminReturnReceivedRefund(refund.id, { tracking_no: tracking_no.trim(), quantity }));
+  }
+
+  function handleConfirmManual() {
+    if (!confirm('确认已在线下实际完成退款/转账？此操作会把退款标记为成功。')) return;
+    act(() => api.adminConfirmManualRefund(refund.id));
   }
 
   function toggleAudit() {
@@ -212,6 +221,10 @@ function RefundRow({ refund, onChanged }: { refund: RefundRequest; onChanged: ()
   const canReceiveReturn =
     refund.type === 'return_refund' &&
     (refund.status === 'approved' || refund.status === 'refunding' || refund.status === 'succeeded');
+  const manualPending =
+    refund.provider === 'manual' &&
+    refund.status === 'refunding' &&
+    refund.metadata?.manual_confirmation_required === true;
 
   return (
     <>
@@ -224,6 +237,9 @@ function RefundRow({ refund, onChanged }: { refund: RefundRequest; onChanged: ()
         <td className="px-3 py-2">{refund.approved_amount == null ? '—' : formatMoney(refund.approved_amount)}</td>
         <td className="px-3 py-2">
           <span className={`px-1.5 py-0.5 rounded ${REFUND_STATUS_STYLE[refund.status]}`}>{refund.status}</span>
+          {manualPending && (
+            <div className="text-[10px] text-amber-600 mt-0.5">待人工确认线下退款</div>
+          )}
           {refund.reject_reason && <div className="text-[10px] text-red-500 mt-0.5">{refund.reject_reason}</div>}
         </td>
         <td className="px-3 py-2 text-gray-500">{new Date(refund.created_at).toLocaleString('zh-CN')}</td>
@@ -237,6 +253,11 @@ function RefundRow({ refund, onChanged }: { refund: RefundRequest; onChanged: ()
             )}
             {refund.status === 'failed' && (
               <button onClick={handleRetry} className="text-xs text-amber-600 hover:underline">重试退款</button>
+            )}
+            {manualPending && (
+              <button onClick={handleConfirmManual} className="text-xs text-emerald-600 hover:underline">
+                确认已线下退款
+              </button>
             )}
             {canReceiveReturn && (
               <button onClick={handleReturnReceived} className="text-xs text-blue-600 hover:underline">确认收货</button>

@@ -160,7 +160,13 @@ async def cn_pool():
     await pool.close()
 
 
-async def _seed_paid_order(pool, *, paid_cents: int = 10_000, grand_total_cents: int = 10_000):
+async def _seed_paid_order(
+    pool,
+    *,
+    paid_cents: int = 10_000,
+    grand_total_cents: int = 10_000,
+    provider: str = "manual",
+):
     """种一个已支付订单 (含顾客/商品/批次/订单行/payment_session), 返回 ids。"""
     from obase.uuid7 import uuid7
 
@@ -226,10 +232,11 @@ async def _seed_paid_order(pool, *, paid_cents: int = 10_000, grand_total_cents:
         await conn.execute(
             "INSERT INTO payment_intent (id, order_id, amount_cents, currency, "
             "provider, status, provider_trade_no, refund_amount_cents, metadata) "
-            "VALUES ($1,$2,$3,'cny','manual','paid',$4,0,'{}')",
+            "VALUES ($1,$2,$3,'cny',$4,'paid',$5,0,'{}')",
             uuid7(),
             str(order_id),
             paid_cents,
+            provider,
             f"trade-{uuid7()}",
         )
         return {
@@ -385,11 +392,12 @@ class TestRefundCreation:
 
 
 class TestRefundApprovalFlow:
-    async def test_approve_triggers_gateway_refund_to_succeeded(self, cn_pool):
-        """approve → 自动 execute_refund → manual 网关成功 → succeeded。"""
+    async def test_manual_refund_requires_explicit_admin_confirmation(self, cn_pool):
+        """manual 审核后只进入待确认，管理员确认线下转账后才 succeeded。"""
         from app.payments.refund_service import (
             _get_refund_request,
             approve_refund,
+            confirm_manual_refund,
             create_refund_request,
             get_refund_audit_logs,
         )
@@ -405,10 +413,15 @@ class TestRefundApprovalFlow:
             requested_amount=4_000,
         )
         approved = await approve_refund(cn_pool, refund.id, REVIEWER)
-        assert approved.status == RefundStatus.SUCCEEDED
+        assert approved.status == RefundStatus.REFUNDING
         assert approved.approved_amount == 4_000
-        assert approved.actual_refunded_amount == 4_000
+        assert approved.actual_refunded_amount == 0
+        assert approved.metadata["manual_confirmation_required"] is True
         assert approved.reviewer_id == REVIEWER
+
+        confirmed = await confirm_manual_refund(cn_pool, refund.id, REVIEWER)
+        assert confirmed.status == RefundStatus.SUCCEEDED
+        assert confirmed.actual_refunded_amount == 4_000
 
         final = await _get_refund_request(cn_pool, refund.id)
         assert final.status == RefundStatus.SUCCEEDED
@@ -421,7 +434,11 @@ class TestRefundApprovalFlow:
         assert (RefundStatus.REFUNDING, RefundStatus.SUCCEEDED) in transitions
 
     async def test_approve_with_partial_amount(self, cn_pool):
-        from app.payments.refund_service import approve_refund, create_refund_request
+        from app.payments.refund_service import (
+            approve_refund,
+            confirm_manual_refund,
+            create_refund_request,
+        )
 
         ids = await _seed_paid_order(cn_pool, paid_cents=10_000)
         refund = await create_refund_request(
@@ -434,9 +451,10 @@ class TestRefundApprovalFlow:
             requested_amount=8_000,
         )
         approved = await approve_refund(cn_pool, refund.id, REVIEWER, approved_amount=5_000)
-        assert approved.status == RefundStatus.SUCCEEDED
+        assert approved.status == RefundStatus.REFUNDING
         assert approved.approved_amount == 5_000
-        assert approved.actual_refunded_amount == 5_000
+        confirmed = await confirm_manual_refund(cn_pool, refund.id, REVIEWER)
+        assert confirmed.actual_refunded_amount == 5_000
 
     async def test_approve_rejects_amount_over_requested(self, cn_pool):
         from app.payments.refund_service import (
@@ -469,7 +487,7 @@ class TestRefundApprovalFlow:
             retry_refund,
         )
 
-        ids = await _seed_paid_order(cn_pool, paid_cents=10_000)
+        ids = await _seed_paid_order(cn_pool, paid_cents=10_000, provider="wechat")
         refund = await create_refund_request(
             cn_pool,
             order_id=ids["order_id"],
@@ -665,11 +683,10 @@ class TestReturnRestock:
             reason_detail=None,
             type=RefundType.RETURN_REFUND,
             requested_amount=3_000,
+            order_line_id=ids["line_id"],
         )
         await approve_refund(cn_pool, refund.id, REVIEWER)
-        marked = await mark_refund_returned(
-            cn_pool, refund.id, "SF123456", ids["batch_id"], REVIEWER
-        )
+        marked = await mark_refund_returned(cn_pool, refund.id, "SF123456", REVIEWER)
         assert marked.return_batch_id == ids["batch_id"]
         assert marked.metadata.get("restocked") is True
         async with cn_pool.acquire() as conn:
@@ -694,10 +711,11 @@ class TestReturnRestock:
             reason_detail=None,
             type=RefundType.RETURN_REFUND,
             requested_amount=3_000,
+            order_line_id=ids["line_id"],
         )
         await approve_refund(cn_pool, refund.id, REVIEWER)
-        await mark_refund_returned(cn_pool, refund.id, "SF123456", ids["batch_id"], REVIEWER)
-        await mark_refund_returned(cn_pool, refund.id, "SF123456", ids["batch_id"], REVIEWER)
+        await mark_refund_returned(cn_pool, refund.id, "SF123456", REVIEWER)
+        await mark_refund_returned(cn_pool, refund.id, "SF123456", REVIEWER)
         async with cn_pool.acquire() as conn:
             stock_after = await conn.fetchval(
                 "SELECT stock_qty FROM inventory_batch WHERE id = $1", ids["batch_id"]

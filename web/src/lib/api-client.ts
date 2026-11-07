@@ -1115,10 +1115,17 @@ export const api = {
     }, true),
 
   /** 后台确认收到退货 → 回补库存（幂等）。 */
-  adminReturnReceivedRefund: (refundId: string, data: { tracking_no: string; batch_id: string }) =>
+  adminReturnReceivedRefund: (refundId: string, data: { tracking_no: string; quantity?: number }) =>
     request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/return-received`, {
       method: 'POST',
       body: JSON.stringify(data),
+    }, true),
+
+  /** 后台确认线下人工退款已实际完成；manual 退款只有此操作会变成 succeeded。 */
+  adminConfirmManualRefund: (refundId: string) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/confirm-manual`, {
+      method: 'POST',
+      body: JSON.stringify({}),
     }, true),
 
   /** 后台查看售后审计日志（状态流转轨迹）。 */
