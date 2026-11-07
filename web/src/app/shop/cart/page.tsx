@@ -11,11 +11,7 @@ import type { Cart } from '@/types/api';
 import { errMessage } from '@/lib/errors';
 import { displayOptionLabel, isInternalSku } from '@/lib/option-label';
 
-const SHIPPING_METHODS = [
-  { name: '标准配送', price_cents: 0 },
-  { name: '快速配送', price_cents: 1500 },
-  { name: '次日达', price_cents: 3000 },
-];
+type ShippingMethod = { code: string; name: string; price_cents: number; free_threshold_cents: number };
 
 export default function CartPage() {
   const router = useRouter();
@@ -27,6 +23,8 @@ export default function CartPage() {
   const [discountCode, setDiscountCode] = useState('');
   const [giftCardCode, setGiftCardCode] = useState('');
   const [applying, setApplying] = useState(false);
+  const [shippingMethods, setShippingMethods] = useState<ShippingMethod[]>([]);
+  const [shippingWindows, setShippingWindows] = useState<string[]>([]);
 
   function loadCart() {
     const cartId = sessionStorage.getItem('hemall_cart_id');
@@ -44,7 +42,15 @@ export default function CartPage() {
       });
   }
 
-  useEffect(() => { loadCart(); }, []);
+  useEffect(() => {
+    loadCart();
+    api.storeShippingOptions()
+      .then((data) => {
+        setShippingMethods(data.methods);
+        setShippingWindows(data.delivery_windows);
+      })
+      .catch(() => {});
+  }, []);
 
   async function handleUpdateQty(lineItemId: string, newQty: number) {
     if (!cart) return;
@@ -120,10 +126,10 @@ export default function CartPage() {
     }
   }
 
-  async function handleSelectShipping(methodName: string, priceCents: number) {
+  async function handleSelectShipping(methodName: string) {
     if (!cart) return;
     try {
-      await api.storeAddShippingMethod(cart.id, methodName, priceCents);
+      await api.storeAddShippingMethod(cart.id, methodName);
       loadCart();
     } catch (e) {
       showToast(errMessage(e), 'error');
@@ -199,14 +205,14 @@ export default function CartPage() {
           <div className="bg-white rounded-xl p-4 border border-gray-200">
             <h3 className="font-medium text-gray-900 mb-3">配送方式</h3>
             <div className="space-y-2">
-              {SHIPPING_METHODS.map((m) => (
-                <label key={m.name} className="flex items-center justify-between text-sm cursor-pointer">
+              {shippingMethods.map((m) => (
+                <label key={m.code} className="flex items-center justify-between text-sm cursor-pointer">
                   <span className="flex items-center gap-2">
                     <input
                       type="radio"
                       name="shipping-method"
                       checked={cart.shipping_cents === m.price_cents}
-                      onChange={() => handleSelectShipping(m.name, m.price_cents)}
+                      onChange={() => handleSelectShipping(m.code)}
                     />
                     {m.name}
                   </span>
@@ -214,6 +220,10 @@ export default function CartPage() {
                 </label>
               ))}
             </div>
+            {shippingWindows.length > 0 && (
+              <p className="mt-2 text-xs text-gray-500">可预约时窗：{shippingWindows.join(' / ')}</p>
+            )}
+            <p className="mt-1 text-[11px] text-gray-400">运费与免运门槛由服务端按配置计算。</p>
           </div>
 
           {/* Discount Code */}

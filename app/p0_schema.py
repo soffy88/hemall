@@ -223,6 +223,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_wechat_openid
 CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_batch_spider_ext_variant
     ON inventory_batch (variant_id)
     WHERE batch_no LIKE 'EXT-%' AND status = 'active' AND deleted_at IS NULL;
+
+-- ── 后台可编辑的履约/通知配置 ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS runtime_setting (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_by TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 

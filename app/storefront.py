@@ -2030,7 +2030,31 @@ async def remove_gift_card(
 class AddShippingMethodRequest(BaseModel):
     cart_id: str
     method_name: str
-    price_cents: int
+    # 兼容旧客户端：字段仍接受但服务端永不采用。
+    price_cents: int | None = None
+
+
+@router.get("/shipping-options")
+async def shipping_options(request: Request):
+    """公开配送方式与时窗；价格由服务端规则计算。"""
+    from app.shipping import load_shipping_rules
+
+    settings = get_settings()
+    rules = await load_shipping_rules(_pool(request), settings)
+    return {
+        "service_area": rules["service_area"],
+        "delivery_windows": rules["delivery_windows"],
+        "methods": [
+            {
+                "code": code,
+                "name": method["name"],
+                "price_cents": method["price_cents"],
+                "free_threshold_cents": method["free_threshold_cents"],
+            }
+            for code, method in rules["methods"].items()
+        ],
+        "quoted_by_server": True,
+    }
 
 
 @router.post("/carts/shipping-method")
@@ -2045,22 +2069,43 @@ async def add_shipping_method(
         AddShippingMethodToCartInput,
         add_shipping_method_to_cart,
     )
+    from app.shipping import load_shipping_rules, quote_shipping
 
     cfg = _cfg(request, AddShippingMethodToCartConfig)
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        cart_row = await conn.fetchrow(
+            "SELECT subtotal_cents FROM cart WHERE id = $1 AND deleted_at IS NULL",
+            body.cart_id,
+        )
+    if cart_row is None:
+        raise HTTPException(404, "cart not found")
+    rules = await load_shipping_rules(pool, get_settings())
+    try:
+        quote = quote_shipping(
+            rules,
+            method_name=body.method_name,
+            subtotal_cents=int(cart_row["subtotal_cents"] or 0),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     inp = AddShippingMethodToCartInput(
-        cart_id=body.cart_id, method_name=body.method_name, price_cents=body.price_cents
+        cart_id=body.cart_id,
+        method_name=body.method_name,
+        price_cents=quote["price_cents"],
     )
     result = await add_shipping_method_to_cart(
         cfg,
         inp,
         _output_dir(request, "add_shipping_method_to_cart"),
-        pool=_pool(request),
+        pool=pool,
     )
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
     return {
         "shipping_cents": result["shipping_cents"],
         "grand_total_cents": result["grand_total_cents"],
+        "quote": quote,
     }
 
 

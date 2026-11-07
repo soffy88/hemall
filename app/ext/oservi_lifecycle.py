@@ -45,6 +45,7 @@ from .oservi import (
     build_market_maker_probe_engine,
     build_mercenary_routing_engine,
     build_node_host_settlement_engine,
+    build_order_timeout_engine,
     build_sla_compensation_engine,
     build_sla_promise_engine,
     build_social_broadcast_engine,
@@ -104,6 +105,7 @@ class ExtOservi:
     spider_listing: CronSchedulerEngine
     sla_promise: CronSchedulerEngine
     sla_compensation: CronSchedulerEngine
+    order_timeout: CronSchedulerEngine
     wechat_cert_rotation: CronSchedulerEngine
     ghost_ignition: CronSchedulerEngine  # Phase 8: Ghost node ignition engine
     _tasks: list[asyncio.Task] = field(default_factory=list)
@@ -125,6 +127,7 @@ class ExtOservi:
             self.spider_listing,
             self.sla_promise,
             self.sla_compensation,
+            self.order_timeout,
             self.wechat_cert_rotation,
             self.ghost_ignition,  # Phase 8
         )
@@ -205,6 +208,7 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         spider_listing = _disabled_engine("ext-spider-listing")
     sla_promise = build_sla_promise_engine(pool, settings=settings)
     sla_compensation = build_sla_compensation_engine(pool, settings=settings)
+    order_timeout = build_order_timeout_engine(pool, settings=settings)
     wechat_cert_rotation = build_wechat_cert_rotation_engine(pool, settings=settings)
     ghost_ignition = build_ghost_ignition_engine(
         pool, settings=settings, notification_provider=settings.default_notification_provider
@@ -230,6 +234,7 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         spider_listing=spider_listing,
         sla_promise=sla_promise,
         sla_compensation=sla_compensation,
+        order_timeout=order_timeout,
         wechat_cert_rotation=wechat_cert_rotation,
         ghost_ignition=ghost_ignition,  # Phase 8
     )

@@ -470,10 +470,18 @@ export const api = {
       body: JSON.stringify({ cart_id: cartId, gift_card_id: giftCardId }),
     }),
 
-  storeAddShippingMethod: (cartId: string, methodName: string, priceCents: number) =>
-    request<{ shipping_cents: number; grand_total_cents: number }>('/store/carts/shipping-method', {
+  storeShippingOptions: () =>
+    request<{
+      service_area: string;
+      delivery_windows: string[];
+      methods: { code: string; name: string; price_cents: number; free_threshold_cents: number }[];
+      quoted_by_server: true;
+    }>('/store/shipping-options'),
+
+  storeAddShippingMethod: (cartId: string, methodName: string) =>
+    request<{ shipping_cents: number; grand_total_cents: number; quote: Record<string, unknown> }>('/store/carts/shipping-method', {
       method: 'POST',
-      body: JSON.stringify({ cart_id: cartId, method_name: methodName, price_cents: priceCents }),
+      body: JSON.stringify({ cart_id: cartId, method_name: methodName }),
     }),
 
   storeSetCartRegion: (cartId: string, regionCode: string, currency: string) =>

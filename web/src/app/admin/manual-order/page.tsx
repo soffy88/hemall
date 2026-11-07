@@ -40,8 +40,7 @@ export default function ManualOrderPage() {
   const [sameAddress, setSameAddress] = useState(true);
   const [discountCode, setDiscountCode] = useState('');
   const [giftCardCode, setGiftCardCode] = useState('');
-  const [shippingMethod, setShippingMethod] = useState('标准配送');
-  const [shippingPrice, setShippingPrice] = useState(0);
+  const [shippingMethod, setShippingMethod] = useState('standard');
 
   const [orderResult, setOrderResult] = useState<{ order_id: string; grand_total_cents: number; currency: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -150,12 +149,7 @@ export default function ManualOrderPage() {
     if (!cart) return;
     setBusy(true);
     try {
-      const res = await api.addShippingMethodToCart({
-        cart_id: cart.id,
-        method_name: shippingMethod,
-        price_cents: shippingPrice,
-      });
-      if (res.status === 'failed') throw new Error(res.error?.message || '设置失败');
+      await api.storeAddShippingMethod(cart.id, shippingMethod);
       await refreshCart(cart.id);
     } catch (e) {
       alert(errMessage(e));
@@ -302,11 +296,13 @@ export default function ManualOrderPage() {
                   <div className="flex gap-2 items-end">
                     <div className="flex-1">
                       <label className="text-xs text-gray-500">配送方式</label>
-                      <input value={shippingMethod} onChange={(e) => setShippingMethod(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
-                    </div>
-                    <div>
-                      <label className="text-xs text-gray-500">运费（分）</label>
-                      <input type="number" value={shippingPrice} onChange={(e) => setShippingPrice(+e.target.value)} className="w-28 px-3 py-2 border rounded-lg text-sm" />
+                      <select value={shippingMethod} onChange={(e) => setShippingMethod(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm">
+                        <option value="standard">标准配送</option>
+                        <option value="express">快速配送</option>
+                        <option value="next_day">次日达</option>
+                        <option value="pickup">到店自提</option>
+                      </select>
+                      <p className="mt-1 text-[11px] text-gray-400">运费由服务端规则计算，客户端不能定价。</p>
                     </div>
                     <button disabled={busy} onClick={handleSetShippingMethod} className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm hover:bg-gray-800 disabled:opacity-50">设置</button>
                   </div>

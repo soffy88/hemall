@@ -253,6 +253,19 @@ class Settings(BaseSettings):
     default_search_provider: str = "log"
     default_notification_provider: str = "log"
     default_tax_provider: str = "flat"
+    # 上线 P0：未配置真实收款通道时仍允许人工确认的线下收款模式。
+    manual_payment_enabled: bool = True
+    # 超时关单：pending/draft 超过该分钟数仍未支付则取消并释放 reservation。
+    order_payment_timeout_minutes: int = 30
+    order_timeout_engine_interval_seconds: int = 60
+
+    # 运费只由服务端计算；客户端提交的 price_cents 仅保留兼容，不参与计价。
+    shipping_standard_cents: int = 1500
+    shipping_express_cents: int = 3000
+    shipping_next_day_cents: int = 4500
+    shipping_free_threshold_cents: int = 0
+    shipping_delivery_windows: str = "10:00-12:00,14:00-18:00"
+    shipping_service_area: str = ""
     # FlatRateTaxProvider 必填 rate_percent (无凭据 fallback 的固定税率)
     flat_tax_rate_percent: float = 10.0
     # VLM 视觉 provider (拍照识货/以图比对/判损): "manual" (内存桩) /

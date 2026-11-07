@@ -121,6 +121,20 @@ from .spider_targets import extract_unit_from_text
 
 logger = logging.getLogger("hemall.ext.oservi")
 
+# 支付成功回调把订单写成 confirmed；paid 仅用于兼容历史数据。所有履约/SLA
+# 查询必须使用同一组口径，不能只看 paid。
+FULFILLABLE_ORDER_STATUSES = ("confirmed", "paid", "processing", "packed")
+PAID_ORDER_STATUSES = (
+    "confirmed",
+    "paid",
+    "processing",
+    "packed",
+    "shipped",
+    "delivered",
+    "completed",
+    "returning",
+)
+
 
 def _output_dir(settings: Settings, engine_name: str, omodul_name: str) -> Path:
     """oservi 引擎内部调用 omodul 时用的 output_dir，风格对齐 app/storefront._output_dir。"""
@@ -348,6 +362,7 @@ def build_delivery_wave_engine(pool: Any) -> CronSchedulerEngine:
     """
 
     async def dispatch_wave_orders(**_: Any) -> dict[str, Any]:
+        placeholders = ", ".join(f"${i + 2}" for i in range(len(FULFILLABLE_ORDER_STATUSES)))
         rows = await db_query_many(
             pool,
             sql=(
@@ -355,10 +370,10 @@ def build_delivery_wave_engine(pool: Any) -> CronSchedulerEngine:
                 'FROM "customer_order" o '
                 'JOIN "order_line_item" oli ON oli.order_id = o.id '
                 'JOIN "inventory_batch" b ON b.id = oli.batch_id '
-                "WHERE o.shipping_cents = $1 AND o.status = 'paid' "
+                f"WHERE o.shipping_cents = $1 AND o.status IN ({placeholders}) "
                 "AND o.dispatch_status = 'pending'"
             ),
-            params=(WAVE_SHIPPING_PRICE_CENTS,),
+            params=(WAVE_SHIPPING_PRICE_CENTS, *FULFILLABLE_ORDER_STATUSES),
         )
         # 一个订单可能有多行 order_line_item (多个 batch)；只取第一次出现的
         # location_id 当发车点分组依据，不代表真实路径规划。
@@ -1516,12 +1531,14 @@ def build_sla_promise_engine(pool: Any, settings: Settings) -> CronSchedulerEngi
     async def backfill_promises(**_: Any) -> dict[str, Any]:
         from datetime import datetime
 
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(PAID_ORDER_STATUSES)))
         rows = await db_query_many(
             pool,
             sql=(
                 'SELECT id, shipping_cents, created_at FROM "customer_order" '
-                "WHERE status = 'paid' AND promised_delivery_at IS NULL"
+                f"WHERE status IN ({placeholders}) AND promised_delivery_at IS NULL"
             ),
+            params=PAID_ORDER_STATUSES,
         )
         if not rows:
             return {"promises_backfilled": 0, "orders": []}
@@ -1557,6 +1574,63 @@ def build_sla_promise_engine(pool: Any, settings: Settings) -> CronSchedulerEngi
         trigger={"on_interval": 3600},
         config={"interval_seconds": 3600},
         name="ext-sla-promise",
+    )
+
+
+def build_order_timeout_engine(pool: Any, settings: Settings) -> CronSchedulerEngine:
+    """取消超时未支付订单，并按 reservation 精确释放库存。
+
+    多 worker 同时扫描时由订单状态机 CAS 和数据库行锁兜底，重复处理只会
+    产生一次成功转换。已支付/退款中的订单永远不会被本引擎取消。
+    """
+
+    async def cancel_timed_out_orders(**_: Any) -> dict[str, Any]:
+        from ..orders.service import OrderService
+
+        timeout_minutes = max(1, int(settings.order_payment_timeout_minutes))
+        rows = await db_query_many(
+            pool,
+            sql=(
+                'SELECT o.id FROM "customer_order" o '
+                "WHERE o.status IN ('pending', 'draft') "
+                "AND o.created_at < NOW() - ($1 * INTERVAL '1 minute') "
+                "AND NOT EXISTS ("
+                '  SELECT 1 FROM "payment_intent" p '
+                "  WHERE p.order_id = o.id::text "
+                "    AND p.status IN ('paid', 'partial_refund', 'refunded')"
+                ") "
+                "ORDER BY o.created_at ASC LIMIT $2"
+            ),
+            params=(timeout_minutes, 100),
+        )
+        service = OrderService(pool)
+        cancelled: list[str] = []
+        errors: list[dict[str, str]] = []
+        for row in rows:
+            order_id = str(row["id"])
+            try:
+                await service.cancel_order(
+                    order_id,
+                    reason=f"payment timeout ({timeout_minutes}m)",
+                    operator_id="system:order-timeout",
+                )
+                cancelled.append(order_id)
+            except Exception as exc:  # noqa: BLE001 - one bad order must not stop the tick
+                errors.append({"order_id": order_id, "error": str(exc)})
+        return {
+            "timeout_minutes": timeout_minutes,
+            "cancelled_count": len(cancelled),
+            "cancelled_orders": cancelled,
+            "errors": errors,
+        }
+
+    cancel_timed_out_orders.__name__ = "cancel_timed_out_orders"
+    interval = max(10, int(settings.order_timeout_engine_interval_seconds))
+    return CronSchedulerEngine(
+        tasks=[cancel_timed_out_orders],
+        trigger={"on_interval": interval},
+        config={"interval_seconds": interval},
+        name="ext-order-timeout",
     )
 
 
