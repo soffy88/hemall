@@ -28,7 +28,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from prometheus_client import make_asgi_app
 
 # Phase 0 Week 2: 限流
@@ -55,7 +55,7 @@ from .ext.oservi_lifecycle import build_ext_oservi
 from .i18n.service import CurrencyConverter, LocalizedPaymentRouter, TranslationManager
 from .inventory.router import router as inventory_router
 from .middleware.logging import LoggingMiddleware, configure_structlog
-from .middleware.metrics import MetricsMiddleware
+from .middleware.metrics import MetricsMiddleware, metrics_access_allowed
 
 # 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (IP + Device_ID)
 from .middleware.ratelimit import TokenBucketRateLimitMiddleware
@@ -536,6 +536,23 @@ def create_app() -> FastAPI:
     # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。
     # Cookie 认证需 allow_credentials=True。
     settings = get_settings()
+
+    @app.middleware("http")
+    async def metrics_guard(request: Request, call_next):
+        """纵深防御：即使 Caddy 规则误配，/metrics 也不对公网裸奔。"""
+        if request.url.path.startswith("/metrics"):
+            auth = request.headers.get("authorization", "")
+            bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            supplied = request.headers.get("x-metrics-token", "") or bearer
+            if not metrics_access_allowed(
+                client_host=request.client.host if request.client else None,
+                expected_token=settings.metrics_access_token,
+                supplied_token=supplied,
+                allow_private=settings.metrics_allow_private,
+            ):
+                return JSONResponse({"detail": "metrics access denied"}, status_code=403)
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

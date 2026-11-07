@@ -1036,7 +1036,7 @@ async def list_app_users(pool: Any) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, email, name, status, created_at, updated_at
+            SELECT id, email, name, status, totp_enabled, created_at, updated_at
             FROM "app_user" WHERE deleted_at IS NULL ORDER BY created_at DESC
             """
         )

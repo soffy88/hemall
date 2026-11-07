@@ -540,7 +540,7 @@ async def login(
 
     # 生产环境: admin 和 privileged_staff_ids 必须绑定 TOTP 才能进后台。
     # 不签发完整会话, 只发 5 分钟绑定令牌——没有完整会话 = 被拒绝进后台。
-    if is_production and is_privileged and not totp_enabled:
+    if is_production and settings.require_admin_totp and is_privileged and not totp_enabled:
         return LoginTotpSetupRequiredResponse(
             user_id=user_id,
             email=row["email"],

@@ -876,6 +876,7 @@ export interface AppUser {
   email: string;
   name: string | null;
   status: string;
+  totp_enabled: boolean;
   created_at: string;
   updated_at: string | null;
 }

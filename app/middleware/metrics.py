@@ -5,6 +5,7 @@ Phase 0 交付：/metrics 端点暴露 QPS/延迟/错误率等核心指标。
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from collections.abc import Callable
 
@@ -145,3 +146,24 @@ def update_db_pool_metrics(pool_name: str, size: int, used: int) -> None:
 def update_redis_connected(connected: bool) -> None:
     """更新 Redis 连接状态指标。"""
     REDIS_CONNECTED.set(1 if connected else 0)
+
+
+def metrics_access_allowed(
+    *,
+    client_host: str | None,
+    expected_token: str,
+    supplied_token: str,
+    allow_private: bool,
+) -> bool:
+    """校验 /metrics 访问：配置 token 时只认 token，否则只放行内网来源。"""
+    expected = expected_token.strip()
+    if expected:
+        return supplied_token == expected
+    if not allow_private:
+        return False
+    host = (client_host or "").strip()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private

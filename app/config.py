@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # 公开 (无鉴权) 创建 app_user (管理员) 的引导开关。默认关闭——create_user 需
     # 管理员 JWT。仅在首个管理员引导期临时置 true, 建成后立即关回 false。
     allow_public_admin_registration: bool = False
+    # 管理员强制 TOTP：production 默认开启。关闭只允许在完成风险评估后临时
+    # 使用；登录页已有 /login/totp-setup 绑定引导。
+    require_admin_totp: bool = True
 
     # ── 数据库 (obase.persistence.PgPool) ──────────────────────────────
     pg_dsn: str = "postgresql://postgres:test@localhost:5432/hemall"
@@ -201,6 +204,11 @@ class Settings(BaseSettings):
     # 根日志级别 (INFO/WARNING/DEBUG)。引擎 tick 状态日志 (爬虫/证书轮换)
     # 依赖它不被 WARNING 默认值吞掉。
     log_level: str = "INFO"
+
+    # /metrics 防护：优先使用 token；未配置 token 时只允许回环/内网来源。
+    # 公网入口仍需 Caddy 的 private_ranges 规则作为第一道边界。
+    metrics_access_token: str = ""
+    metrics_allow_private: bool = True
 
     @property
     def effective_pg_dsn(self) -> str:
