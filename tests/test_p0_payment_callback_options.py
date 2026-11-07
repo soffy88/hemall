@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config import Settings
+from app.main import _webhook_protected_paths
 from app.storefront import _payment_options, _resolve_store_payment_provider
 
 
@@ -42,6 +43,27 @@ def test_payment_options_do_not_advertise_manual_as_online():
     assert options["methods"] == [
         {"code": "manual", "name": "人工确认收款", "mode": "offline"}
     ]
+
+
+def test_real_gateway_callbacks_bypass_hemall_hmac_only_for_selected_provider():
+    alipay = _webhook_protected_paths(
+        Settings(environment="staging", payment_gateway_provider="alipay")
+    )
+    assert "/payments/alipay/notify" not in alipay
+    assert "/payments/wechat/notify" in alipay
+    assert "/growth/douyin_callback" in alipay
+
+    wechat = _webhook_protected_paths(
+        Settings(environment="staging", payment_gateway_provider="wechat")
+    )
+    assert "/payments/wechat/notify" not in wechat
+    assert "/payments/alipay/notify" in wechat
+
+    manual = _webhook_protected_paths(
+        Settings(environment="staging", payment_gateway_provider="manual")
+    )
+    assert "/payments/alipay/notify" in manual
+    assert "/payments/wechat/notify" in manual
 
 
 def test_nonproduction_cannot_select_unconfigured_online_provider():
@@ -148,3 +170,53 @@ def test_production_alipay_callback_fails_closed_on_bad_signature(client, monkey
         headers=_webhook_headers(body),
     )
     assert response.text == "fail"
+
+
+def test_production_alipay_callback_does_not_require_custom_hmac_headers(monkeypatch):
+    """支付宝真实回调只有 RSA2 表单签名，不应被本域 X-Hemall-* 中间件拦截。"""
+    from fastapi.testclient import TestClient
+    from obase.provider_registry import ProviderRegistry
+
+    from app.deps import get_settings
+    from app.main import create_app
+    from app.payments import router as payment_router
+
+    class FakeGateway:
+        async def verify_callback(self, headers, body):
+            return {
+                "app_id": "configured-app",
+                "out_trade_no": "intent-1",
+                "trade_no": "trade-1",
+                "trade_status": "TRADE_SUCCESS",
+                "total_amount": "15.00",
+            }
+
+    class FakeRegistry:
+        def generic(self, category, name):
+            return FakeGateway()
+
+    async def fake_settle(*args, **kwargs):
+        return True
+
+    monkeypatch.setenv("HEMALL_ENVIRONMENT", "staging")
+    monkeypatch.setenv("HEMALL_PAYMENT_GATEWAY_PROVIDER", "alipay")
+    get_settings.cache_clear()
+    app = create_app()
+
+    with TestClient(app) as app_client:
+        monkeypatch.setattr(ProviderRegistry, "get", classmethod(lambda cls: FakeRegistry()))
+        monkeypatch.setattr(payment_router, "_settle_payment_and_order", fake_settle)
+        monkeypatch.setattr(
+            payment_router,
+            "get_settings",
+            lambda: Settings(environment="production", payment_gateway_provider="alipay"),
+        )
+        body = b"out_trade_no=intent-1&trade_status=TRADE_SUCCESS"
+        response = app_client.post(
+            "/payments/alipay/notify",
+            content=body,
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+
+    assert response.status_code == 200
+    assert response.text == "success"

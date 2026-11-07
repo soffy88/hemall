@@ -571,12 +571,7 @@ def create_app() -> FastAPI:
     # 路径→校验器按路径注册：真实微信模式 (HEMALL_PAYMENT_GATEWAY_PROVIDER
     # =wechat) 下 /payments/wechat/notify 改由平台证书验签 (WechatPayNative
     # Gateway.verify_callback 在 handler 内完成)，不再套本域 HMAC 契约。
-    protected_webhook_paths = {
-        "/payments/alipay/notify",
-        "/growth/douyin_callback",
-    }
-    if settings.payment_gateway_provider != "wechat":
-        protected_webhook_paths.add("/payments/wechat/notify")
+    protected_webhook_paths = _webhook_protected_paths(settings)
     app.add_middleware(
         WebhookSignatureMiddleware,
         secret=settings.webhook_secret,
@@ -682,6 +677,24 @@ def create_app() -> FastAPI:
         return HTMLResponse(content=html, status_code=200)
 
     return app
+
+
+def _webhook_protected_paths(settings: Settings) -> set[str]:
+    """返回由本域 HMAC 中间件保护的路径。
+
+    真实支付网关回调由各自的厂商验签器校验：支付宝用 RSA2 表单签名，微信
+    用平台证书 + wechatpay-* 头。它们不会携带 X-Hemall-* 头，因此配置成
+    对应 provider 时必须从通用 HMAC 中间件放行，否则真实回调在进入 handler
+    前就会被 403。未启用的 provider 路径仍保留 HMAC 保护，避免沙箱/遗留
+    路径被匿名请求直接触达。
+    """
+    provider = settings.payment_gateway_provider.strip().lower()
+    protected = {"/growth/douyin_callback"}
+    if provider != "alipay":
+        protected.add("/payments/alipay/notify")
+    if provider != "wechat":
+        protected.add("/payments/wechat/notify")
+    return protected
 
 
 app = create_app()
