@@ -32,6 +32,7 @@ from obase.crypto.util import CryptoUtil
 from obase.persistence.pool import PgPool
 from pydantic import BaseModel, Field, model_validator
 
+from .compliance import record_consents, validate_consent
 from .config import Settings
 from .deps import get_pool, get_settings
 from .security.rate_limit import limiter
@@ -922,6 +923,9 @@ class CustomerRegisterInput(BaseModel):
     phone: str | None = Field(None, description="手机号")
     name: str | None = Field(None, description="姓名")
     referral_code: str = Field("", description="推荐人推荐码（选填，绑定后不可改）")
+    privacy_consent: bool = Field(False, description="已阅读并同意隐私政策")
+    terms_consent: bool = Field(False, description="已阅读并同意用户协议")
+    consent_version: str = Field("", description="前端看到的合规文档版本")
 
 
 class CustomerTokenResponse(BaseModel):
@@ -1056,6 +1060,12 @@ async def customer_register(
     settings: Settings = Depends(get_settings),
 ) -> CustomerTokenResponse:
     """顾客注册：创建 customer 记录并直接登录。"""
+    consent_version = validate_consent(
+        settings,
+        privacy_consent=body.privacy_consent,
+        terms_consent=body.terms_consent,
+        consent_version=body.consent_version,
+    )
     # 检查邮箱是否已存在
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
@@ -1095,6 +1105,13 @@ async def customer_register(
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
             await ensure_referral_code(conn, customer_id)
+            await record_consents(
+                conn,
+                subject_type="customer",
+                subject_id=customer_id,
+                version=consent_version,
+                request=request,
+            )
 
     access_token = sign_token(
         {"customer_id": customer_id, "email": row["email"]},

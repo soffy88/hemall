@@ -271,6 +271,31 @@ class Settings(BaseSettings):
     shipping_free_threshold_cents: int = 0
     shipping_delivery_windows: str = "10:00-12:00,14:00-18:00"
     shipping_service_area: str = ""
+
+    # ── 上线合规与顾客通知 ─────────────────────────────────────────────
+    # 法定页面文本必须由经营主体/法务提供。默认只展示占位并标记“未正式营业”；
+    # 只有 manifest 中全部必需文档已发布，且此开关显式打开，才显示正式营业。
+    compliance_manifest_path: str = "content/compliance/manifest.json"
+    site_official_open: bool = False
+    # 短信验证码默认关闭。启用时必须由用户提供真实 provider/webhook 与模板；
+    # disabled 模式不发送、不生成、不记录验证码。
+    sms_provider: str = "disabled"
+    sms_webhook_url: str = ""
+    sms_webhook_token: str = ""
+
+    # ── 商家新订单通知 ─────────────────────────────────────────────────
+    # disabled/log 只用于本地开发，后台会明确显示“未配置真实通知”。
+    merchant_notification_provider: str = "disabled"
+    merchant_notification_webhook_url: str = ""
+    merchant_notification_webhook_token: str = ""
+    merchant_smtp_host: str = ""
+    merchant_smtp_port: int = 587
+    merchant_smtp_username: str = ""
+    merchant_smtp_password: str = ""
+    merchant_smtp_from: str = ""
+    merchant_smtp_to: str = ""
+    merchant_smtp_starttls: bool = True
+
     # FlatRateTaxProvider 必填 rate_percent (无凭据 fallback 的固定税率)
     flat_tax_rate_percent: float = 10.0
     # VLM 视觉 provider (拍照识货/以图比对/判损): "manual" (内存桩) /

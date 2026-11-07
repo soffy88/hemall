@@ -256,6 +256,32 @@ CREATE TABLE IF NOT EXISTS runtime_setting (
     updated_by TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ── 隐私/协议同意与商家通知投递记录 ────────────────────────────────
+CREATE TABLE IF NOT EXISTS consent_record (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_type TEXT NOT NULL CHECK (subject_type IN ('customer', 'order')),
+    subject_id TEXT NOT NULL,
+    document_slug TEXT NOT NULL,
+    document_version TEXT NOT NULL,
+    consented_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (subject_type, subject_id, document_slug, document_version)
+);
+CREATE INDEX IF NOT EXISTS idx_consent_record_subject
+    ON consent_record(subject_type, subject_id, consented_at DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_notification_delivery (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_merchant_notification_delivery_status
+    ON merchant_notification_delivery(status, created_at DESC);
 """
 
 

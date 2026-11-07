@@ -249,7 +249,16 @@ def _add(db_client, headers, cart_id, batch_id, qty):
 
 
 def _checkout(db_client, headers, cart_id) -> str:
-    r = db_client.post("/store/checkout", json={"cart_id": cart_id}, headers=headers)
+    r = db_client.post(
+        "/store/checkout",
+        json={
+            "cart_id": cart_id,
+            "privacy_consent": True,
+            "terms_consent": True,
+            "consent_version": "2026-11-08-placeholder",
+        },
+        headers=headers,
+    )
     assert r.status_code == 200, r.text
     return r.json()["order_id"]
 

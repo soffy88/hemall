@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { api } from '@/lib/api-client';
 import { customerRegister } from '@/lib/customer-auth-store';
 import { errMessage } from '@/lib/errors';
 
@@ -14,12 +15,22 @@ export default function CustomerRegisterPage() {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [referralCode, setReferralCode] = useState('');
+  const [privacyConsent, setPrivacyConsent] = useState(false);
+  const [termsConsent, setTermsConsent] = useState(false);
+  const [consentVersion, setConsentVersion] = useState('');
+  const [siteNotice, setSiteNotice] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const ref = new URLSearchParams(window.location.search).get('ref');
     if (ref) setReferralCode(ref);
+    api.storeComplianceStatus()
+      .then((status) => {
+        setConsentVersion(status.consent_version);
+        setSiteNotice(status.site_notice);
+      })
+      .catch((err) => setError(errMessage(err)));
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -29,9 +40,22 @@ export default function CustomerRegisterPage() {
       setError('两次输入的密码不一致');
       return;
     }
+    if (!privacyConsent || !termsConsent || !consentVersion) {
+      setError('请先阅读并同意隐私政策与用户协议');
+      return;
+    }
     setLoading(true);
     try {
-      await customerRegister({ email, password, name, phone, referral_code: referralCode || undefined });
+      await customerRegister({
+        email,
+        password,
+        name,
+        phone,
+        referral_code: referralCode || undefined,
+        privacy_consent: privacyConsent,
+        terms_consent: termsConsent,
+        consent_version: consentVersion,
+      });
       router.push('/shop/account');
     } catch (err) {
       setError(errMessage(err) || '注册失败');
@@ -46,6 +70,11 @@ export default function CustomerRegisterPage() {
         <div className="text-center">
           <h1 className="text-2xl font-bold text-gray-900">注册账号</h1>
           <p className="mt-2 text-sm text-gray-500">注册后可保存地址、查看订单历史</p>
+          {siteNotice && (
+            <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {siteNotice}
+            </p>
+          )}
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -103,6 +132,39 @@ export default function CustomerRegisterPage() {
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
               required
             />
+          </div>
+          <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={privacyConsent}
+                onChange={(e) => setPrivacyConsent(e.target.checked)}
+                className="mt-0.5"
+                required
+              />
+              <span>
+                我已阅读并同意
+                <Link href="/privacy" target="_blank" className="mx-1 text-emerald-700 underline">
+                  隐私政策
+                </Link>
+                （版本 {consentVersion || '加载中'}）
+              </span>
+            </label>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={termsConsent}
+                onChange={(e) => setTermsConsent(e.target.checked)}
+                className="mt-0.5"
+                required
+              />
+              <span>
+                我已阅读并同意
+                <Link href="/terms" target="_blank" className="mx-1 text-emerald-700 underline">
+                  用户协议
+                </Link>
+              </span>
+            </label>
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
           <button

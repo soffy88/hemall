@@ -358,6 +358,36 @@ export const api = {
   adminListTaxRates: (regionCode?: string) =>
     request<TaxRate[]>(`/admin/tax-rates${regionCode ? `?region_code=${regionCode}` : ''}`, {}, true),
 
+  adminFulfillmentSettings: () =>
+    request<{
+      shipping: {
+        service_area: string;
+        delivery_windows: string[];
+        methods: Record<string, { name: string; price_cents: number; free_threshold_cents: number }>;
+      };
+      notification: {
+        provider: string;
+        configured: boolean;
+        real_delivery_enabled: boolean;
+        message: string;
+        failed: number | null;
+        sent: number | null;
+        last_sent_at: string | null;
+        last_failed_at: string | null;
+      };
+      notification_provider_source: string;
+    }>('/admin/operations/fulfillment', {}, true),
+
+  adminUpdateFulfillmentSettings: (data: {
+    service_area: string;
+    delivery_windows: string[];
+    methods: Record<string, { name?: string; price_cents?: number; free_threshold_cents?: number }>;
+  }) =>
+    request<{ ok: boolean; shipping: Record<string, unknown> }>('/admin/operations/fulfillment', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }, true),
+
   adminListCategories: () =>
     request<ProductCategory[]>('/admin/categories', {}, true),
 
@@ -504,6 +534,35 @@ export const api = {
       quoted_by_server: true;
     }>('/store/shipping-options'),
 
+  storeComplianceStatus: () =>
+    request<{
+      official_open: boolean;
+      site_notice: string;
+      consent_version: string;
+      all_required_documents_published: boolean;
+      documents: {
+        slug: string;
+        title: string;
+        version: string;
+        published: boolean;
+        status: 'published' | 'coming_soon';
+      }[];
+      sms: { provider: string; configured: boolean; enabled: boolean; message: string };
+    }>('/store/compliance/status'),
+
+  storeComplianceDocument: (slug: string) =>
+    request<{
+      slug: string;
+      title: string;
+      version: string;
+      published: boolean;
+      status: 'published' | 'coming_soon';
+      content: string;
+      official_open: boolean;
+      site_notice: string;
+      consent_version: string;
+    }>(`/store/compliance/documents/${encodeURIComponent(slug)}`),
+
   storeAddShippingMethod: (cartId: string, methodName: string) =>
     request<{ shipping_cents: number; grand_total_cents: number; quote: Record<string, unknown> }>('/store/carts/shipping-method', {
       method: 'POST',
@@ -526,7 +585,16 @@ export const api = {
 
   // ── Storefront: Checkout ────────────────────────────────────
 
-  checkout: (data: { cart_id: string; billing_address?: Address; shipping_address?: Address; customer_id?: string; provider?: string }) =>
+  checkout: (data: {
+    cart_id: string;
+    billing_address?: Address;
+    shipping_address?: Address;
+    customer_id?: string;
+    provider?: string;
+    privacy_consent: boolean;
+    terms_consent: boolean;
+    consent_version: string;
+  }) =>
     request<CheckoutResult>('/store/checkout', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -552,7 +620,15 @@ export const api = {
 
   // ── Storefront: 顾客账号 ───────────────────────────────────
 
-  customerRegister: (data: { email: string; password: string; phone?: string; name?: string }) =>
+  customerRegister: (data: {
+    email: string;
+    password: string;
+    phone?: string;
+    name?: string;
+    privacy_consent: boolean;
+    terms_consent: boolean;
+    consent_version: string;
+  }) =>
     request<CustomerTokenResponse>('/store/customers/register', {
       method: 'POST',
       body: JSON.stringify(data),

@@ -50,6 +50,13 @@ from app.cangzhu import (
     night_now,
     night_price_cents,
 )
+from app.compliance import (
+    document_payload,
+    load_manifest,
+    record_consents,
+    sms_status,
+    validate_consent,
+)
 from app.db_recovery import kick_pool_recovery
 from app.deps import get_current_customer, get_settings
 from app.recommend.models import UserBehaviorEvent, UserBehaviorType
@@ -1342,6 +1349,8 @@ async def _create_order_from_cart(
     *,
     cart_id: str,
     customer_id: str | None = None,
+    consent_version: str | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     """把购物车快照原子转为 pending 订单，但不捕获支付。
 
@@ -1547,6 +1556,14 @@ async def _create_order_from_cart(
                 _cz_discount_kind,
                 _cz_discount_cents if _cz_discount_kind == "voucher" else 0,
             )
+            if consent_version:
+                await record_consents(
+                    conn,
+                    subject_type="order",
+                    subject_id=str(order_id),
+                    version=consent_version,
+                    request=request,
+                )
             for prep in prepared:
                 batch = prep["batch"]
                 line_id = uuid7()
@@ -1644,6 +1661,9 @@ class CheckoutRequest(BaseModel):
     shipping_address: AddressPayload | None = None
     customer_id: str | None = None
     provider: str | None = None
+    privacy_consent: bool = False
+    terms_consent: bool = False
+    consent_version: str = ""
 
 
 @router.post("/checkout")
@@ -1660,8 +1680,14 @@ async def checkout(
         raise HTTPException(403, "customer_id does not match authenticated customer")
     if body.customer_id is not None:
         _require_uuid(body.customer_id, "customer_id")
-    pool = _pool(request)
     cfg_store = request.app.state.config
+    consent_version = validate_consent(
+        cfg_store,
+        privacy_consent=body.privacy_consent,
+        terms_consent=body.terms_consent,
+        consent_version=body.consent_version,
+    )
+    pool = _pool(request)
     out_root = _output_dir(request, "checkout")
     await _authorize_cart(request, body.cart_id, principal)
     await _require_cart_alcohol_access(request, pool, body.cart_id)
@@ -1724,6 +1750,8 @@ async def checkout(
             pool,
             cart_id=body.cart_id,
             customer_id=authenticated_customer_id,
+            consent_version=consent_version,
+            request=request,
         )
         provider_name = (
             body.provider
@@ -1736,6 +1764,9 @@ async def checkout(
             order_id=order["order_id"],
             provider=provider_name,
         )
+        from app.notifications import send_new_order_notification
+
+        await send_new_order_notification(pool, cfg_store, order=order)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - translate provider/db failures
@@ -2189,6 +2220,7 @@ async def add_shipping_method(
         AddShippingMethodToCartInput,
         add_shipping_method_to_cart,
     )
+
     from app.shipping import load_shipping_rules, quote_shipping
 
     cfg = _cfg(request, AddShippingMethodToCartConfig)
@@ -2412,6 +2444,34 @@ async def list_regions(request: Request):
         return [dict(r) for r in rows]
 
 
+@router.get("/compliance/status")
+async def compliance_status(request: Request):
+    """公开合规状态：未提供正式文本时站点保持“未正式营业”。"""
+    settings = request.app.state.config
+    manifest = load_manifest(settings)
+    return {
+        "official_open": manifest["official_open"],
+        "site_notice": manifest["site_notice"],
+        "consent_version": manifest["consent_version"],
+        "all_required_documents_published": manifest[
+            "all_required_documents_published"
+        ],
+        "documents": [
+            {
+                key: doc[key]
+                for key in ("slug", "title", "version", "published", "status")
+            }
+            for doc in manifest["documents"].values()
+        ],
+        "sms": sms_status(settings),
+    }
+
+
+@router.get("/compliance/documents/{slug}")
+async def compliance_document(slug: str, request: Request):
+    return document_payload(request.app.state.config, slug)
+
+
 # ── 顾客账号 (注册/登录/个人资料/地址簿/订单历史) ─────────────────────────
 # customer 表原本没有密码字段 (3O 元素库不提供顾客密码登录原语,只有 app_user
 # 管理员登录); password_hash 是 hemall 项目层补的字段 (见 bootstrap.py)。
@@ -2424,6 +2484,9 @@ class CustomerRegisterRequest(BaseModel):
     phone: str = ""
     name: str = ""
     referral_code: str = ""
+    privacy_consent: bool = False
+    terms_consent: bool = False
+    consent_version: str = ""
 
 
 class CustomerTokenResponse(BaseModel):
@@ -2439,6 +2502,14 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
 
     from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
 
+    cfg = request.app.state.config
+    consent_version = validate_consent(
+        cfg,
+        privacy_consent=body.privacy_consent,
+        terms_consent=body.terms_consent,
+        consent_version=body.consent_version,
+    )
+
     # 仓主试点：推荐码先解析，绑定只在注册时一次写入。
     referrer_id: str | None = None
     if (body.referral_code or "").strip():
@@ -2453,7 +2524,6 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
         create_customer,
     )
 
-    cfg = request.app.state.config
     result = await create_customer(
         _cfg(request, CreateCustomerConfig),
         CreateCustomerInput(email=body.email, phone=body.phone, name=body.name),
@@ -2477,6 +2547,13 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
             if referrer_id is not None:
                 await bind_referral(conn, customer_id=customer_id, referrer_id=referrer_id)
             await ensure_referral_code(conn, customer_id)
+            await record_consents(
+                conn,
+                subject_type="customer",
+                subject_id=customer_id,
+                version=consent_version,
+                request=request,
+            )
 
     token = _sign_customer_token(customer_id, body.email, cfg.jwt_secret, cfg.jwt_algorithm)
     return CustomerTokenResponse(access_token=token, customer_id=customer_id, email=body.email)

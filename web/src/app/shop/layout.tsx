@@ -28,6 +28,8 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
   const [customerEmail, setCustomerEmail] = useState<string | null>(null);
   const [isMerchant, setIsMerchant] = useState(false);
   const [categories, setCategories] = useState<StoreCategory[]>([]);
+  const [complianceNotice, setComplianceNotice] = useState('');
+  const [officialOpen, setOfficialOpen] = useState(true);
   const [catOpen, setCatOpen] = useState(false);
   const [activeCatId, setActiveCatId] = useState('all');
   const catRef = useRef<HTMLDivElement>(null);
@@ -102,6 +104,15 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
         setSelectedRegion({ code: initial.code, currency: initial.currency });
       }
     }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api.storeComplianceStatus()
+      .then((status) => {
+        setOfficialOpen(status.official_open);
+        setComplianceNotice(status.site_notice);
+      })
+      .catch(() => {});
   }, []);
 
   async function handleRegionChange(code: string) {
@@ -220,17 +231,34 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
 
       {/* Content */}
       <main className="max-w-6xl mx-auto px-4 py-8">
+        {!officialOpen && complianceNotice && (
+          <div className="mb-6 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+            <strong className="mr-2">未正式营业</strong>
+            {complianceNotice}
+          </div>
+        )}
         {children}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-gray-200 mt-16 py-8 text-center text-xs text-gray-400">
-        <div className="mb-2">
+      <footer className="border-t border-gray-200 mt-16 py-8 text-xs text-gray-500">
+        <div className="mx-auto mb-4 flex max-w-4xl flex-wrap justify-center gap-x-5 gap-y-2 px-4">
+          <Link href="/about" className="hover:text-emerald-700">关于我们</Link>
+          <Link href="/contact" className="hover:text-emerald-700">联系我们</Link>
+          <Link href="/privacy" className="hover:text-emerald-700">隐私政策</Link>
+          <Link href="/terms" className="hover:text-emerald-700">用户协议</Link>
+          <Link href="/returns" className="hover:text-emerald-700">退换货规则</Link>
+          <Link href="/food-license" className="hover:text-emerald-700">食品经营资质</Link>
+          <Link href="/business-license" className="hover:text-emerald-700">营业执照</Link>
+          <Link href="/invoice" className="hover:text-emerald-700">发票说明</Link>
+          <Link href="/complaint" className="hover:text-emerald-700">投诉与售后</Link>
+        </div>
+        <div className="mb-2 text-center">
           <Link href="/shop/alcohol" className="text-gray-500 hover:text-emerald-700">
             酒类专区（年龄确认）
           </Link>
         </div>
-        Hemall Commerce · Powered by 3O
+        <div className="text-center text-gray-400">Hemall Commerce · Powered by 3O</div>
       </footer>
     </div>
   );
