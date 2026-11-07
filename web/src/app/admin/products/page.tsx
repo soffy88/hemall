@@ -38,6 +38,12 @@ export default function ProductsPage() {
   const [costPrice, setCostPrice] = useState(5000);
   const [locationId, setLocationId] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
+  const [expirationTime, setExpirationTime] = useState('');
+  const [originRegion, setOriginRegion] = useState('');
+  const [storageCondition, setStorageCondition] = useState('');
+  const [shelfLifeDays, setShelfLifeDays] = useState('');
+  const [qualityCertificateUrl, setQualityCertificateUrl] = useState('');
+  const [isTestBatch, setIsTestBatch] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
 
   function load() {
@@ -191,9 +197,17 @@ export default function ProductsPage() {
         retail_price_cents: retailPrice,
         cost_price_cents: costPrice,
         video_url: videoUrl,
+        expiration_time: expirationTime ? new Date(expirationTime).toISOString() : undefined,
+        origin_region: originRegion || undefined,
+        storage_condition: storageCondition || undefined,
+        shelf_life_days: shelfLifeDays ? Number(shelfLifeDays) : undefined,
+        quality_certificate_url: qualityCertificateUrl || undefined,
+        is_test_batch: isTestBatch,
       });
       if (res.status === 'failed') throw new Error(res.error?.message || '创建批次失败');
-      setBatchNo(''); setVideoUrl('');
+      setBatchNo(''); setVideoUrl(''); setExpirationTime('');
+      setOriginRegion(''); setStorageCondition(''); setShelfLifeDays('');
+      setQualityCertificateUrl(''); setIsTestBatch(false);
       setShowBatchForm(false);
       setLoading(true);
       load();
@@ -316,6 +330,34 @@ export default function ProductsPage() {
             <label className="text-xs text-gray-500">溯源视频 URL（质检凭证，必填）</label>
             <input placeholder="https://..." value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} required className="w-full px-3 py-2 border rounded-lg text-sm" />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500">到期时间（食品必填）</label>
+              <input type="datetime-local" value={expirationTime} onChange={(e) => setExpirationTime(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">保质期（天，食品必填）</label>
+              <input type="number" min="1" value={shelfLifeDays} onChange={(e) => setShelfLifeDays(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">产地（食品必填）</label>
+              <input placeholder="如：山东寿光" value={originRegion} onChange={(e) => setOriginRegion(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">储存条件（食品必填）</label>
+              <input placeholder="如：0-4℃冷藏" value={storageCondition} onChange={(e) => setStorageCondition(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500">检测证明 URL</label>
+              <input placeholder="https://..." value={qualityCertificateUrl} onChange={(e) => setQualityCertificateUrl(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-gray-600 pt-5">
+              <input type="checkbox" checked={isTestBatch} onChange={(e) => setIsTestBatch(e.target.checked)} />
+              标记为测试批次（不会在前台售卖）
+            </label>
+          </div>
           <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700">创建批次</button>
         </form>
       )}
@@ -344,7 +386,11 @@ export default function ProductsPage() {
               {products.map((p) => (
                 <tr key={p.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
-                    <div className="font-medium">{p.title}</div>
+                    <div className="font-medium flex items-center gap-1.5">
+                      {p.title}
+                      {p.is_test && <span className="px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 text-[11px]">测试商品</span>}
+                      {p.needs_data && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[11px]">待补资料</span>}
+                    </div>
                     <div className="text-xs text-gray-400">{p.slug}</div>
                   </td>
                   <td className="px-4 py-3">
@@ -386,7 +432,11 @@ export default function ProductsPage() {
                           </div>
                           {(v.batches || []).map((b) => (
                             <div key={b.id} className="flex items-center justify-between gap-2 text-gray-400 pl-2 mt-0.5">
-                              <span>批次 {b.batch_no}: 可售 {b.available_qty}</span>
+                              <span>
+                                批次 {b.batch_no}: 可售 {b.available_qty}
+                                {b.needs_data && <span className="ml-1 text-amber-600">待补资料</span>}
+                                {b.is_test_batch && <span className="ml-1 text-fuchsia-600">测试批次</span>}
+                              </span>
                               <button onClick={() => handleAdjustStock(b.id)} className="text-emerald-600 hover:underline shrink-0">调库存</button>
                             </div>
                           ))}

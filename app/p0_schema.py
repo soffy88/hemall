@@ -224,6 +224,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_batch_spider_ext_variant
     ON inventory_batch (variant_id)
     WHERE batch_no LIKE 'EXT-%' AND status = 'active' AND deleted_at IS NULL;
 
+-- ── 食品经营信息与测试商品门禁 ──────────────────────────────────────
+ALTER TABLE product
+    ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS origin_region TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS storage_condition TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS shelf_life_days INTEGER;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS quality_certificate_url TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS is_test_batch BOOLEAN NOT NULL DEFAULT FALSE;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'inventory_batch_shelf_life_days_check'
+    ) THEN
+        ALTER TABLE inventory_batch
+            ADD CONSTRAINT inventory_batch_shelf_life_days_check
+            CHECK (shelf_life_days IS NULL OR shelf_life_days > 0);
+    END IF;
+END $$;
+
 -- ── 后台可编辑的履约/通知配置 ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS runtime_setting (
     key TEXT PRIMARY KEY,

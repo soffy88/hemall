@@ -275,7 +275,22 @@ export const api = {
       body: JSON.stringify(data),
     }, true),
 
-  createInventoryBatch: (data: { variant_id: string; batch_no: string; location_id: string; stock_qty: number; retail_price_cents: number; cost_price_cents: number; video_url: string; currency?: string }) =>
+  createInventoryBatch: (data: {
+    variant_id: string;
+    batch_no: string;
+    location_id: string;
+    stock_qty: number;
+    retail_price_cents: number;
+    cost_price_cents: number;
+    video_url: string;
+    currency?: string;
+    expiration_time?: string;
+    origin_region?: string;
+    storage_condition?: string;
+    shelf_life_days?: number;
+    quality_certificate_url?: string;
+    is_test_batch?: boolean;
+  }) =>
     request<OmodulResult>('/inventory/create_inventory_batch', {
       method: 'POST',
       body: JSON.stringify(data),

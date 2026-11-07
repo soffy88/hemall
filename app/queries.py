@@ -41,8 +41,27 @@ async def list_products(
         rows = await conn.fetch(
             f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id, p.status,
+                   COALESCE(p.is_test, FALSE) AS is_test,
                    p.created_at, p.updated_at,
                    pc.name AS category_name, pc.slug AS category_slug,
+                   EXISTS (
+                       SELECT 1
+                       FROM product_variant pv_nd
+                       JOIN inventory_batch ib_nd ON ib_nd.variant_id = pv_nd.id
+                       WHERE pv_nd.product_id = p.id
+                         AND pv_nd.deleted_at IS NULL
+                         AND ib_nd.deleted_at IS NULL
+                         AND ib_nd.status = 'active'
+                         AND COALESCE(ib_nd.is_test_batch, FALSE) = FALSE
+                         AND (
+                             pc.slug IN ('daily', 'electronics')
+                             OR ib_nd.expiration_time IS NULL
+                             OR BTRIM(COALESCE(ib_nd.origin_region, '')) = ''
+                             OR BTRIM(COALESCE(ib_nd.storage_condition, '')) = ''
+                             OR ib_nd.shelf_life_days IS NULL
+                             OR ib_nd.shelf_life_days <= 0
+                         )
+                   ) AS needs_data,
                    COALESCE(options.options, '[]'::jsonb) AS options,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
                    COALESCE(variants.total_stock, 0) AS total_stock,
@@ -80,6 +99,23 @@ async def list_products(
                         'currency', ib.currency,
                         'location_id', ib.location_id,
                         'status', ib.status,
+                        'inspection_status', ib.inspection_status,
+                        'expiration_time', ib.expiration_time,
+                        'origin_region', ib.origin_region,
+                        'storage_condition', ib.storage_condition,
+                        'shelf_life_days', ib.shelf_life_days,
+                        'quality_certificate_url', ib.quality_certificate_url,
+                        'is_test_batch', ib.is_test_batch,
+                        'needs_data', CASE
+                            WHEN pc.slug IN ('daily', 'electronics') THEN FALSE
+                            WHEN ib.expiration_time IS NULL
+                              OR BTRIM(COALESCE(ib.origin_region, '')) = ''
+                              OR BTRIM(COALESCE(ib.storage_condition, '')) = ''
+                              OR ib.shelf_life_days IS NULL
+                              OR ib.shelf_life_days <= 0
+                            THEN TRUE
+                            ELSE FALSE
+                        END,
                         'shelf_image_url', ib.shelf_image_url,
                         'media_assets', ib.media_assets
                     )) AS batch_list,
@@ -177,6 +213,38 @@ async def list_storefront_products(
         where_clauses = [
             "p.deleted_at IS NULL",
             "p.status = 'published'",
+            "COALESCE(p.is_test, FALSE) = FALSE",
+            "p.title NOT ILIKE '%测试%'",
+            "p.title NOT ILIKE '%演示%'",
+            "p.title NOT ILIKE '%CMD-%'",
+            "p.slug NOT ILIKE '%CMD-%'",
+            # 至少一个批次同时满足质检、效期、非测试和食品资料要求。
+            # 库存为 0 的合规批次仍允许商品以预订方式售卖。
+            """
+            EXISTS (
+                SELECT 1
+                FROM product_variant pv_ok
+                JOIN inventory_batch ib_ok ON ib_ok.variant_id = pv_ok.id
+                WHERE pv_ok.product_id = p.id
+                  AND pv_ok.deleted_at IS NULL
+                  AND pv_ok.status = 'active'
+                  AND ib_ok.deleted_at IS NULL
+                  AND ib_ok.status = 'active'
+                  AND ib_ok.inspection_status = 'passed'
+                  AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE
+                  AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW())
+                  AND (
+                      pc.slug IN ('daily', 'electronics')
+                      OR (
+                          ib_ok.expiration_time IS NOT NULL
+                          AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> ''
+                          AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> ''
+                          AND ib_ok.shelf_life_days IS NOT NULL
+                          AND ib_ok.shelf_life_days > 0
+                      )
+                  )
+            )
+            """,
         ]
         params: list[Any] = []
 
@@ -219,15 +287,35 @@ async def list_storefront_products(
                         'retail_price_cents', ib.retail_price_cents,
                         'currency', ib.currency,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'expiration_time', ib.expiration_time,
+                        'origin_region', ib.origin_region,
+                        'storage_condition', ib.storage_condition,
+                        'shelf_life_days', ib.shelf_life_days,
+                        'quality_certificate_url', ib.quality_certificate_url
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
-                      AND ib.status = 'active' AND (ib.stock_qty - ib.reserved_qty) > 0
+                      AND ib.status = 'active'
+                      AND ib.inspection_status = 'passed'
+                      AND COALESCE(ib.is_test_batch, FALSE) = FALSE
+                      AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW())
+                      AND (
+                          pc.slug IN ('daily', 'electronics')
+                          OR (
+                              ib.expiration_time IS NOT NULL
+                              AND BTRIM(COALESCE(ib.origin_region, '')) <> ''
+                              AND BTRIM(COALESCE(ib.storage_condition, '')) <> ''
+                              AND ib.shelf_life_days IS NOT NULL
+                              AND ib.shelf_life_days > 0
+                          )
+                      )
+                      AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
+                  AND pv.status = 'active'
             ) variants ON true
             WHERE {where}
             ORDER BY p.created_at DESC
@@ -253,7 +341,11 @@ async def list_storefront_products(
 
 
 async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
-    """商城商品详情：返回在售商品（含 0 库存——无货也可预订）。"""
+    """商城商品详情：返回在售商品（含 0 库存——无货也可预订）。
+
+    公开详情与列表使用同一套门禁：测试/演示商品、未过质检、已过期、
+    测试批次、食品资料不完整或没有任何合规批次的商品一律返回 None。
+    """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -285,17 +377,65 @@ async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
                         'retail_price_cents', ib.retail_price_cents,
                         'currency', ib.currency,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'expiration_time', ib.expiration_time,
+                        'origin_region', ib.origin_region,
+                        'storage_condition', ib.storage_condition,
+                        'shelf_life_days', ib.shelf_life_days,
+                        'quality_certificate_url', ib.quality_certificate_url
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
-                      AND ib.status = 'active' AND (ib.stock_qty - ib.reserved_qty) > 0
+                      AND ib.status = 'active'
+                      AND ib.inspection_status = 'passed'
+                      AND COALESCE(ib.is_test_batch, FALSE) = FALSE
+                      AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW())
+                      AND (
+                          pc.slug IN ('daily', 'electronics')
+                          OR (
+                              ib.expiration_time IS NOT NULL
+                              AND BTRIM(COALESCE(ib.origin_region, '')) <> ''
+                              AND BTRIM(COALESCE(ib.storage_condition, '')) <> ''
+                              AND ib.shelf_life_days IS NOT NULL
+                              AND ib.shelf_life_days > 0
+                          )
+                      )
+                      AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
+                  AND pv.status = 'active'
             ) variants ON true
             WHERE p.id = $1 AND p.deleted_at IS NULL AND p.status = 'published'
+              AND COALESCE(p.is_test, FALSE) = FALSE
+              AND p.title NOT ILIKE '%测试%'
+              AND p.title NOT ILIKE '%演示%'
+              AND p.title NOT ILIKE '%CMD-%'
+              AND p.slug NOT ILIKE '%CMD-%'
+              AND EXISTS (
+                  SELECT 1
+                  FROM product_variant pv_ok
+                  JOIN inventory_batch ib_ok ON ib_ok.variant_id = pv_ok.id
+                  WHERE pv_ok.product_id = p.id
+                    AND pv_ok.deleted_at IS NULL
+                    AND pv_ok.status = 'active'
+                    AND ib_ok.deleted_at IS NULL
+                    AND ib_ok.status = 'active'
+                    AND ib_ok.inspection_status = 'passed'
+                    AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE
+                    AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW())
+                    AND (
+                        pc.slug IN ('daily', 'electronics')
+                        OR (
+                            ib_ok.expiration_time IS NOT NULL
+                            AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> ''
+                            AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> ''
+                            AND ib_ok.shelf_life_days IS NOT NULL
+                            AND ib_ok.shelf_life_days > 0
+                        )
+                    )
+              )
             """,
             product_id,
         )

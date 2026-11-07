@@ -332,13 +332,30 @@ async def list_batches(
             f"""
             SELECT b.id, b.batch_no, b.variant_id, pv.product_id,
                    p.title AS product_title, pv.sku_code,
+                   COALESCE(p.is_test, FALSE) AS product_is_test,
+                   pc.slug AS category_slug,
                    b.location_id, sl.name AS location_name,
                    b.stock_qty, b.reserved_qty,
                    GREATEST(b.stock_qty - b.reserved_qty, 0) AS available_qty,
-                   b.status, b.inspection_status, b.created_at
+                   b.status, b.inspection_status, b.created_at,
+                   b.expiration_time, b.origin_region, b.storage_condition,
+                   b.shelf_life_days, b.quality_certificate_url,
+                   COALESCE(b.is_test_batch, FALSE) AS is_test_batch,
+                   CASE
+                     WHEN pc.slug IN ('daily', 'electronics') THEN FALSE
+                     WHEN b.expiration_time IS NULL
+                       OR BTRIM(COALESCE(b.origin_region, '')) = ''
+                       OR BTRIM(COALESCE(b.storage_condition, '')) = ''
+                       OR b.shelf_life_days IS NULL
+                       OR b.shelf_life_days <= 0
+                     THEN TRUE
+                     ELSE FALSE
+                   END AS needs_data
             FROM inventory_batch b
             JOIN product_variant pv ON pv.id = b.variant_id
             JOIN product p ON p.id = pv.product_id
+            LEFT JOIN product_category pc
+              ON pc.id = p.category_id AND pc.deleted_at IS NULL
             LEFT JOIN stock_location sl ON sl.id = b.location_id
             WHERE {" AND ".join(clauses)}
             ORDER BY b.created_at DESC

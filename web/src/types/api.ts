@@ -85,6 +85,13 @@ export interface InventoryBatch {
   currency: string;
   location_id: string;
   status: string;
+  inspection_status?: 'pending' | 'passed' | 'failed' | string;
+  expiration_time?: string | null;
+  origin_region?: string | null;
+  storage_condition?: string | null;
+  shelf_life_days?: number | null;
+  quality_certificate_url?: string | null;
+  is_test_batch?: boolean;
   shelf_image_url?: string | null;
   media_assets?: string[] | null;
 }
@@ -120,6 +127,8 @@ export interface Product {
   description: string | null;
   category_id: string | null;
   status: string;
+  is_test?: boolean;
+  needs_data?: boolean;
   created_at: string;
   updated_at: string | null;
   options: ProductOption[];
@@ -422,7 +431,16 @@ export interface InventoryBatch {
   reserved_qty: number;
   available_qty: number;
   status: string;
-  inspection_status: 'pending' | 'passed' | 'failed' | string;
+  inspection_status?: 'pending' | 'passed' | 'failed' | string;
+  category_slug?: string | null;
+  product_is_test?: boolean;
+  expiration_time?: string | null;
+  origin_region?: string | null;
+  storage_condition?: string | null;
+  shelf_life_days?: number | null;
+  quality_certificate_url?: string | null;
+  is_test_batch?: boolean;
+  needs_data?: boolean;
   created_at: string;
 }
 
