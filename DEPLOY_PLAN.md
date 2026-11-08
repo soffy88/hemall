@@ -1,6 +1,9 @@
 # Hemall `fix/launch-p0` 上线计划
 
-目标版本：`fix/launch-p0` @ `864511d6065ce0b35acebd8b232cdc6d9ca20951`
+目标分支：`fix/launch-p0`
+代码验证版本：`864511d6065ce0b35acebd8b232cdc6d9ca20951`
+说明：该 commit 之后仅新增 P0_FIX_REPORT/DEPLOY_PLAN/SUMMARY 等文档；若在最新
+HEAD 重新构建，按 `scripts/build-release.sh` 生成的 `release/<HEAD>/` 为准即可。
 镜像（本机已构建，未 push）：
 - `registry.sxueji.com/hemall/backend:sha-864511d6065ce0b35acebd8b232cdc6d9ca20951`
 - `registry.sxueji.com/hemall/frontend:sha-864511d6065ce0b35acebd8b232cdc6d9ca20951`

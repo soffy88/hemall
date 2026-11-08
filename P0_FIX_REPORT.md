@@ -86,3 +86,20 @@
   `scripts/build-release.sh --push`（或在当前机器 `docker push` 两个 sha 标签）。
 - 本轮构建首次因构建容器访问 github.com:443 超时失败两次，重试后成功；
   若 CI/发布机网络受限，需配置代理或预拉 3O 依赖。
+
+## 提交清单（fix/launch-p0）
+
+```
+7a8c238 ops(backup)             346d664 fix(p0): paid/timeout/shipping
+034950a fix(payments alipay)    c3d0ebd fix(payments callbacks)
+3ab35a6 fix(refunds)            e4944ea fix(storefront cart)
+95c7a3e fix(catalog gate)       bbbd71c fix(alcohol)
+9fabb17 fix(compliance/notify)  cdba37d fix(security)
+82bdf21 ops(monitoring)         baf550e build(release)
+859b42f style(ruff)             d5c632b fix(refunds follow-up)
+cbb3033 test(preorder)          1e263fa test(rate-limit isolation)
+5830872 build(var dirs)         864511d fix(orders jsonb)
+cbcc864+ docs(P0 report/deploy/summary)
+```
+
+镜像与回滚演练对应代码 commit `864511d`；其后仅文档变化。
