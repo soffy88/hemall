@@ -596,6 +596,7 @@ class TestRefundConcurrency:
             RefundError,
             _get_refund_request,
             approve_refund,
+            confirm_manual_refund,
             create_refund_request,
         )
 
@@ -620,8 +621,14 @@ class TestRefundConcurrency:
         assert len(successes) == 1
         assert len(failures) == 1
         final = await _get_refund_request(cn_pool, refund.id)
-        assert final.status == RefundStatus.SUCCEEDED
-        assert final.actual_refunded_amount == 5_000  # 只退了一笔
+        # manual 退款必须等人工确认，审核通过后停在 refunding，不得显示成功
+        assert final.status == RefundStatus.REFUNDING
+        assert final.approved_amount == 5_000
+        assert final.actual_refunded_amount == 0
+
+        confirmed = await confirm_manual_refund(cn_pool, refund.id, REVIEWER_A)
+        assert confirmed.status == RefundStatus.SUCCEEDED
+        assert confirmed.actual_refunded_amount == 5_000  # 只退了一笔
 
     async def test_concurrent_creations_only_one_exceeds_quota(self, cn_pool):
         """并发创建两笔各 6000 的申请 (实付 10000): 订单行 FOR UPDATE 串行化,

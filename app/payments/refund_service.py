@@ -259,7 +259,8 @@ async def create_refund_request(
         raise RefundAmountExceedsError("requested amount must be positive")
     if type == RefundType.RETURN_REFUND and not order_line_id:
         raise RefundNotEligibleError(
-            "return_refund requires order_line_id so inventory can be restored to the original batch"
+            "return_refund requires order_line_id so inventory can be restored "
+            "to the original batch"
         )
 
     async with pool.acquire() as conn:
@@ -335,13 +336,16 @@ async def create_refund_request(
                     f"reserved={order_reserved})"
                 )
 
-            # 检查是否有进行中的售后 (同订单/同行)
+            # 检查是否有尚未审核的同类售后申请 (同订单/同行)。
+            # 只拦 submitted/approved：这两态是“顾客已提交、管理员尚未处理”的重复请求。
+            # refunding 可能是 manual 退款等待线下确认，它已经计入上面的累计额度，
+            # 不应再阻止用户对同一订单发起其余部分退款。
             existing = await conn.fetchrow(
                 """
                 SELECT id FROM refund_request
                 WHERE order_id = $1
                   AND (order_line_id IS NULL OR order_line_id = $2)
-                  AND status IN ('submitted','approved','refunding')
+                  AND status IN ('submitted','approved')
                 """,
                 order_id,
                 order_line_id,
@@ -830,7 +834,8 @@ async def _restock_inventory(
                     movement_type, quantity, reference_type, reference_id,
                     reason, operator_id, idempotency_key
                 ) VALUES ($1,$2,$3,$4,'return',$5,'refund',$6,$7,$8,$9)
-                ON CONFLICT (idempotency_key) DO NOTHING
+                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                DO NOTHING
                 RETURNING id
                 """,
                 str(line["product_id"]),
