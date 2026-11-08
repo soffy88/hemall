@@ -154,7 +154,9 @@ async def test_storefront_catalog_gate(catalog_pool):
     )
     test_product = await _make_product(pool, ids, tag="test", is_test=True, batch={})
     cmd_product = await _make_product(pool, ids, tag="cmd", title_prefix="CMD-081550", batch={})
-    daily = await _make_product(pool, ids, tag="daily", category_slug="daily", batch={"origin": None})
+    daily = await _make_product(
+        pool, ids, tag="daily", category_slug="daily", batch={"origin": None}
+    )
     alcohol = await _make_product(pool, ids, tag="alcohol", category_slug="drinks", batch={})
     zero_stock = await _make_product(pool, ids, tag="preorder", batch={"stock": 0})
 
