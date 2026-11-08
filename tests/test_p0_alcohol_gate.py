@@ -1,4 +1,4 @@
-"""P0-09 酒类默认下架、年龄确认与理性饮酒提示。"""
+"""P0-09 + 2026-11-08 决定：酒类默认上架，年龄确认与理性饮酒提示不减配。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ from app.alcohol import calculate_age, issue_age_token, verify_age_token
 from app.config import Settings
 
 
-def test_alcohol_defaults_to_disabled():
+def test_alcohol_defaults_to_enabled_but_gated():
     settings = Settings(environment="staging")
-    assert settings.alcohol_sales_enabled is False
+    # 线上范围比门店广：酒水保留上架，但年龄门槛与提示始终生效。
+    assert settings.alcohol_sales_enabled is True
     assert settings.alcohol_min_age == 18
 
 

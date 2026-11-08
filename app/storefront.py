@@ -584,6 +584,101 @@ async def _route_add_line_item(
     return {"line_item_id": str(line_item_id), "new_quantity": new_qty}
 
 
+# ── 称重商品加购 ────────────────────────────────────────────────────────
+
+
+async def _route_add_weight_line_item(
+    pool: Any,
+    *,
+    cart_id: str,
+    batch_id: Any | None,
+    variant_id: Any,
+    quantity: int,
+    weight_step_grams: int,
+    unit_price_cents_per_jin: int,
+    price_basis_grams: int,
+    weight_option_label: str,
+) -> dict[str, Any]:
+    """称重商品加购：一行 = 一个重量档 × 份数，金额按预估重量四舍五入到分。
+
+    同一批次不同重量档各自成行（唯一键含 weight_step_grams）；同一档重复
+    加购只累加份数。库存预留与现货/预订拆分留到结算时按 **克** 做，加购
+    本身不动批次计数器（与预订行一致）。
+    """
+    from app.weigh_price import weigh_amount_cents
+
+    unit_estimate = weigh_amount_cents(
+        weight_step_grams, unit_price_cents_per_jin, price_basis_grams=price_basis_grams
+    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cart = await conn.fetchrow(
+                "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                cart_id,
+            )
+            if cart is None:
+                raise HTTPException(404, "cart not found")
+            existing = await conn.fetchrow(
+                """
+                SELECT * FROM cart_line_item
+                WHERE cart_id = $1 AND batch_id = $2 AND weight_step_grams = $3
+                  AND deleted_at IS NULL
+                FOR UPDATE
+                """,
+                cart_id,
+                batch_id,
+                weight_step_grams,
+            )
+            if existing is not None:
+                line_item_id = existing["id"]
+                new_qty = int(existing["quantity"]) + quantity
+                await conn.execute(
+                    """
+                    UPDATE cart_line_item
+                    SET quantity = $1, unit_price_cents = $2, line_total_cents = $3,
+                        estimated_weight_grams = $4, unit_price_cents_per_jin = $5,
+                        price_basis_grams = $6, weight_option_label = $7,
+                        pricing_mode = 'weight', updated_at = NOW()
+                    WHERE id = $8
+                    """,
+                    new_qty,
+                    unit_estimate,
+                    unit_estimate * new_qty,
+                    weight_step_grams * new_qty,
+                    unit_price_cents_per_jin,
+                    price_basis_grams,
+                    weight_option_label,
+                    line_item_id,
+                )
+            else:
+                line_item_id = uuid7()
+                new_qty = quantity
+                await conn.execute(
+                    """
+                    INSERT INTO cart_line_item
+                        (id, cart_id, batch_id, variant_id, quantity,
+                         unit_price_cents, line_total_cents, pricing_mode,
+                         unit_price_cents_per_jin, price_basis_grams,
+                         estimated_weight_grams, weight_step_grams, weight_option_label)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'weight', $8, $9, $10, $11, $12)
+                    """,
+                    line_item_id,
+                    cart_id,
+                    batch_id,
+                    variant_id,
+                    quantity,
+                    unit_estimate,
+                    unit_estimate * quantity,
+                    unit_price_cents_per_jin,
+                    price_basis_grams,
+                    weight_step_grams * quantity,
+                    weight_step_grams,
+                    weight_option_label,
+                )
+            await _recompute_cart_totals(conn, cart)
+    return {"line_item_id": str(line_item_id), "new_quantity": new_qty}
+
+
 # ── 购物车 ──────────────────────────────────────────────────────────────
 
 
@@ -740,6 +835,56 @@ class AddLineItemRequest(BaseModel):
     batch_id: str | None = None
     variant_id: str | None = None
     quantity: int = 1
+    # 称重商品：二选一。weight_grams 为自定义克数；weight_option_label 命中
+    # 商品配置的档位（如“约1斤”）。都不传则取第一个档位。
+    weight_grams: int | None = None
+    weight_option_label: str | None = None
+
+
+async def _load_variant_pricing(conn: Any, variant_id: str) -> Any | None:
+    return await conn.fetchrow(
+        """
+        SELECT pv.id, pv.product_id, pv.reference_price_cents, pv.option_values,
+               COALESCE(pv.pricing_mode, 'piece') AS pricing_mode,
+               pv.unit_price_cents, COALESCE(pv.price_basis_grams, 500)
+                   AS price_basis_grams,
+               COALESCE(pv.weight_options, '[]'::jsonb) AS weight_options
+        FROM product_variant pv
+        JOIN product p ON p.id = pv.product_id AND p.deleted_at IS NULL
+        WHERE pv.id = $1 AND pv.deleted_at IS NULL
+        """,
+        variant_id,
+    )
+
+
+def _resolve_weight_selection(
+    *,
+    weight_grams: int | None,
+    weight_option_label: str | None,
+    weight_options: object,
+) -> tuple[int, str]:
+    """把自定义克数/档位标签解析成 (每份克数, 档位文案)。"""
+    from app.weigh_price import DEFAULT_WEIGHT_OPTIONS, parse_weight_options
+
+    options = parse_weight_options(weight_options) or [
+        dict(item) for item in DEFAULT_WEIGHT_OPTIONS
+    ]
+    if weight_grams is not None:
+        from app.weigh_price import validate_weight_grams
+
+        grams = validate_weight_grams(weight_grams)
+        label = f"自定义{grams}克"
+        for option in options:
+            if int(option["grams"]) == grams:
+                return grams, str(option["label"])
+        return grams, label
+    if weight_option_label:
+        for option in options:
+            if str(option["label"]) == weight_option_label:
+                return int(option["grams"]), str(option["label"])
+        raise HTTPException(400, f"unknown weight option: {weight_option_label}")
+    option = options[0]
+    return int(option["grams"]), str(option["label"])
 
 
 @router.post("/carts/line-items")
@@ -774,6 +919,76 @@ async def add_line_item(
     await _require_alcohol_line_access(
         request, pool, batch_id=body.batch_id, variant_id=body.variant_id
     )
+
+    # ── 称重商品：走独立加购路径（按克预留，按斤计价） ──────────────
+    async with pool.acquire() as conn:
+        resolved_variant_id = body.variant_id
+        if resolved_variant_id is None and body.batch_id is not None:
+            resolved_variant_id = await conn.fetchval(
+                "SELECT variant_id FROM inventory_batch WHERE id = $1 AND deleted_at IS NULL",
+                body.batch_id,
+            )
+        pricing = (
+            await _load_variant_pricing(conn, resolved_variant_id)
+            if resolved_variant_id is not None
+            else None
+        )
+    if pricing is not None and pricing["pricing_mode"] == "weight":
+        from app.weigh_price import weigh_amount_cents
+
+        if body.batch_id is not None:
+            async with pool.acquire() as conn:
+                weight_batch = await conn.fetchrow(
+                    "SELECT id, variant_id, retail_price_cents, status, inspection_status "
+                    "FROM inventory_batch WHERE id = $1 AND deleted_at IS NULL",
+                    body.batch_id,
+                )
+            if weight_batch is None:
+                raise HTTPException(404, "batch not found")
+            if str(weight_batch["variant_id"]) != str(pricing["id"]):
+                raise HTTPException(400, "batch does not belong to variant")
+            if weight_batch["inspection_status"] == "failed":
+                raise HTTPException(400, "该商品质检未通过，无法购买")
+        else:
+            async with pool.acquire() as conn:
+                weight_batch = await _pick_best_batch(conn, str(pricing["id"]))
+                if weight_batch is None:
+                    weight_batch = await _pick_pending_batch(conn, str(pricing["id"]))
+        weight_step_grams, weight_label = _resolve_weight_selection(
+            weight_grams=body.weight_grams,
+            weight_option_label=body.weight_option_label,
+            weight_options=pricing["weight_options"],
+        )
+        unit_per_jin = pricing["unit_price_cents"]
+        if unit_per_jin is None and weight_batch is not None:
+            unit_per_jin = weight_batch["retail_price_cents"]
+        if unit_per_jin is None:
+            raise HTTPException(400, "该商品暂无称重价格，无法下单")
+        # 先算一次，确保价格/重量组合可计价（非法输入在这里 400，不落脏行）。
+        weigh_amount_cents(
+            weight_step_grams,
+            int(unit_per_jin),
+            price_basis_grams=int(pricing["price_basis_grams"]),
+        )
+        response = await _route_add_weight_line_item(
+            pool,
+            cart_id=body.cart_id,
+            batch_id=weight_batch["id"] if weight_batch is not None else None,
+            variant_id=pricing["id"],
+            quantity=body.quantity,
+            weight_step_grams=weight_step_grams,
+            unit_price_cents_per_jin=int(unit_per_jin),
+            price_basis_grams=int(pricing["price_basis_grams"]),
+            weight_option_label=weight_label,
+        )
+        if customer_id is not None:
+            try:
+                _log_recommend_behavior(
+                    customer_id, str(pricing["product_id"]), UserBehaviorType.CART_ADD
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("recommend weight cart_add logging failed", exc_info=True)
+        return response
 
     batch_id = body.batch_id
     variant_row = None
@@ -941,12 +1156,46 @@ async def update_line_item(
     # 同一 delta 同步，结算转正才准确。
     async with pool.acquire() as conn:
         prior_line = await conn.fetchrow(
-            "SELECT id, batch_id, quantity, reserved_qty FROM cart_line_item "
+            "SELECT id, batch_id, quantity, reserved_qty, pricing_mode, "
+            "weight_step_grams, unit_price_cents_per_jin, price_basis_grams "
+            "FROM cart_line_item "
             "WHERE cart_id = $1 AND deleted_at IS NULL AND (id = $2 OR batch_id = $2) "
             "ORDER BY CASE WHEN batch_id = $2 THEN 0 ELSE 1 END LIMIT 1",
             body.cart_id,
             body.line_item_id,
         )
+    if prior_line is not None and prior_line["pricing_mode"] == "weight":
+        from app.weigh_price import weigh_amount_cents
+
+        new_qty = int(body.quantity)
+        if new_qty <= 0:
+            raise HTTPException(400, "quantity must be positive")
+        step = int(prior_line["weight_step_grams"] or 0)
+        if step <= 0:
+            raise HTTPException(400, "weight line missing weight_step_grams")
+        unit_per_jin = int(prior_line["unit_price_cents_per_jin"] or 0)
+        basis = int(prior_line["price_basis_grams"] or 500)
+        unit_estimate = weigh_amount_cents(step, unit_per_jin, price_basis_grams=basis)
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                cart = await conn.fetchrow(
+                    "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                    body.cart_id,
+                )
+                if cart is None:
+                    raise HTTPException(404, "cart not found")
+                await conn.execute(
+                    "UPDATE cart_line_item SET quantity = $1, unit_price_cents = $2, "
+                    "line_total_cents = $3, estimated_weight_grams = $4, updated_at = NOW() "
+                    "WHERE id = $5",
+                    new_qty,
+                    unit_estimate,
+                    unit_estimate * new_qty,
+                    step * new_qty,
+                    prior_line["id"],
+                )
+                await _recompute_cart_totals(conn, cart)
+        return {"line_item_id": str(prior_line["id"]), "new_quantity": new_qty}
     # 对外字段叫 line_item_id，前端传的是行 id、omodul 要的是 batch_id：
     # 命中行时统一解析成该行批次再走原路（传批次 id 的旧调用方不受影响）；
     # 无批次行（只绑变体）没有 batch_key，删除走路由层、改量维持原 400。
@@ -1391,6 +1640,10 @@ async def _create_order_from_cart(
                 SELECT cli.id, cli.batch_id, cli.variant_id, cli.quantity,
                        cli.reserved_qty AS cart_held_qty,
                        cli.unit_price_cents, cli.line_total_cents,
+                       COALESCE(cli.pricing_mode, 'piece') AS pricing_mode,
+                       cli.unit_price_cents_per_jin,
+                       COALESCE(cli.price_basis_grams, 500) AS price_basis_grams,
+                       cli.estimated_weight_grams,
                        ib.variant_id AS batch_variant_id
                 FROM cart_line_item cli
                 LEFT JOIN inventory_batch ib ON ib.id = cli.batch_id
@@ -1409,6 +1662,25 @@ async def _create_order_from_cart(
                 quantity = int(line["quantity"])
                 if quantity <= 0:
                     raise ValueError("quantity must be positive")
+                weight_mode = line["pricing_mode"] == "weight"
+                if weight_mode:
+                    from app.weigh_price import weigh_amount_cents
+
+                    estimated_grams = int(line["estimated_weight_grams"] or 0)
+                    if estimated_grams <= 0:
+                        raise ValueError("weight line has no estimated_weight_grams")
+                    unit_per_jin = int(line["unit_price_cents_per_jin"] or 0)
+                    basis = int(line["price_basis_grams"] or 500)
+                    line_total_cents = weigh_amount_cents(
+                        estimated_grams, unit_per_jin, price_basis_grams=basis
+                    )
+                    reserved_wanted = estimated_grams
+                else:
+                    estimated_grams = None
+                    unit_per_jin = None
+                    basis = 500
+                    line_total_cents = int(line["line_total_cents"])
+                    reserved_wanted = quantity
                 variant_id = line["variant_id"] or line["batch_variant_id"]
                 if variant_id is None:
                     raise ValueError("cart line has no variant")
@@ -1447,19 +1719,25 @@ async def _create_order_from_cart(
                     if cart_held > 0 and line["batch_id"] is not None and own_held == 0
                     else None
                 )
-                reserve_qty = min(quantity, _batch_available(batch) + own_held)
+                reserve_qty = min(reserved_wanted, _batch_available(batch) + own_held)
                 prepared.append(
                     {
                         "variant_id": variant_id,
                         "batch": batch,
                         "quantity": quantity,
                         "reserve_qty": reserve_qty,
-                        "preorder_qty": quantity - reserve_qty,
+                        "preorder_qty": reserved_wanted - reserve_qty,
                         "own_held": own_held,
                         "cart_held": cart_held,
                         "release_batch_id": release_batch_id,
-                        "unit_price_cents": int(line["unit_price_cents"]),
-                        "line_total_cents": int(line["line_total_cents"]),
+                        "unit_price_cents": (
+                            int(line["unit_price_cents"]) if not weight_mode else unit_per_jin
+                        ),
+                        "line_total_cents": line_total_cents,
+                        "pricing_mode": "weight" if weight_mode else "piece",
+                        "unit_price_cents_per_jin": unit_per_jin,
+                        "price_basis_grams": basis,
+                        "estimated_weight_grams": estimated_grams,
                     }
                 )
 
@@ -1571,8 +1849,12 @@ async def _create_order_from_cart(
                     """
                     INSERT INTO order_line_item
                         (id, order_id, batch_id, variant_id, quantity, preorder_qty,
-                         unit_price_cents, line_total_cents, location_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                         unit_price_cents, line_total_cents, location_id,
+                         pricing_mode, unit_price_cents_per_jin, price_basis_grams,
+                         estimated_weight_grams, estimated_amount_cents,
+                         settlement_status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                            $10, $11, $12, $13, $14, $15)
                     """,
                     line_id,
                     order_id,
@@ -1583,6 +1865,12 @@ async def _create_order_from_cart(
                     prep["unit_price_cents"],
                     prep["line_total_cents"],
                     batch["location_id"] if batch is not None else None,
+                    prep["pricing_mode"],
+                    prep["unit_price_cents_per_jin"],
+                    prep["price_basis_grams"],
+                    prep["estimated_weight_grams"],
+                    prep["line_total_cents"] if prep["pricing_mode"] == "weight" else None,
+                    "pending" if prep["pricing_mode"] == "weight" else "not_required",
                 )
                 if prep["release_batch_id"] is not None:
                     # 本行在原批次上的占位无法转正（批次被替换/不可售）：
@@ -2353,12 +2641,14 @@ async def storefront_products(
     offset: int = 0,
 ):
     include_alcohol = alcohol_access_allowed(request)
+    cfg = request.app.state.config
     return await queries.list_storefront_products(
         _pool(request),
         search=search,
         min_price=min_price,
         max_price=max_price,
         include_alcohol=include_alcohol,
+        strict_data_gate=bool(cfg.catalog_strict_data_gate),
         limit=limit,
         offset=offset,
     )
@@ -2395,6 +2685,7 @@ async def storefront_product(product_id: str, request: Request):
         _pool(request),
         product_id,
         include_alcohol=alcohol_access_allowed(request),
+        strict_data_gate=bool(request.app.state.config.catalog_strict_data_gate),
     )
     if product is None:
         raise HTTPException(404, "product not found")
@@ -3494,6 +3785,256 @@ async def ingest_my_product(
         update_in_place=True,
         actor_ref=f"c_{customer_id}",
     )
+
+
+# ── 线上称重结算（商家端 / 顾客确认） ─────────────────────────────
+
+
+@router.get("/merchant/weigh-settlements")
+async def merchant_weigh_settlements(
+    request: Request,
+    status: str | None = None,
+    limit: int = 50,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """待处理/已处理的称重行列表（按订单行维度，含结算单状态）。"""
+    await _require_merchant(request, principal)
+    if limit < 1 or limit > 200:
+        raise HTTPException(400, "limit must be 1..200")
+    where = ["oli.pricing_mode = 'weight'"]
+    params: list[Any] = []
+    if status:
+        params.append(status)
+        where.append(f"oli.settlement_status = ${len(params)}")
+    else:
+        where.append(
+            "oli.settlement_status IN ('pending', 'needs_confirmation', "
+            "'charge_pending', 'disputed', 'refund_pending')"
+        )
+    params.append(limit)
+    async with _pool(request).acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT oli.id AS order_line_item_id, oli.order_id, oli.quantity,
+                   oli.estimated_weight_grams, oli.estimated_amount_cents,
+                   oli.unit_price_cents_per_jin, oli.price_basis_grams,
+                   oli.actual_weight_grams, oli.actual_amount_cents,
+                   oli.weight_diff_cents, oli.settlement_status AS line_status,
+                   p.title AS product_title, pv.sku_code,
+                   o.status AS order_status, o.customer_id,
+                   ws.id AS settlement_id, ws.status AS settlement_status,
+                   ws.note AS settlement_note, ws.created_at AS settled_created_at
+            FROM order_line_item oli
+            JOIN customer_order o ON o.id = oli.order_id
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            LEFT JOIN weigh_settlement ws ON ws.order_line_item_id = oli.id
+            WHERE {" AND ".join(where)}
+            ORDER BY oli.created_at ASC
+            LIMIT ${len(params)}
+            """,
+            *params,
+        )
+    return {
+        "items": [
+            {
+                "order_line_item_id": str(r["order_line_item_id"]),
+                "order_id": str(r["order_id"]),
+                "order_status": r["order_status"],
+                "customer_id": str(r["customer_id"]) if r["customer_id"] else None,
+                "product_title": r["product_title"],
+                "sku_code": r["sku_code"],
+                "quantity": int(r["quantity"]),
+                "unit_price_cents_per_jin": r["unit_price_cents_per_jin"],
+                "price_basis_grams": int(r["price_basis_grams"] or 500),
+                "estimated_weight_grams": r["estimated_weight_grams"],
+                "estimated_amount_cents": int(r["estimated_amount_cents"] or 0),
+                "actual_weight_grams": r["actual_weight_grams"],
+                "actual_amount_cents": r["actual_amount_cents"],
+                "weight_diff_cents": r["weight_diff_cents"],
+                "line_status": r["line_status"],
+                "settlement_id": str(r["settlement_id"]) if r["settlement_id"] else None,
+                "settlement_status": r["settlement_status"],
+                "settlement_note": r["settlement_note"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/merchant/weigh-settlements")
+async def merchant_record_weigh(
+    request: Request,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """录入实称重量：自动算差额、容差判断、发起退款或记待补收。"""
+    await _require_merchant(request, principal)
+    from app.weigh_price import validate_weight_grams
+    from app.weigh_settle import WeighSettlementConflict, WeighSettlementError, record_actual_weight
+
+    line_id = body.get("order_line_item_id")
+    _require_uuid(line_id, "order_line_item_id")
+    try:
+        weight_grams = validate_weight_grams(body.get("weight_grams"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cfg = request.app.state.config
+    try:
+        settlement = await record_actual_weight(
+            _pool(request),
+            order_line_item_id=str(line_id),
+            weight_grams=weight_grams,
+            tolerance_percent=int(cfg.weigh_diff_tolerance_percent),
+            created_by=str(principal["customer_id"]),
+            note=str(body.get("note") or ""),
+        )
+    except WeighSettlementConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except WeighSettlementError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"settlement": settlement}
+
+
+@router.post("/merchant/weigh-settlements/{settlement_id}/confirm-charge")
+async def merchant_confirm_charge(
+    settlement_id: str,
+    request: Request,
+    body: dict | None = None,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """manual 模式：确认多出部分已线下补收。"""
+    await _require_merchant(request, principal)
+    _require_uuid(settlement_id, "settlement_id")
+    from app.weigh_settle import WeighSettlementConflict, mark_charge_collected
+
+    try:
+        settlement = await mark_charge_collected(
+            _pool(request),
+            settlement_id=settlement_id,
+            collected_by=str(principal["customer_id"]),
+            note=str((body or {}).get("note") or ""),
+        )
+    except WeighSettlementConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"settlement": settlement}
+
+
+@router.get("/merchant/weigh-settlements/{settlement_id}/slip")
+async def merchant_weigh_slip(
+    settlement_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """称重单（打印/展示用）：行项、预估/实称、差额、处理状态。"""
+    await _require_merchant(request, principal)
+    _require_uuid(settlement_id, "settlement_id")
+    from app.weigh_settle import _settlement_dict
+
+    async with _pool(request).acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT ws.*, p.title AS product_title, pv.sku_code,
+                   o.id AS order_ref, o.status AS order_status
+            FROM weigh_settlement ws
+            JOIN customer_order o ON o.id = ws.order_id
+            LEFT JOIN order_line_item oli ON oli.id = ws.order_line_item_id
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE ws.id = $1
+            """,
+            settlement_id,
+        )
+    if row is None:
+        raise HTTPException(404, "settlement not found")
+    settlement = _settlement_dict(row)
+    diff_yuan = settlement["diff_cents"] / 100
+    lines = [
+        "HEMALL 称重单",
+        f"订单: {row['order_ref']}",
+        f"商品: {row['product_title'] or ''} {row['sku_code'] or ''}".strip(),
+        f"单价: ¥{settlement['unit_price_cents_per_jin'] / 100:.2f}/斤",
+        f"预估价: ¥{settlement['estimated_amount_cents'] / 100:.2f}"
+        f"（预估 {settlement['estimated_weight_grams'] or 0} 克）",
+        f"实称: {settlement['weight_grams']} 克",
+        f"实际金额: ¥{settlement['actual_amount_cents'] / 100:.2f}",
+        f"差额: {'补收' if diff_yuan > 0 else '退款' if diff_yuan < 0 else '无'} "
+        f"¥{abs(diff_yuan):.2f}",
+        f"状态: {settlement['status']}",
+    ]
+    if settlement["note"]:
+        lines.append(f"备注: {settlement['note']}")
+    return {"settlement": settlement, "slip_text": "\n".join(lines)}
+
+
+@router.get("/orders/{order_id}/weigh-settlements")
+async def customer_weigh_settlements(
+    order_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """顾客查看本单的称重结算（超出容差时用于确认）。"""
+    _require_uuid(order_id, "order_id")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval(
+            "SELECT customer_id FROM customer_order WHERE id = $1", order_id
+        )
+        if owner is None:
+            raise HTTPException(404, "order not found")
+        if str(owner) != str(principal["customer_id"]):
+            raise HTTPException(403, "order does not belong to customer")
+        rows = await conn.fetch(
+            """
+            SELECT ws.*, p.title AS product_title
+            FROM weigh_settlement ws
+            LEFT JOIN order_line_item oli ON oli.id = ws.order_line_item_id
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE ws.order_id = $1 ORDER BY ws.created_at
+            """,
+            order_id,
+        )
+    return {
+        "items": [{**_settlement_payload(r), "product_title": r["product_title"]} for r in rows]
+    }
+
+
+@router.post("/orders/{order_id}/weigh-settlements/{settlement_id}/confirm")
+async def customer_confirm_weigh(
+    order_id: str,
+    settlement_id: str,
+    request: Request,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """顾客接受/拒绝超出容差的称重差额。"""
+    _require_uuid(order_id, "order_id")
+    _require_uuid(settlement_id, "settlement_id")
+    from app.weigh_settle import WeighSettlementError, confirm_settlement
+
+    accept = body.get("accept")
+    if not isinstance(accept, bool):
+        raise HTTPException(400, "accept must be a boolean")
+    try:
+        settlement = await confirm_settlement(
+            _pool(request),
+            settlement_id=settlement_id,
+            customer_id=str(principal["customer_id"]),
+            accept=accept,
+            note=str(body.get("note") or ""),
+        )
+    except WeighSettlementError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if settlement["order_id"] != order_id:
+        raise HTTPException(404, "settlement not found for order")
+    return {"settlement": settlement}
+
+
+def _settlement_payload(row: Any) -> dict:
+    from app.weigh_settle import _settlement_dict
+
+    return _settlement_dict(row)
 
 
 # ── 商家预订 ─────────────────────────────────────────────────────

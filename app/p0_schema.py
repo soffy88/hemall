@@ -16,6 +16,7 @@ from .ext.spider_hygiene import OCR_GATE_DDL
 from .membership import MEMBERSHIP_DDL
 from .night_pintuan import NIGHT_PINTUAN_DDL
 from .weigh import WEIGH_DDL
+from .weigh_price import WEIGH_PRICE_DDL
 
 P0_SCHEMA_DDL = """
 -- ── payment authority / outbox / refund idempotency ────────────────
@@ -300,6 +301,8 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(OCR_GATE_DDL)
         # 柜台称重试点：hardware_event 账本列 + counter_ticket 单据头。
         await conn.execute(WEIGH_DDL)
+        # 线上称重定价：计价方式/预估与实称重量/多退少补结算/每日进销存。
+        await conn.execute(WEIGH_PRICE_DDL)
         # 柜台收尾件：现金结算记录 + 交接班账本（幂等，见 app/counter_closeout.py）。
         await conn.execute(COUNTER_CLOSEOUT_DDL)
         # 柜台视觉识别接线：帧存档 + 识别评估账本（幂等，见 app/counter_vision.py）。

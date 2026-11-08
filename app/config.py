@@ -160,11 +160,23 @@ class Settings(BaseSettings):
     # provider: manual | wechat | stripe。沙盒/生产无缝切换 = 改这一个变量 +
     # 对应密钥，bootstrap 按此注册；真实密钥缺失时诚实回退 manual。
     payment_gateway_provider: str = "manual"
-    # P0-09: 酒类默认下架，直到用户明确确认并完成年龄校验。打开销售后，
+    # P0-09 + 2026-11-08 用户决定：酒类保留线上上架（线上范围比门店更广）。
+    # 上架不等于放宽保护：年龄确认、未成年人禁售与理性饮酒提示始终生效，
     # 前台仍需通过 /store/alcohol/verify-age 取得签名年龄凭证。
-    alcohol_sales_enabled: bool = False
+    alcohol_sales_enabled: bool = True
     alcohol_min_age: int = 18
     alcohol_age_cookie_days: int = 30
+    # 2026-11-08 用户决定：商品资料（保质期/产地/储存条件）缺失不再自动隐藏。
+    # 默认 "提示不拦截"：后台标「待补资料」并出清单，前台照常展示；只有
+    # 质检未通过批次和明确的测试商品会被隐藏。需要恢复严格门禁时把此开关
+    # 设为 true（或 HEMALL_CATALOG_STRICT_DATA_GATE=true）。
+    catalog_strict_data_gate: bool = False
+    # 称重定价：前台统一按“斤”展示，内部以克与分计算；履约称重后的
+    # 多退少补容差（占预估金额百分比）。超出容差须顾客确认。
+    weigh_price_unit: str = "jin"  # jin=500g（展示单位）
+    weigh_diff_tolerance_percent: int = 10
+    # 预授权未接入时，多出预估价的部分只记「待补收」，不伪造二次扣款。
+    weigh_extra_charge_enabled: bool = False
     # 微信支付 v3 (值可为文件路径或内联 PEM 内容；用 str 而非 Path——
     # pathlib 会把 base64 里的 // 折叠成 / 破坏密钥)
     wechat_pay_appid: str = ""

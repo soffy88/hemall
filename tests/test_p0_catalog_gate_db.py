@@ -166,7 +166,8 @@ async def test_storefront_catalog_gate(catalog_pool):
     assert valid in listed_ids
     assert daily in listed_ids
     assert zero_stock in listed_ids
-    assert missing not in listed_ids
+    # 2026-11-08 用户决定：资料缺失不隐藏（默认非严格模式），只在后台标待补。
+    assert missing in listed_ids
     assert failed not in listed_ids
     assert expired not in listed_ids
     assert test_product not in listed_ids
@@ -175,7 +176,13 @@ async def test_storefront_catalog_gate(catalog_pool):
 
     assert await queries.get_storefront_product(pool, valid) is not None
     assert await queries.get_storefront_product(pool, daily) is not None
-    assert await queries.get_storefront_product(pool, missing) is None
+    assert await queries.get_storefront_product(pool, missing) is not None
+    # 严格模式开关（默认关）恢复旧的资料门禁。
+    strict_listed = await queries.list_storefront_products(
+        pool, search=token, strict_data_gate=True, limit=100
+    )
+    assert missing not in {row["id"] for row in strict_listed}
+    assert await queries.get_storefront_product(pool, missing, strict_data_gate=True) is None
     assert await queries.get_storefront_product(pool, failed) is None
     assert await queries.get_storefront_product(pool, expired) is None
     assert await queries.get_storefront_product(pool, test_product) is None

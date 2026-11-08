@@ -206,10 +206,48 @@ async def list_storefront_products(
     min_price: int | None = None,
     max_price: int | None = None,
     include_alcohol: bool = False,
+    strict_data_gate: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
-    """商城公开商品列表：返回在售商品（含 0 库存——无货也可预订）。"""
+    """商城公开商品列表：返回在售商品（含 0 库存——无货也可预订）。
+
+    可见性口径（2026-11-08 用户决定）：
+    - 只自动隐藏明确的测试商品/测试批次，以及全部批次都质检未通过的商品；
+    - 缺保质期/产地/储存条件等资料 **不再隐藏**，后台用 needs_data 标记并出清单；
+    - ``strict_data_gate=True`` 时恢复旧的严格门禁（资料不全不可见），默认关闭。
+    """
+    # 可见批次：active、非测试、未过期、质检非 failed（严格模式要求 passed）。
+    batch_ok = (
+        "ib_ok.status = 'active' "
+        "AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE "
+        "AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW()) "
+        + (
+            "AND ib_ok.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib_ok.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> '' "
+            "AND ib_ok.shelf_life_days IS NOT NULL AND ib_ok.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib_ok.inspection_status <> 'failed' "
+        )
+    )
+    inner_batch_ok = (
+        "ib.status = 'active' "
+        "AND COALESCE(ib.is_test_batch, FALSE) = FALSE "
+        "AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW()) "
+        + (
+            "AND ib.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib.storage_condition, '')) <> '' "
+            "AND ib.shelf_life_days IS NOT NULL AND ib.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib.inspection_status <> 'failed' "
+        )
+    )
     async with pool.acquire() as conn:
         where_clauses = [
             "p.deleted_at IS NULL",
@@ -219,9 +257,8 @@ async def list_storefront_products(
             "p.title NOT ILIKE '%演示%'",
             "p.title NOT ILIKE '%CMD-%'",
             "p.slug NOT ILIKE '%CMD-%'",
-            # 至少一个批次同时满足质检、效期、非测试和食品资料要求。
-            # 库存为 0 的合规批次仍允许商品以预订方式售卖。
-            """
+            # 至少一个可见批次；库存为 0 的批次仍允许商品以预订方式售卖。
+            f"""
             EXISTS (
                 SELECT 1
                 FROM product_variant pv_ok
@@ -230,20 +267,7 @@ async def list_storefront_products(
                   AND pv_ok.deleted_at IS NULL
                   AND pv_ok.status = 'active'
                   AND ib_ok.deleted_at IS NULL
-                  AND ib_ok.status = 'active'
-                  AND ib_ok.inspection_status = 'passed'
-                  AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE
-                  AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW())
-                  AND (
-                      pc.slug IN ('daily', 'electronics')
-                      OR (
-                          ib_ok.expiration_time IS NOT NULL
-                          AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> ''
-                          AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> ''
-                          AND ib_ok.shelf_life_days IS NOT NULL
-                          AND ib_ok.shelf_life_days > 0
-                      )
-                  )
+                  AND {batch_ok}
             )
             """,
         ]
@@ -259,7 +283,6 @@ async def list_storefront_products(
 
         where = " AND ".join(where_clauses)
 
-        # 先查列表，再过滤价格
         rows = await conn.fetch(
             f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id,
@@ -275,6 +298,10 @@ async def list_storefront_products(
                     'sku_code', pv.sku_code,
                     'option_values', pv.option_values,
                     'reference_price_cents', pv.reference_price_cents,
+                    'pricing_mode', COALESCE(pv.pricing_mode, 'piece'),
+                    'unit_price_cents', pv.unit_price_cents,
+                    'price_basis_grams', COALESCE(pv.price_basis_grams, 500),
+                    'weight_options', COALESCE(pv.weight_options, '[]'::jsonb),
                     'batches', COALESCE(batches.batch_list, '[]'::jsonb),
                     'total_stock', COALESCE(batches.total_stock, 0),
                     'min_price_cents', COALESCE(batches.min_price, pv.reference_price_cents)
@@ -301,20 +328,7 @@ async def list_storefront_products(
                     MIN(ib.retail_price_cents)::int AS min_price
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
-                      AND ib.status = 'active'
-                      AND ib.inspection_status = 'passed'
-                      AND COALESCE(ib.is_test_batch, FALSE) = FALSE
-                      AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW())
-                      AND (
-                          pc.slug IN ('daily', 'electronics')
-                          OR (
-                              ib.expiration_time IS NOT NULL
-                              AND BTRIM(COALESCE(ib.origin_region, '')) <> ''
-                              AND BTRIM(COALESCE(ib.storage_condition, '')) <> ''
-                              AND ib.shelf_life_days IS NOT NULL
-                              AND ib.shelf_life_days > 0
-                          )
-                      )
+                      AND {inner_batch_ok}
                       AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
@@ -344,16 +358,46 @@ async def list_storefront_products(
 
 
 async def get_storefront_product(
-    pool: Any, product_id: str, *, include_alcohol: bool = False
+    pool: Any,
+    product_id: str,
+    *,
+    include_alcohol: bool = False,
+    strict_data_gate: bool = False,
 ) -> dict | None:
-    """商城商品详情：返回在售商品（含 0 库存——无货也可预订）。
-
-    公开详情与列表使用同一套门禁：测试/演示商品、未过质检、已过期、
-    测试批次、食品资料不完整或没有任何合规批次的商品一律返回 None。
-    """
+    """商城商品详情：可见性与列表同一口径（见 list_storefront_products）。"""
+    batch_ok = (
+        "ib_ok.status = 'active' "
+        "AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE "
+        "AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW()) "
+        + (
+            "AND ib_ok.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib_ok.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> '' "
+            "AND ib_ok.shelf_life_days IS NOT NULL AND ib_ok.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib_ok.inspection_status <> 'failed' "
+        )
+    )
+    inner_batch_ok = (
+        "ib.status = 'active' "
+        "AND COALESCE(ib.is_test_batch, FALSE) = FALSE "
+        "AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW()) "
+        + (
+            "AND ib.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib.storage_condition, '')) <> '' "
+            "AND ib.shelf_life_days IS NOT NULL AND ib.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib.inspection_status <> 'failed' "
+        )
+    )
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id,
                    pc.name AS category_name, pc.slug AS category_slug,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
@@ -367,6 +411,10 @@ async def get_storefront_product(
                     'sku_code', pv.sku_code,
                     'option_values', pv.option_values,
                     'reference_price_cents', pv.reference_price_cents,
+                    'pricing_mode', COALESCE(pv.pricing_mode, 'piece'),
+                    'unit_price_cents', pv.unit_price_cents,
+                    'price_basis_grams', COALESCE(pv.price_basis_grams, 500),
+                    'weight_options', COALESCE(pv.weight_options, '[]'::jsonb),
                     'batches', COALESCE(batches.batch_list, '[]'::jsonb),
                     'total_stock', COALESCE(batches.total_stock, 0),
                     'min_price_cents', COALESCE(batches.min_price, pv.reference_price_cents)
@@ -393,20 +441,7 @@ async def get_storefront_product(
                     MIN(ib.retail_price_cents)::int AS min_price
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
-                      AND ib.status = 'active'
-                      AND ib.inspection_status = 'passed'
-                      AND COALESCE(ib.is_test_batch, FALSE) = FALSE
-                      AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW())
-                      AND (
-                          pc.slug IN ('daily', 'electronics')
-                          OR (
-                              ib.expiration_time IS NOT NULL
-                              AND BTRIM(COALESCE(ib.origin_region, '')) <> ''
-                              AND BTRIM(COALESCE(ib.storage_condition, '')) <> ''
-                              AND ib.shelf_life_days IS NOT NULL
-                              AND ib.shelf_life_days > 0
-                          )
-                      )
+                      AND {inner_batch_ok}
                       AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
@@ -426,20 +461,7 @@ async def get_storefront_product(
                     AND pv_ok.deleted_at IS NULL
                     AND pv_ok.status = 'active'
                     AND ib_ok.deleted_at IS NULL
-                    AND ib_ok.status = 'active'
-                    AND ib_ok.inspection_status = 'passed'
-                    AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE
-                    AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW())
-                    AND (
-                        pc.slug IN ('daily', 'electronics')
-                        OR (
-                            ib_ok.expiration_time IS NOT NULL
-                            AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> ''
-                            AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> ''
-                            AND ib_ok.shelf_life_days IS NOT NULL
-                            AND ib_ok.shelf_life_days > 0
-                        )
-                  )
+                    AND {batch_ok}
               )
               AND ($2 OR COALESCE(pc.slug, '') <> 'drinks')
             """,
@@ -484,6 +506,14 @@ async def list_orders(
                     'quantity', oli.quantity,
                     'unit_price_cents', oli.unit_price_cents,
                     'line_total_cents', oli.line_total_cents,
+                    'pricing_mode', COALESCE(oli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', oli.unit_price_cents_per_jin,
+                    'estimated_weight_grams', oli.estimated_weight_grams,
+                    'actual_weight_grams', oli.actual_weight_grams,
+                    'estimated_amount_cents', oli.estimated_amount_cents,
+                    'actual_amount_cents', oli.actual_amount_cents,
+                    'weight_diff_cents', oli.weight_diff_cents,
+                    'settlement_status', COALESCE(oli.settlement_status, 'not_required'),
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values
@@ -526,6 +556,14 @@ async def get_order(pool: Any, order_id: str) -> dict | None:
                     'quantity', oli.quantity,
                     'unit_price_cents', oli.unit_price_cents,
                     'line_total_cents', oli.line_total_cents,
+                    'pricing_mode', COALESCE(oli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', oli.unit_price_cents_per_jin,
+                    'estimated_weight_grams', oli.estimated_weight_grams,
+                    'actual_weight_grams', oli.actual_weight_grams,
+                    'estimated_amount_cents', oli.estimated_amount_cents,
+                    'actual_amount_cents', oli.actual_amount_cents,
+                    'weight_diff_cents', oli.weight_diff_cents,
+                    'settlement_status', COALESCE(oli.settlement_status, 'not_required'),
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values
@@ -640,6 +678,14 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                     'preorder_qty', oli.preorder_qty,
                     'unit_price_cents', oli.unit_price_cents,
                     'line_total_cents', oli.line_total_cents,
+                    'pricing_mode', COALESCE(oli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', oli.unit_price_cents_per_jin,
+                    'estimated_weight_grams', oli.estimated_weight_grams,
+                    'actual_weight_grams', oli.actual_weight_grams,
+                    'estimated_amount_cents', oli.estimated_amount_cents,
+                    'actual_amount_cents', oli.actual_amount_cents,
+                    'weight_diff_cents', oli.weight_diff_cents,
+                    'settlement_status', COALESCE(oli.settlement_status, 'not_required'),
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values
@@ -703,6 +749,12 @@ async def get_cart(pool: Any, cart_id: str) -> dict | None:
                     'quantity', cli.quantity,
                     'unit_price_cents', cli.unit_price_cents,
                     'line_total_cents', cli.line_total_cents,
+                    'pricing_mode', COALESCE(cli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', cli.unit_price_cents_per_jin,
+                    'price_basis_grams', COALESCE(cli.price_basis_grams, 500),
+                    'estimated_weight_grams', cli.estimated_weight_grams,
+                    'weight_step_grams', cli.weight_step_grams,
+                    'weight_option_label', cli.weight_option_label,
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values,
