@@ -554,6 +554,20 @@ export default function AccountPage() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-gray-600">
                           {li.product_title || li.variant_sku || '商品'} × {li.quantity}
+                          {li.pricing_mode === 'weight' && (
+                            <span className="ml-2 text-emerald-700">
+                              ¥{((li.unit_price_cents_per_jin ?? 0) / 100).toFixed(2)}/斤
+                              {li.actual_weight_grams != null
+                                ? ` · 实称 ${li.actual_weight_grams} 克`
+                                : ` · 预估 ${li.estimated_weight_grams ?? 0} 克`}
+                              {li.weight_diff_cents != null && li.weight_diff_cents !== 0 && (
+                                <span className={li.weight_diff_cents > 0 ? 'text-amber-700' : 'text-emerald-700'}>
+                                  {li.weight_diff_cents > 0 ? ' · 待补收' : ' · 已退/待退'} ¥
+                                  {(Math.abs(li.weight_diff_cents) / 100).toFixed(2)}
+                                </span>
+                              )}
+                            </span>
+                          )}
                           {(li.preorder_qty ?? 0) > 0 && (
                             <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
                               预订 ×{li.preorder_qty} 待配货

@@ -109,6 +109,11 @@ export interface ProductVariant {
   sku_code: string;
   option_values: Record<string, string>;
   reference_price_cents: number | null;
+  pricing_mode?: 'piece' | 'weight';
+  /** 按重量计价时的元/斤价格（分/斤），按件商品为 null */
+  unit_price_cents?: number | null;
+  price_basis_grams?: number;
+  weight_options?: { label: string; grams: number }[];
   status: string;
   batches: InventoryBatch[];
   total_stock: number;
@@ -147,6 +152,14 @@ export interface OrderLineItem {
   preorder_qty: number;
   unit_price_cents: number;
   line_total_cents: number;
+  pricing_mode?: 'piece' | 'weight';
+  unit_price_cents_per_jin?: number | null;
+  estimated_weight_grams?: number | null;
+  actual_weight_grams?: number | null;
+  estimated_amount_cents?: number | null;
+  actual_amount_cents?: number | null;
+  weight_diff_cents?: number | null;
+  settlement_status?: string;
   product_title: string | null;
   variant_sku: string | null;
   option_values: Record<string, string> | null;
@@ -246,6 +259,12 @@ export interface CartLineItem {
   quantity: number;
   unit_price_cents: number;
   line_total_cents: number;
+  pricing_mode?: 'piece' | 'weight';
+  unit_price_cents_per_jin?: number | null;
+  price_basis_grams?: number;
+  estimated_weight_grams?: number | null;
+  weight_step_grams?: number | null;
+  weight_option_label?: string | null;
   product_title: string | null;
   variant_sku: string | null;
   option_values: Record<string, string> | null;
@@ -1002,4 +1021,47 @@ export interface RefundCreateBody {
   reason?: RefundReason;
   reason_detail?: string | null;
   requested_amount: number;
+}
+
+// ── 线上称重结算 ─────────────────────────────────────────────────
+
+export interface MerchantWeighSettlement {
+  id: string;
+  order_id: string;
+  order_line_item_id: string;
+  weight_grams: number;
+  unit_price_cents_per_jin: number;
+  price_basis_grams: number;
+  estimated_weight_grams: number | null;
+  estimated_amount_cents: number;
+  actual_amount_cents: number;
+  diff_cents: number;
+  tolerance_percent: number;
+  within_tolerance: boolean;
+  status: string;
+  refund_id: string | null;
+  note: string;
+  created_at: string | null;
+  settled_at: string | null;
+}
+
+export interface MerchantWeighRow {
+  order_line_item_id: string;
+  order_id: string;
+  order_status: string;
+  customer_id: string | null;
+  product_title: string | null;
+  sku_code: string | null;
+  quantity: number;
+  unit_price_cents_per_jin: number | null;
+  price_basis_grams: number;
+  estimated_weight_grams: number | null;
+  estimated_amount_cents: number;
+  actual_weight_grams: number | null;
+  actual_amount_cents: number | null;
+  weight_diff_cents: number | null;
+  line_status: string;
+  settlement_id: string | null;
+  settlement_status: string | null;
+  settlement_note: string | null;
 }

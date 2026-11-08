@@ -236,7 +236,11 @@ export default function ShopPage() {
             {filtered.map((p) => {
               const img = brokenImgs.has(p.id) ? null : productImage(p);
               const ref = referencePrice(p);
-              const retail = p.min_price_cents ?? 0;
+              const weightVariant = p.variants?.find((v) => v.pricing_mode === 'weight');
+              const isWeight = !!weightVariant;
+              const retail = isWeight
+                ? (weightVariant?.unit_price_cents ?? p.min_price_cents ?? 0)
+                : (p.min_price_cents ?? 0);
               const stock = p.total_stock ?? 0;
               const spec = specOf(p);
               return (
@@ -288,8 +292,9 @@ export default function ShopPage() {
                       <div className="flex shrink-0 items-baseline gap-1">
                         <span className="font-black text-emerald-700" style={{ fontSize: 18, fontWeight: 800 }}>
                           ¥{(retail / 100).toFixed(2)}
+                          {isWeight && <span className="text-[10px] font-medium text-gray-500">/斤</span>}
                         </span>
-                        {ref && ref > retail && (
+                        {!isWeight && ref && ref > retail && (
                           <span className="text-[10px] text-gray-400 line-through">
                             ¥{(ref / 100).toFixed(2)}
                           </span>

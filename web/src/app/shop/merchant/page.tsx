@@ -17,7 +17,12 @@ import { getSelectedRegion } from '@/lib/region-store';
 import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
-import type { MerchantReserveItem, MerchantReserveOrderResult, StorefrontProduct } from '@/types/api';
+import type {
+  MerchantReserveItem,
+  MerchantReserveOrderResult,
+  MerchantWeighRow,
+  StorefrontProduct,
+} from '@/types/api';
 import { errMessage } from '@/lib/errors';
 import { displayOptionLabel } from '@/lib/option-label';
 
@@ -50,6 +55,12 @@ export default function MerchantReservePage() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<MerchantReserveOrderResult | null>(null);
 
+  // 称重结算：待录实称的订单行 → 自动算差额/退款或待补收
+  const [weighRows, setWeighRows] = useState<MerchantWeighRow[]>([]);
+  const [weighInputs, setWeighInputs] = useState<Record<string, string>>({});
+  const [weighBusy, setWeighBusy] = useState<string | null>(null);
+  const [slip, setSlip] = useState<string | null>(null);
+
   async function refresh(toDefaults: boolean) {
     setLoadingList(true);
     try {
@@ -62,6 +73,60 @@ export default function MerchantReservePage() {
       showToast(errMessage(e), 'error');
     } finally {
       setLoadingList(false);
+    }
+  }
+
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    api.merchantWeighSettlements()
+      .then((data) => setWeighRows(data.items))
+      .catch(() => {});
+  }, [phase]);
+
+  async function reloadWeigh() {
+    try {
+      const data = await api.merchantWeighSettlements();
+      setWeighRows(data.items);
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
+  async function handleRecordWeigh(row: MerchantWeighRow) {
+    const grams = Number(weighInputs[row.order_line_item_id] || 0);
+    if (!Number.isInteger(grams) || grams <= 0) {
+      showToast('请输入正整数克数', 'error');
+      return;
+    }
+    setWeighBusy(row.order_line_item_id);
+    try {
+      await api.merchantRecordWeigh(row.order_line_item_id, grams);
+      showToast(`已结算 ${grams} 克`);
+      setWeighInputs((prev) => ({ ...prev, [row.order_line_item_id]: '' }));
+      await reloadWeigh();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    } finally {
+      setWeighBusy(null);
+    }
+  }
+
+  async function handleSlip(settlementId: string) {
+    try {
+      const data = await api.merchantWeighSlip(settlementId);
+      setSlip(data.slip_text);
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
+  async function handleConfirmCharge(settlementId: string) {
+    try {
+      await api.merchantConfirmWeighCharge(settlementId);
+      showToast('已确认补收');
+      await reloadWeigh();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -311,6 +376,106 @@ export default function MerchantReservePage() {
               {submitting ? '提交中...' : '提交预订'}
             </button>
           </div>
+        )}
+      </div>
+
+      {/* 称重结算 */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold">称重结算（录入实称重量）</h2>
+          <button onClick={reloadWeigh} className="text-xs text-emerald-600 hover:underline">
+            刷新
+          </button>
+        </div>
+        {weighRows.length === 0 ? (
+          <div className="text-sm text-gray-400">暂无待结算的称重订单。</div>
+        ) : (
+          <div className="space-y-2">
+            {weighRows.map((row) => (
+              <div key={row.order_line_item_id} className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-medium text-gray-800">
+                      {row.product_title || row.sku_code || '称重商品'}
+                      <span className="ml-2 text-xs text-gray-500">
+                        ¥{((row.unit_price_cents_per_jin ?? 0) / 100).toFixed(2)}/斤 · 预估{' '}
+                        {row.estimated_weight_grams ?? 0} 克 / 预估 ¥
+                        {(row.estimated_amount_cents / 100).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-gray-500">
+                      订单 {row.order_id.slice(0, 8)}… · 状态 {row.line_status}
+                      {row.actual_weight_grams != null && (
+                        <span className="ml-2 text-emerald-700">
+                          已称 {row.actual_weight_grams} 克 / ¥
+                          {((row.actual_amount_cents ?? 0) / 100).toFixed(2)}
+                          {row.weight_diff_cents != null && row.weight_diff_cents !== 0 && (
+                            <span className="ml-1">
+                              （{row.weight_diff_cents > 0 ? '补收' : '退款'} ¥
+                              {Math.abs(row.weight_diff_cents / 100).toFixed(2)}）
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    {row.settlement_note && (
+                      <div className="mt-1 text-xs text-amber-600">{row.settlement_note}</div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={15000}
+                      value={weighInputs[row.order_line_item_id] ?? ''}
+                      onChange={(e) =>
+                        setWeighInputs((prev) => ({
+                          ...prev,
+                          [row.order_line_item_id]: e.target.value,
+                        }))
+                      }
+                      placeholder="实称克数"
+                      className="w-24 rounded-lg border border-gray-300 px-2 py-1.5 text-sm"
+                    />
+                    <button
+                      onClick={() => handleRecordWeigh(row)}
+                      disabled={weighBusy === row.order_line_item_id}
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {weighBusy === row.order_line_item_id ? '结算中…' : '确认称重'}
+                    </button>
+                    {row.settlement_id && (
+                      <button
+                        onClick={() => handleSlip(row.settlement_id!)}
+                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs hover:border-gray-400"
+                      >
+                        称重单
+                      </button>
+                    )}
+                    {row.settlement_status === 'charge_pending' && row.settlement_id && (
+                      <button
+                        onClick={() => handleConfirmCharge(row.settlement_id!)}
+                        className="rounded-lg border border-amber-400 px-3 py-1.5 text-xs text-amber-700"
+                      >
+                        确认补收
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {slip && (
+          <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-white p-3 text-xs text-gray-700 border border-gray-200">
+            {slip}
+            <button
+              onClick={() => setSlip(null)}
+              className="ml-3 text-emerald-600 hover:underline"
+            >
+              关闭
+            </button>
+          </pre>
         )}
       </div>
 

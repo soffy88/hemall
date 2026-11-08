@@ -26,6 +26,7 @@ export default function ProductDetailPage() {
   const [selectedVariant, setSelectedVariant] = useState<ProductVariant | null>(null);
   const [selectedBatch, setSelectedBatch] = useState<InventoryBatch | null>(null);
   const [quantity, setQuantity] = useState(1);
+  const [weightOption, setWeightOption] = useState<{ label: string; grams: number } | null>(null);
   const [adding, setAdding] = useState(false);
   const [similar, setSimilar] = useState<StorefrontProduct[]>([]);
   const [imgBroken, setImgBroken] = useState(false);
@@ -44,6 +45,7 @@ export default function ProductDetailPage() {
         if (p.variants?.length > 0) {
           setSelectedVariant(p.variants[0]);
           setSelectedBatch(pickBatch(p.variants[0]));
+          setWeightOption(p.variants[0].weight_options?.[0] ?? null);
         }
       })
       .catch((e) => setError(e.message))
@@ -66,6 +68,7 @@ export default function ProductDetailPage() {
   function handleVariantChange(v: ProductVariant) {
     setSelectedVariant(v);
     setSelectedBatch(pickBatch(v));
+    setWeightOption(v.weight_options?.[0] ?? null);
     setQuantity(1);
   }
 
@@ -92,8 +95,15 @@ export default function ProductDetailPage() {
           await api.setCartCustomer(cartId, customerAuth.customerId).catch(() => {});
         }
       }
+      const weight =
+        selectedVariant.pricing_mode === 'weight' && weightOption
+          ? { weight_option_label: weightOption.label }
+          : undefined;
       if (selectedBatch) {
-        await api.addLineItem(cartId, selectedBatch.id, quantity);
+        await api.addLineItem(cartId, selectedBatch.id, quantity, weight);
+      } else if (weight) {
+        // 称重商品无批次：按变体 + 预估重量档预订
+        await api.addWeightLineItem(cartId, selectedVariant.id, weight, quantity);
       } else {
         // 商品无任何批次：按变体加购，下单时整行计入预订待配货
         await api.addVariantLineItem(cartId, selectedVariant.id, quantity);
@@ -146,13 +156,25 @@ export default function ProductDetailPage() {
           </div>
 
           <div className="text-3xl font-bold text-emerald-700">
-            {selectedBatch
-              ? formatMoney(selectedBatch.retail_price_cents, selectedBatch.currency)
-              : formatMoney(
-                  product.min_price_cents ?? selectedVariant?.min_price_cents ?? selectedVariant?.reference_price_cents,
-                  getSelectedRegion()?.currency,
-                )}
+            {selectedVariant?.pricing_mode === 'weight' ? (
+              <>
+                ¥{((selectedVariant.unit_price_cents ?? selectedBatch?.retail_price_cents ?? 0) / 100).toFixed(2)}
+                <span className="ml-1 text-base font-medium text-gray-500">/斤</span>
+              </>
+            ) : selectedBatch ? (
+              formatMoney(selectedBatch.retail_price_cents, selectedBatch.currency)
+            ) : (
+              formatMoney(
+                product.min_price_cents ?? selectedVariant?.min_price_cents ?? selectedVariant?.reference_price_cents,
+                getSelectedRegion()?.currency,
+              )
+            )}
           </div>
+          {selectedVariant?.pricing_mode === 'weight' && (
+            <p className="text-sm text-gray-500">
+              下单按预估重量付款，称重后多退少补（差额超出容差需您确认）。
+            </p>
+          )}
 
           {/* Variant Selection */}
           {product.variants && product.variants.length > 0 && (
@@ -184,12 +206,47 @@ export default function ProductDetailPage() {
             </div>
           )}
 
+          {selectedVariant?.pricing_mode === 'weight' && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">预估重量</h3>
+              <div className="flex flex-wrap gap-2">
+                {(selectedVariant.weight_options?.length
+                  ? selectedVariant.weight_options
+                  : [{ label: '约1斤', grams: 500 }]
+                ).map((opt) => (
+                  <button
+                    key={opt.label}
+                    onClick={() => setWeightOption(opt)}
+                    className={`px-4 py-2 rounded-lg text-sm border transition ${
+                      weightOption?.grams === opt.grams
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-700'
+                        : 'border-gray-300 text-gray-700 hover:border-gray-400'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-sm text-emerald-700">
+                预估金额 ¥
+                {(
+                  ((weightOption?.grams ?? 500) *
+                    (selectedVariant.unit_price_cents ?? selectedBatch?.retail_price_cents ?? 0)) /
+                  500 /
+                  100
+                ).toFixed(2)}
+                × {quantity}
+              </p>
+            </div>
+          )}
+
           {/* Stock Info */}
           {selectedBatch && selectedBatch.available_qty > 0 && (
             <div className="text-sm text-gray-500">
               <span>可售库存: </span>
               <span className={`font-medium ${selectedBatch.available_qty > 5 ? 'text-green-600' : 'text-amber-600'}`}>
-                {selectedBatch.available_qty} 件
+                {selectedBatch.available_qty}
+                {selectedVariant?.pricing_mode === 'weight' ? ' 克' : ' 件'}
               </span>
             </div>
           )}

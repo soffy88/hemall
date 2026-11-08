@@ -1,6 +1,8 @@
 /** hemall 前端 — API 客户端，覆盖所有后端接口。 */
 
 import type {
+  MerchantWeighRow,
+  MerchantWeighSettlement,
   Address,
   AdminPreorder,
   InventoryBatch,
@@ -457,10 +459,32 @@ export const api = {
   getCart: (cartId: string) =>
     request<Cart>(`/store/carts/${cartId}`),
 
-  addLineItem: (cartId: string, batchId: string, quantity: number = 1) =>
+  addLineItem: (
+    cartId: string,
+    batchId: string,
+    quantity: number = 1,
+    weight?: { weight_grams?: number; weight_option_label?: string },
+  ) =>
     request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
       method: 'POST',
-      body: JSON.stringify({ cart_id: cartId, batch_id: batchId, quantity }),
+      body: JSON.stringify({ cart_id: cartId, batch_id: batchId, quantity, ...(weight || {}) }),
+    }),
+
+  /** 称重商品：按变体加购并指定预估重量档（无批次时可预订）。 */
+  addWeightLineItem: (
+    cartId: string,
+    variantId: string,
+    weight: { weight_grams?: number; weight_option_label?: string },
+    quantity: number = 1,
+  ) =>
+    request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
+      method: 'POST',
+      body: JSON.stringify({
+        cart_id: cartId,
+        variant_id: variantId,
+        quantity,
+        ...weight,
+      }),
     }),
 
   /** 无批次商品按变体加购（缺货预订）：后端按 variant 建行，下单时拆预订量。 */
@@ -748,6 +772,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ items }),
     }, 'customer'),
+  merchantWeighSettlements: (status?: string) =>
+    request<{ items: MerchantWeighRow[] }>(
+      `/store/merchant/weigh-settlements${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+      {},
+      'customer',
+    ),
+
+  merchantRecordWeigh: (orderLineItemId: string, weightGrams: number, note?: string) =>
+    request<{ settlement: MerchantWeighSettlement }>('/store/merchant/weigh-settlements', {
+      method: 'POST',
+      body: JSON.stringify({
+        order_line_item_id: orderLineItemId,
+        weight_grams: weightGrams,
+        note: note || '',
+      }),
+    }, 'customer'),
+
+  merchantWeighSlip: (settlementId: string) =>
+    request<{ settlement: MerchantWeighSettlement; slip_text: string }>(
+      `/store/merchant/weigh-settlements/${settlementId}/slip`,
+      {},
+      'customer',
+    ),
+
+  merchantConfirmWeighCharge: (settlementId: string, note?: string) =>
+    request<{ settlement: MerchantWeighSettlement }>(
+      `/store/merchant/weigh-settlements/${settlementId}/confirm-charge`,
+      { method: 'POST', body: JSON.stringify({ note: note || '' }) },
+      'customer',
+    ),
 
   // ── 柜台称重试点：照片格 + 单据 + 模拟器（仅商家账号） ─────────────
 

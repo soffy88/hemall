@@ -170,10 +170,20 @@ export default function CartPage() {
                     .filter(Boolean)
                     .join(' · ')}
                 </p>
-                <p className="text-sm text-emerald-700 font-medium mt-1">{fmt(item.unit_price_cents)}</p>
+                <p className="text-sm text-emerald-700 font-medium mt-1">
+                  {item.pricing_mode === 'weight'
+                    ? `¥${((item.unit_price_cents_per_jin ?? 0) / 100).toFixed(2)}/斤 · 预估 ${item.estimated_weight_grams ?? 0} 克`
+                    : fmt(item.unit_price_cents)}
+                </p>
+                {item.pricing_mode === 'weight' && (
+                  <p className="text-xs text-emerald-600 mt-0.5">
+                    预估价 {fmt(item.line_total_cents)}，称重后多退少补
+                  </p>
+                )}
                 {(item.preorder_qty_preview ?? 0) > 0 && (
                   <p className="text-xs text-amber-600 mt-0.5">
-                    其中预订 ×{item.preorder_qty_preview}（到货后配货）
+                    其中预订 ×{item.preorder_qty_preview}
+                    {item.pricing_mode === 'weight' ? ' 克' : ''}（到货后配货）
                   </p>
                 )}
               </div>
