@@ -2453,14 +2453,9 @@ async def compliance_status(request: Request):
         "official_open": manifest["official_open"],
         "site_notice": manifest["site_notice"],
         "consent_version": manifest["consent_version"],
-        "all_required_documents_published": manifest[
-            "all_required_documents_published"
-        ],
+        "all_required_documents_published": manifest["all_required_documents_published"],
         "documents": [
-            {
-                key: doc[key]
-                for key in ("slug", "title", "version", "published", "status")
-            }
+            {key: doc[key] for key in ("slug", "title", "version", "published", "status")}
             for doc in manifest["documents"].values()
         ],
         "sms": sms_status(settings),

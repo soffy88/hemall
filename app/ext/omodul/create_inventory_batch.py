@@ -139,9 +139,7 @@ async def create_inventory_batch(
             if input_data.shelf_life_days is None or input_data.shelf_life_days <= 0:
                 missing.append("shelf_life_days")
             if missing:
-                raise ValueError(
-                    "food batch missing required fields: " + ", ".join(missing)
-                )
+                raise ValueError("food batch missing required fields: " + ", ".join(missing))
 
         # batch_no 是共享 schema 的必填唯一列，旧版 Input 从没有
         # 过这个字段——用 fingerprint 当 batch_no，保证同一批次重复提交能被

@@ -20,9 +20,7 @@ def _webhook_headers(body: bytes) -> dict[str, str]:
 
     timestamp = str(int(time.time()))
     nonce = uuid.uuid4().hex
-    signature = hmac.new(
-        get_settings().webhook_secret.encode(), body, hashlib.sha256
-    ).hexdigest()
+    signature = hmac.new(get_settings().webhook_secret.encode(), body, hashlib.sha256).hexdigest()
     return {
         "content-type": "application/x-www-form-urlencoded",
         "x-hemall-signature": signature,
@@ -40,9 +38,7 @@ def test_payment_options_do_not_advertise_manual_as_online():
     options = _payment_options(settings)
     assert options["online_payment_available"] is False
     assert options["online_provider"] is None
-    assert options["methods"] == [
-        {"code": "manual", "name": "人工确认收款", "mode": "offline"}
-    ]
+    assert options["methods"] == [{"code": "manual", "name": "人工确认收款", "mode": "offline"}]
 
 
 def test_real_gateway_callbacks_bypass_hemall_hmac_only_for_selected_provider():

@@ -138,9 +138,7 @@ def request_metadata(request: Request | None) -> dict[str, Any]:
     client_ip = request.client.host if request.client else ""
     user_agent = request.headers.get("user-agent", "")[:500]
     return {
-        "ip_hash": (
-            hashlib.sha256(client_ip.encode("utf-8")).hexdigest() if client_ip else ""
-        ),
+        "ip_hash": (hashlib.sha256(client_ip.encode("utf-8")).hexdigest() if client_ip else ""),
         "user_agent": user_agent,
     }
 
@@ -182,8 +180,6 @@ def sms_status(settings: Settings) -> dict[str, Any]:
         "configured": configured,
         "enabled": configured,
         "message": (
-            "短信验证码已配置"
-            if configured
-            else "短信验证码未配置；当前注册不发送短信验证码"
+            "短信验证码已配置" if configured else "短信验证码未配置；当前注册不发送短信验证码"
         ),
     }

@@ -30,9 +30,7 @@ def default_shipping_rules(settings: Settings) -> dict[str, Any]:
     return {
         "service_area": settings.shipping_service_area,
         "delivery_windows": [
-            part.strip()
-            for part in settings.shipping_delivery_windows.split(",")
-            if part.strip()
+            part.strip() for part in settings.shipping_delivery_windows.split(",") if part.strip()
         ],
         "methods": {
             "standard": {

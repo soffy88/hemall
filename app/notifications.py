@@ -154,7 +154,5 @@ async def delivery_summary(pool: Any, settings: Settings) -> dict[str, Any]:
             )
         status.update(dict(row or {}))
     except Exception:  # noqa: BLE001 - status page should still render
-        status.update(
-            {"failed": None, "sent": None, "last_sent_at": None, "last_failed_at": None}
-        )
+        status.update({"failed": None, "sent": None, "last_sent_at": None, "last_failed_at": None})
     return status

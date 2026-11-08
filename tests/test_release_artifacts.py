@@ -81,9 +81,7 @@ def test_release_compose_is_pinned_to_full_sha_tags(tmp_path):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
-    compose = yaml.safe_load(
-        (out / sha / "docker-compose.release.yml").read_text(encoding="utf-8")
-    )
+    compose = yaml.safe_load((out / sha / "docker-compose.release.yml").read_text(encoding="utf-8"))
     assert compose["services"]["api"]["image"].endswith(f":sha-{sha}")
     assert compose["services"]["web"]["image"].endswith(f":sha-{sha}")
 
@@ -104,20 +102,12 @@ def test_deploy_composes_pin_the_known_production_baseline():
     for name in ("docker-compose.deploy.yml", "docker-compose.mall-old.yml"):
         data = yaml.safe_load((ROOT / name).read_text(encoding="utf-8"))
         services = data["services"]
-        assert services["api"]["image"] == (
-            "registry.sxueji.com/hemall/backend:0.6.18-prod"
-        )
-        assert services["web"]["image"] == (
-            "registry.sxueji.com/hemall/frontend:0.5.10-prod"
-        )
+        assert services["api"]["image"] == ("registry.sxueji.com/hemall/backend:0.6.18-prod")
+        assert services["web"]["image"] == ("registry.sxueji.com/hemall/frontend:0.5.10-prod")
 
 
 def test_rollback_override_is_pinned_to_the_known_production_baseline():
     path = ROOT / "ops" / "release" / "docker-compose.rollback-baseline.yml"
     services = yaml.safe_load(path.read_text(encoding="utf-8"))["services"]
-    assert services["api"]["image"] == (
-        "registry.sxueji.com/hemall/backend:0.6.18-prod"
-    )
-    assert services["web"]["image"] == (
-        "registry.sxueji.com/hemall/frontend:0.5.10-prod"
-    )
+    assert services["api"]["image"] == ("registry.sxueji.com/hemall/backend:0.6.18-prod")
+    assert services["web"]["image"] == ("registry.sxueji.com/hemall/frontend:0.5.10-prod")

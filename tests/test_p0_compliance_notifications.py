@@ -101,9 +101,7 @@ def test_merchant_notification_is_unconfigured_by_default():
 
 
 def test_merchant_webhook_requires_url():
-    unconfigured = notification_status(
-        Settings(merchant_notification_provider="webhook")
-    )
+    unconfigured = notification_status(Settings(merchant_notification_provider="webhook"))
     configured = notification_status(
         Settings(
             merchant_notification_provider="webhook",

@@ -66,6 +66,8 @@ def require_alcohol_access(request: Request) -> None:
 
 def calculate_age(birth_date: date, *, today: date | None = None) -> int:
     current = today or date.today()
-    return current.year - birth_date.year - (
-        (current.month, current.day) < (birth_date.month, birth_date.day)
+    return (
+        current.year
+        - birth_date.year
+        - ((current.month, current.day) < (birth_date.month, birth_date.day))
     )
