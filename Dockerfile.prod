@@ -93,7 +93,12 @@ COPY deploy-tools/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # 修改文件所有权
-RUN chown -R hemall:hemall /app
+# var/omodul_output 被 .dockerignore 排除，镜像里不会有这个目录；缺省情况下
+# gunicorn root master 首次写文件时才创建，降权后的 worker (hemall) 随即
+# PermissionError（2026-11-08 冒烟 create_cart 500）。这里显式建目录并授权，
+# 保证即使没有挂数据卷也能写。
+RUN mkdir -p /app/var/omodul_output /app/logs && \
+    chown -R hemall:hemall /app
 
 # 注：不设 USER hemall —— entrypoint 需以 root 运行以修复挂载数据卷属主，
 # 随后 gunicorn 通过 user/group 配置将 worker 降权为 hemall。
