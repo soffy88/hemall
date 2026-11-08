@@ -15,8 +15,26 @@ import pytest
 from fastapi.testclient import TestClient
 from obase.crypto.util import CryptoUtil
 
+import app.main as _main_module
 from app.deps import get_settings
 from app.main import app
+from app.middleware.ratelimit import TokenBucketRateLimitMiddleware as _BaseRateLimitMiddleware
+
+# 测试套件的所有 TestClient 共用同一个对端 IP ("testclient")。若限流中间件
+# 走 Redis 共享令牌桶 (默认 capacity 60、1 token/s)，用例越多、越靠后的用例
+# 越容易被前面用例耗尽的配额打成 429（P0 onboarding/wechat 用例即因此偶发
+# 失败）。这里仅让 create_app() 构造的限流器退回进程内桶：每个测试新建的 app
+# 各自一份配额，测试之间互不干扰。Redis 限流行为仍有
+# test_middleware_ratelimit_redis.py / test_ratelimit_real_client_ip.py 覆盖。
+
+
+class _InMemoryRateLimitMiddleware(_BaseRateLimitMiddleware):
+    def __init__(self, *args, **kwargs):
+        kwargs["redis_url"] = None
+        super().__init__(*args, **kwargs)
+
+
+_main_module.TokenBucketRateLimitMiddleware = _InMemoryRateLimitMiddleware
 
 
 @pytest.fixture(scope="session")
