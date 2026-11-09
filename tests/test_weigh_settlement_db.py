@@ -394,3 +394,22 @@ async def test_store_ops_inbound_loss_and_daily_report(weigh_pool):
     assert row["loss_qty"] == 200
     assert row["stock_qty"] == 1100
     assert row["opening_qty"] == 1100 - 300 + 200
+
+    # 自提核销：未收款/非自提拒绝；已收款自提单完成后订单完成。
+    from app.storefront import _create_order_from_cart
+    from app.store_ops import verify_pickup
+
+    order = await _create_order_from_cart(pool, cart_id=ids["cart"], customer_id=ids["customer"])
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE customer_order SET shipping_method_code = 'pickup' WHERE id = $1",
+            order["order_id"],
+        )
+    with pytest.raises(Exception):
+        await verify_pickup(request, order["order_id"], principal)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE customer_order SET status = 'confirmed' WHERE id = $1", order["order_id"]
+        )
+    picked = await verify_pickup(request, order["order_id"], principal)
+    assert picked["order_status"] == "completed"

@@ -773,15 +773,36 @@ async def verify_pickup(
         raise HTTPException(404, "order not found")
     if row["shipping_method_code"] != "pickup":
         raise HTTPException(400, "该订单不是到店自提单")
-    if row["status"] not in ("paid", "confirmed", "processing", "shipped"):
+    if row["status"] not in (
+        "paid",
+        "confirmed",
+        "processing",
+        "packed",
+        "shipped",
+        "delivered",
+    ):
         raise HTTPException(400, f"订单状态 {row['status']} 不可核销")
     svc = OrderService(pool)
-    order = await svc.transition_status(
-        order_id,
-        OrderStatus.COMPLETED,
-        reason="门店自提核销",
-        operator_id=str(principal.get("user_id") or ""),
-    )
+    chain = [
+        "paid",
+        "confirmed",
+        "processing",
+        "packed",
+        "shipped",
+        "delivered",
+        "completed",
+    ]
+    current = row["status"]
+    start = chain.index(current) if current in chain else 0
+    order = None
+    for nxt in chain[start + 1 :]:
+        order = await svc.transition_status(
+            order_id,
+            OrderStatus(nxt),
+            reason="门店自提核销",
+            operator_id=str(principal.get("user_id") or ""),
+        )
+    assert order is not None
     return {"status": "verified", "order_id": order_id, "order_status": order.status.value}
 
 
