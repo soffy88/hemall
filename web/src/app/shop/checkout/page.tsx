@@ -32,6 +32,7 @@ export default function CheckoutPage() {
   const [termsConsent, setTermsConsent] = useState(false);
   const [consentVersion, setConsentVersion] = useState('');
   const [siteNotice, setSiteNotice] = useState('');
+  const [isPickup, setIsPickup] = useState(false);
   const [paymentOptions, setPaymentOptions] = useState<{
     online_payment_available: boolean;
     manual_payment_enabled: boolean;
@@ -81,6 +82,16 @@ export default function CheckoutPage() {
           return;
         }
         setCart(data);
+        if (data.shipping_method_code === 'pickup') {
+          setIsPickup(true);
+          setShipping((prev) => ({
+            ...prev,
+            city: prev.city || '惠州市',
+            address_line1: prev.address_line1 || '惠州市仲恺高新区惠环社区店（到店自提）',
+            region_code: prev.region_code || 'cn-south',
+            postal_code: prev.postal_code || '516000',
+          }));
+        }
         setPaymentOptions(options);
         if (compliance) {
           setConsentVersion(compliance.consent_version);
@@ -153,7 +164,12 @@ export default function CheckoutPage() {
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Shipping Address */}
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h2 className="font-semibold mb-4">收货地址</h2>
+          <h2 className="font-semibold mb-4">{isPickup ? '取货人信息（到店自提）' : '收货地址'}</h2>
+          {isPickup && (
+            <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+              到店自提：不需要配送地址，请填写取货人姓名与手机号；门店地址为惠州市仲恺高新区惠环社区店。
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs text-gray-500 mb-1">收件人</label>
