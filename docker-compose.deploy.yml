@@ -10,7 +10,7 @@ services:
       # /metrics 仅带 Bearer/X-Metrics-Token 可读（P0-13，Caddy 之后仍兜底）
       HEMALL_METRICS_ACCESS_TOKEN: ${HEMALL_METRICS_ACCESS_TOKEN:?set metrics token in .env}
   web:
-    image: registry.sxueji.com/hemall/frontend:sha-c1cc43bc68c8e9392fc6d6d300a0b5eb27c930f3
+    image: registry.sxueji.com/hemall/frontend:sha-0c623555554e1299000de659830cc17b10019bb9
     environment:
       HEMALL_BACKEND_URL: http://hemal-api-1:8000
       # BFF 同源闸门放行真实浏览器来源: NextRequest.nextUrl.origin 在
