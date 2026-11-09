@@ -1,6 +1,6 @@
 services:
   api:
-    image: registry.sxueji.com/hemall/backend:sha-0e9e905439d02b59611a7a74166cda23ff046707
+    image: registry.sxueji.com/hemall/backend:sha-c1cc43bc68c8e9392fc6d6d300a0b5eb27c930f3
     volumes:
       - hemall-spider-media:/app/var/omodul_output/ext_bespoke/spider_media
     environment:
@@ -10,7 +10,7 @@ services:
       # /metrics 仅带 Bearer/X-Metrics-Token 可读（P0-13，Caddy 之后仍兜底）
       HEMALL_METRICS_ACCESS_TOKEN: ${HEMALL_METRICS_ACCESS_TOKEN:?set metrics token in .env}
   web:
-    image: registry.sxueji.com/hemall/frontend:sha-c79eca364af9efd5dedd4b15e8a4913f98424a88
+    image: registry.sxueji.com/hemall/frontend:sha-c1cc43bc68c8e9392fc6d6d300a0b5eb27c930f3
     environment:
       HEMALL_BACKEND_URL: http://hemal-api-1:8000
       # BFF 同源闸门放行真实浏览器来源: NextRequest.nextUrl.origin 在
