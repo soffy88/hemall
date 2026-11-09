@@ -22,6 +22,10 @@ export const VISIBLE_CATEGORY_SLUGS: readonly string[] = [
   'drinks',
   'daily',
   'electronics',
+  // 2026-11-09 门店 99 SKU 上架：猪肉/禽肉/蛋及豆制品已有商品，放开前台展示。
+  'pork',
+  'poultry',
+  'eggs-tofu',
 ];
 
 export function isVisibleCategorySlug(slug: string | null | undefined): boolean {
