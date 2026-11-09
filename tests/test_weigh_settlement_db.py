@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from obase.uuid7 import uuid7
@@ -174,6 +176,12 @@ async def weigh_pool():
                     ids.get("cart"),
                 )
                 await conn.execute("DELETE FROM customer_order WHERE cart_id = $1", ids.get("cart"))
+                await conn.execute(
+                    "DELETE FROM store_inventory_entry WHERE variant_id = $1", ids.get("variant")
+                )
+                await conn.execute(
+                    "DELETE FROM stock_movement WHERE variant_id = $1::text", ids.get("variant")
+                )
                 await conn.execute("DELETE FROM cart_line_item WHERE cart_id = $1", ids.get("cart"))
                 await conn.execute("DELETE FROM cart WHERE id = $1", ids.get("cart"))
                 await conn.execute("DELETE FROM inventory_batch WHERE id = $1", ids.get("batch"))
@@ -278,3 +286,111 @@ async def test_weight_order_diff_beyond_tolerance_needs_customer(weigh_pool):
             "SELECT COUNT(*) FROM refund_request WHERE order_id = $1", order["order_id"]
         )
     assert refunds == 0
+
+
+@pytest.mark.asyncio
+async def test_reject_charge_estimate_only_and_cancel_with_legacy_address(weigh_pool):
+    """顾客拒绝补差→按预估出货；历史双编码地址下取消订单不再 500。"""
+    from app.orders.service import OrderService
+    from app.weigh_settle import confirm_settlement
+
+    pool, ids = weigh_pool
+    order = await _create_order_from_cart(pool, cart_id=ids["cart"], customer_id=ids["customer"])
+    async with pool.acquire() as conn:
+        line = await conn.fetchrow(
+            "SELECT * FROM order_line_item WHERE order_id = $1", order["order_id"]
+        )
+
+    settlement = await record_actual_weight(
+        pool,
+        order_line_item_id=str(line["id"]),
+        weight_grams=600,  # 超出 10% 容差，需补收 800 分
+        tolerance_percent=10,
+    )
+    assert settlement["status"] == "needs_customer_confirmation"
+
+    rejected = await confirm_settlement(
+        pool,
+        settlement_id=settlement["id"],
+        customer_id=ids["customer"],
+        accept=False,
+        note="按预估出货",
+    )
+    assert rejected["status"] == "estimate_only"
+    async with pool.acquire() as conn:
+        line_after = await conn.fetchrow(
+            "SELECT settlement_status FROM order_line_item WHERE id = $1", line["id"]
+        )
+        weigh_status = await conn.fetchval(
+            "SELECT weigh_status FROM customer_order WHERE id = $1", order["order_id"]
+        )
+    assert line_after["settlement_status"] == "auto_settled"
+    assert weigh_status == "rejected_estimate"
+
+    # 历史行：jsonb 里存的是“JSON 字符串”。取消订单必须成功返回快照。
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE customer_order
+            SET billing_address = to_jsonb(billing_address::text),
+                shipping_address = to_jsonb(shipping_address::text)
+            WHERE id = $1
+            """,
+            order["order_id"],
+        )
+    cancelled = await OrderService(pool).cancel_order(str(order["order_id"]), reason="test")
+    assert cancelled.status.value == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_store_ops_inbound_loss_and_daily_report(weigh_pool):
+    """入库同步库存、损耗扣减、日末结存与报表口径。"""
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    from app.store_ops import InboundInput, LossInput, _daily_rows, journal_in, journal_loss
+
+    pool, ids = weigh_pool
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [],
+            "app": SimpleNamespace(state=SimpleNamespace(pool=pool)),
+        }
+    )
+    principal = {"user_id": "tester"}
+
+    inbound = await journal_in(
+        request,
+        InboundInput(
+            variant_id=ids["variant"],
+            qty=300,
+            unit_cost_cents=2500,
+            supplier="测试供应商",
+        ),
+        principal,
+    )
+    assert inbound["stock_qty"] == 1300
+    loss = await journal_loss(
+        request,
+        LossInput(
+            variant_id=ids["variant"],
+            qty=200,
+            reason="叶菜蔫损",
+        ),
+        principal,
+    )
+    assert loss["stock_qty"] == 1100
+
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    report = await _daily_rows(pool, today)
+    matching = [r for r in report["journal"] if r["in_qty"] == 300]
+    assert matching, report["journal"]
+    row = matching[0]
+    assert row["in_qty"] == 300
+    assert row["loss_qty"] == 200
+    assert row["stock_qty"] == 1100
+    assert row["opening_qty"] == 1100 - 300 + 200

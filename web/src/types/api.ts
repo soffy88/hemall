@@ -233,6 +233,10 @@ export interface Order {
   updated_at: string | null;
   promised_delivery_at: string | null;
   sla_compensated_at: string | null;
+  /** delivery / pickup / standard / express / next_day（历史订单可能为空） */
+  shipping_method_code?: string | null;
+  /** 称重差额状态：pending_customer / charge_pending / settled / ... */
+  weigh_status?: string | null;
   line_items: OrderLineItem[];
 }
 
@@ -300,6 +304,7 @@ export interface Cart {
   tax_cents: number;
   shipping_cents: number;
   grand_total_cents: number;
+  shipping_method_code?: string | null;
   billing_address: Address | null;
   shipping_address: Address | null;
   created_at: string;

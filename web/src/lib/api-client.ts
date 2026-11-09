@@ -676,6 +676,26 @@ export const api = {
   customerMyOrders: () =>
     request<Order[]>('/store/customers/me/orders', {}, 'customer'),
 
+  customerCancelOrder: (orderId: string, reason?: string) =>
+    request<{ status: string; order: Order }>(`/store/orders/${orderId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || '顾客取消' }),
+    }, 'customer'),
+
+  customerWeighSettlements: (orderId: string) =>
+    request<{ items: Array<{
+      id: string; order_id: string; order_line_item_id: string;
+      weight_grams: number; estimated_weight_grams: number | null;
+      estimated_amount_cents: number; actual_amount_cents: number;
+      diff_cents: number; status: string; product_title?: string;
+    }> }>(`/store/orders/${orderId}/weigh-settlements`, {}, 'customer'),
+
+  customerConfirmWeigh: (orderId: string, settlementId: string, accept: boolean, note?: string) =>
+    request<{ settlement: unknown }>(`/store/orders/${orderId}/weigh-settlements/${settlementId}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ accept, note: note || '' }),
+    }, 'customer'),
+
   customerMyPreorders: () =>
     request<CustomerPreorder[]>('/store/customers/me/preorders', {}, 'customer'),
 
@@ -1498,6 +1518,40 @@ export const api = {
 
   agentExecute: (tool: string, args: Record<string, unknown>) =>
     request<AgentCommandResult>('/agent/execute', { method: 'POST', body: JSON.stringify({ tool, args }) }, true),
+
+  // ── Admin: 门店运营（每日报表/进销存/称重/自提/打印） ────────────
+
+  storeOpsDailyReport: (date?: string) =>
+    request<{ date: string; kpis: Record<string, number>; top_skus: Array<{ title: string; qty: number; unit: string; amount_cents: number }>; journal: unknown[] }>(
+      `/admin/store-ops/daily-report${date ? `?date=${encodeURIComponent(date)}` : ''}`, {}, true),
+
+  storeOpsJournal: (date?: string) =>
+    request<{ date: string; rows: Array<Record<string, number | string | null>>; entries: Array<Record<string, string | number | null>> }>(
+      `/admin/store-ops/journal${date ? `?date=${encodeURIComponent(date)}` : ''}`, {}, true),
+
+  storeOpsJournalIn: (data: { variant_id: string; qty: number; unit_cost_cents?: number; supplier?: string; note?: string }) =>
+    request<{ status: string; stock_qty: number; unit: string }>('/admin/store-ops/journal/in', {
+      method: 'POST', body: JSON.stringify(data),
+    }, true),
+
+  storeOpsJournalLoss: (data: { variant_id: string; qty: number; reason: string; note?: string }) =>
+    request<{ status: string; stock_qty: number; unit: string }>('/admin/store-ops/journal/loss', {
+      method: 'POST', body: JSON.stringify(data),
+    }, true),
+
+  storeOpsOrderSummary: (orderId: string, paper: '58' | 'a4' = 'a4') =>
+    request<Record<string, unknown>>(`/admin/store-ops/orders/${orderId}/print?paper=${paper}`, {}, true),
+
+  storeOpsWeigh: (orderId: string, orderLineItemId: string, weightGrams: number, note?: string) =>
+    request<{ settlement: unknown }>(`/admin/store-ops/orders/${orderId}/weigh`, {
+      method: 'POST',
+      body: JSON.stringify({ order_line_item_id: orderLineItemId, weight_grams: weightGrams, note: note || '' }),
+    }, true),
+
+  storeOpsVerifyPickup: (orderId: string) =>
+    request<{ status: string; order_status: string }>(`/admin/store-ops/orders/${orderId}/verify-pickup`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, true),
 
   // 视频/图片传货: multipart 上传, 自动上架
   agentIngest: async (file: File, opts?: { retailPriceCents?: number; stockQty?: number; categorySlug?: string }) => {

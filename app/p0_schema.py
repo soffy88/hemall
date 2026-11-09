@@ -303,6 +303,10 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(WEIGH_DDL)
         # 线上称重定价：计价方式/预估与实称重量/多退少补结算/每日进销存。
         await conn.execute(WEIGH_PRICE_DDL)
+        # 门店运营：进销存日记、订单配送方式/称重确认状态（幂等，见 store_ops）。
+        from .store_ops import OPS_DDL
+
+        await conn.execute(OPS_DDL)
         # 柜台收尾件：现金结算记录 + 交接班账本（幂等，见 app/counter_closeout.py）。
         await conn.execute(COUNTER_CLOSEOUT_DDL)
         # 柜台视觉识别接线：帧存档 + 识别评估账本（幂等，见 app/counter_vision.py）。

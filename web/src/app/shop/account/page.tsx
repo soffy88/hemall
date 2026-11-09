@@ -78,6 +78,13 @@ export default function AccountPage() {
   const [profile, setProfile] = useState<Customer | null>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  type CustomerSettlement = {
+    id: string; order_id: string; order_line_item_id: string;
+    weight_grams: number; estimated_weight_grams: number | null;
+    estimated_amount_cents: number; actual_amount_cents: number;
+    diff_cents: number; status: string; product_title?: string;
+  };
+  const [weighByOrder, setWeighByOrder] = useState<Record<string, CustomerSettlement[]>>({});
   const [preorders, setPreorders] = useState<CustomerPreorder[]>([]);
   const [claims, setClaims] = useState<RmaClaim[]>([]);
   const [refunds, setRefunds] = useState<RefundRequest[]>([]);
@@ -104,6 +111,7 @@ export default function AccountPage() {
   const [uploadResult, setUploadResult] = useState<IngestResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   // 申请售后（退款状态机入口）——一次只展开一个订单行的表单。
   const [refundingLineItemId, setRefundingLineItemId] = useState<string | null>(null);
@@ -287,6 +295,30 @@ export default function AccountPage() {
       setAddrRecipient(''); setAddrPhone(''); setAddrLine1(''); setAddrCity(''); setAddrRegion(''); setAddrPostal('');
       setShowAddrForm(false);
       load();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
+  async function handleCancelOrder(orderId: string) {
+    if (!confirm('确认取消这个未支付订单？')) return;
+    setCancellingId(orderId);
+    try {
+      await api.customerCancelOrder(orderId);
+      showToast('订单已取消');
+      await load();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    } finally {
+      setCancellingId(null);
+    }
+  }
+
+  async function handleWeighDecision(orderId: string, settlementId: string, accept: boolean) {
+    try {
+      await api.customerConfirmWeigh(orderId, settlementId, accept);
+      showToast(accept ? '已确认差额' : '已拒绝补差，按预估重量出货');
+      await load();
     } catch (e) {
       showToast(errMessage(e), 'error');
     }
@@ -529,7 +561,37 @@ export default function AccountPage() {
                 <span className="text-xs px-2 py-0.5 rounded bg-gray-100">{o.status}</span>
                 <span className="font-medium">{formatMoney(o.grand_total_cents, o.currency)}</span>
               </div>
-              <div className="text-xs text-gray-400 mt-1 mb-2">{new Date(o.created_at).toLocaleString('zh-CN')}</div>
+              <div className="flex items-center justify-between mt-1 mb-2">
+                <span className="text-xs text-gray-400">{new Date(o.created_at).toLocaleString('zh-CN')}</span>
+                {['pending', 'draft'].includes(o.status) && (
+                  <button
+                    onClick={() => handleCancelOrder(o.id)}
+                    disabled={cancellingId === o.id}
+                    className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                  >
+                    {cancellingId === o.id ? '取消中...' : '取消订单'}
+                  </button>
+                )}
+              </div>
+              {(weighByOrder[o.id] || []).some((w) => w.status === 'needs_customer_confirmation') && (
+                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 space-y-1">
+                  <div className="font-medium">待顾客确认补差</div>
+                  {(weighByOrder[o.id] || []).filter((w) => w.status === 'needs_customer_confirmation').map((w) => (
+                    <div key={w.id} className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        {w.product_title || '称重商品'}：预估 {w.estimated_weight_grams ?? 0} 克 / ¥
+                        {(w.estimated_amount_cents / 100).toFixed(2)}，实称 {w.weight_grams} 克 / ¥
+                        {(w.actual_amount_cents / 100).toFixed(2)}，
+                        {w.diff_cents > 0 ? `需补收 ¥${(w.diff_cents / 100).toFixed(2)}` : `需退款 ¥${(-w.diff_cents / 100).toFixed(2)}`}
+                      </span>
+                      <span className="flex gap-2">
+                        <button onClick={() => handleWeighDecision(o.id, w.id, true)} className="px-2 py-0.5 bg-emerald-600 text-white rounded">确认</button>
+                        <button onClick={() => handleWeighDecision(o.id, w.id, false)} className="px-2 py-0.5 bg-white border border-amber-300 rounded">拒绝（按预估出货）</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* 履约 SLA：时效承诺 + 超时赔付 (P1 冲刺) */}
               {o.promised_delivery_at && (

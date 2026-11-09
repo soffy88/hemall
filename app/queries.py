@@ -519,6 +519,7 @@ async def list_orders(
                    o.status, o.subtotal_cents, o.discount_cents, o.tax_cents,
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.billing_address, o.shipping_address,
+                   o.shipping_method_code, o.weigh_status,
                    o.created_at, o.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
             FROM customer_order o
@@ -568,6 +569,7 @@ async def get_order(pool: Any, order_id: str) -> dict | None:
                    o.payment_provider_name, o.payment_intent_id,
                    o.payment_verified_at, p.status AS payment_status,
                    o.billing_address, o.shipping_address,
+                   o.shipping_method_code, o.weigh_status,
                    o.created_at, o.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
             FROM customer_order o
@@ -687,6 +689,7 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                    o.status, o.subtotal_cents, o.discount_cents, o.tax_cents,
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.billing_address, o.shipping_address,
+                   o.shipping_method_code, o.weigh_status,
                    o.created_at, o.updated_at,
                    o.promised_delivery_at, o.sla_compensated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
@@ -757,7 +760,7 @@ async def get_cart(pool: Any, cart_id: str) -> dict | None:
             SELECT c.id, c.customer_id, c.region_code, c.currency, c.status,
                    c.subtotal_cents, c.discount_cents, c.tax_cents,
                    c.shipping_cents, c.grand_total_cents,
-                   c.billing_address, c.shipping_address,
+                   c.billing_address, c.shipping_address, c.shipping_method_code,
                    c.created_at, c.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items,
                    COALESCE(discounts.discounts, '[]'::jsonb) AS discounts,
@@ -1377,7 +1380,11 @@ def _row_to_dict(row: Any) -> dict:
             "commission_logic",
         ):
             try:
-                d[k] = json.loads(v)
+                parsed = json.loads(v)
+                # 历史双编码：jsonb 列里存的是 JSON 字符串时再解一层。
+                if k in ("billing_address", "shipping_address") and isinstance(parsed, str):
+                    parsed = json.loads(parsed)
+                d[k] = parsed
             except (json.JSONDecodeError, TypeError):
                 pass
     return d

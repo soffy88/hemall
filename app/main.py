@@ -87,6 +87,7 @@ from .security.rate_limit import limiter
 
 # 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)
 from .security.webhook import WebhookSignatureMiddleware
+from .store_ops import router as store_ops_router
 
 # Phase 0: 配置结构化日志 (进程启动期一次)
 configure_structlog()
@@ -659,6 +660,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_chat_router)
 
     app.include_router(build_router())
+    app.include_router(store_ops_router)
 
     @app.get("/", tags=["system"], include_in_schema=False)
     async def root(request: Request) -> HTMLResponse:

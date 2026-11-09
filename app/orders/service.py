@@ -59,11 +59,16 @@ class OrderService:
 
         # asyncpg 默认把 jsonb 读成 JSON 文本（未注册 codec 的连接池），
         # OrderSnapshot 需要 dict；这里统一反序列化，避免确认订单时 500。
+        # 兼容历史双编码行：jsonb 里存的是 JSON 字符串时再解一层。
         billing_address = row["billing_address"]
-        if isinstance(billing_address, str):
+        for _ in range(2):
+            if not isinstance(billing_address, str):
+                break
             billing_address = json.loads(billing_address) if billing_address else None
         shipping_address = row["shipping_address"]
-        if isinstance(shipping_address, str):
+        for _ in range(2):
+            if not isinstance(shipping_address, str):
+                break
             shipping_address = json.loads(shipping_address) if shipping_address else None
 
         return OrderSnapshot(

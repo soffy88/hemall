@@ -237,6 +237,18 @@ async def record_actual_weight(
                 line_status,
                 order_line_item_id,
             )
+            order_weigh_status = {
+                "needs_customer_confirmation": "pending_customer",
+                "charge_pending": "charge_pending",
+                "auto_refund": "refund_pending",
+                "recorded": "settled",
+            }.get(settlement_status)
+            if order_weigh_status:
+                await conn.execute(
+                    "UPDATE customer_order SET weigh_status = $1 WHERE id = $2",
+                    order_weigh_status,
+                    line["order_id"],
+                )
 
     # 退款在事务外走既有 refund_service（内部自己开连接/行锁）。
     if action == "refund":
@@ -300,6 +312,31 @@ async def confirm_settlement(
                 return _settlement_dict(row)
             if row["status"] == "needs_customer_confirmation":
                 if not accept:
+                    # 少收（需补收）被拒绝：按预估重量出货，不再补收，也不二次扣款。
+                    # 退款被拒绝（diff<0）不成立，转人工争议。
+                    if int(row["diff_cents"]) > 0:
+                        updated = await conn.fetchrow(
+                            """
+                            UPDATE weigh_settlement
+                            SET status = 'estimate_only',
+                                note = CASE WHEN $1 = '' THEN note ELSE $1 END,
+                                updated_at = NOW(), settled_at = NOW()
+                            WHERE id = $2 RETURNING *
+                            """,
+                            note or "顾客拒绝补差，按预估重量出货，不补收",
+                            settlement_id,
+                        )
+                        await conn.execute(
+                            "UPDATE order_line_item SET settlement_status = 'auto_settled' "
+                            "WHERE id = $1",
+                            row["order_line_item_id"],
+                        )
+                        await conn.execute(
+                            "UPDATE customer_order SET weigh_status = 'rejected_estimate' "
+                            "WHERE id = $1",
+                            row["order_id"],
+                        )
+                        return _settlement_dict(updated)
                     updated = await conn.fetchrow(
                         """
                         UPDATE weigh_settlement
@@ -314,6 +351,10 @@ async def confirm_settlement(
                     await conn.execute(
                         "UPDATE order_line_item SET settlement_status = 'disputed' WHERE id = $1",
                         row["order_line_item_id"],
+                    )
+                    await conn.execute(
+                        "UPDATE customer_order SET weigh_status = 'disputed' WHERE id = $1",
+                        row["order_id"],
                     )
                     return _settlement_dict(updated)
                 updated = await conn.fetchrow(
@@ -330,6 +371,11 @@ async def confirm_settlement(
                 await conn.execute(
                     "UPDATE order_line_item SET settlement_status = 'confirmed' WHERE id = $1",
                     row["order_line_item_id"],
+                )
+                await conn.execute(
+                    "UPDATE customer_order SET weigh_status = $1 WHERE id = $2",
+                    "charge_pending" if int(row["diff_cents"]) > 0 else "accepted",
+                    row["order_id"],
                 )
                 row = updated
 
@@ -397,5 +443,9 @@ async def mark_charge_collected(
         await conn.execute(
             "UPDATE order_line_item SET settlement_status = 'auto_settled' WHERE id = $1",
             row["order_line_item_id"],
+        )
+        await conn.execute(
+            "UPDATE customer_order SET weigh_status = 'settled' WHERE id = $1",
+            row["order_id"],
         )
     return _settlement_dict(row)

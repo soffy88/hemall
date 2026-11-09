@@ -1511,7 +1511,8 @@ async def _create_draft_order_with_reservations(
                     (id, cart_id, customer_id, region_code, currency, status,
                      subtotal_cents, discount_cents, tax_cents, shipping_cents,
                      grand_total_cents, billing_address, shipping_address)
-                VALUES ($1, NULL, $2, $3, $4, 'draft', $5, 0, 0, 0, $5, $6::jsonb, $7::jsonb)
+                VALUES ($1, NULL, $2, $3, $4, 'draft', $5, 0, 0, 0, $5,
+                        $6::text::jsonb, $7::text::jsonb)
                 """,
                 order_id,
                 customer_id,
@@ -1615,7 +1616,8 @@ async def _create_order_from_cart(
                 """
                 SELECT id, customer_id, region_code, currency, status,
                        subtotal_cents, discount_cents, tax_cents, shipping_cents,
-                       grand_total_cents, billing_address, shipping_address
+                       grand_total_cents, billing_address, shipping_address,
+                       shipping_method_code
                 FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
                 """,
                 cart_id,
@@ -1811,9 +1813,9 @@ async def _create_order_from_cart(
                     (id, cart_id, customer_id, region_code, currency, status,
                      subtotal_cents, discount_cents, tax_cents, shipping_cents,
                      grand_total_cents, billing_address, shipping_address,
-                     discount_kind, voucher_redeemed_cents)
+                     discount_kind, voucher_redeemed_cents, shipping_method_code)
                 VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10,
-                        $11::jsonb, $12::jsonb, $13, $14)
+                        $11::text::jsonb, $12::text::jsonb, $13, $14, $15)
                 """,
                 order_id,
                 cart["id"],
@@ -1833,6 +1835,7 @@ async def _create_order_from_cart(
                 json.dumps(cart["shipping_address"] or {}, ensure_ascii=False),
                 _cz_discount_kind,
                 _cz_discount_cents if _cz_discount_kind == "voucher" else 0,
+                cart["shipping_method_code"],
             )
             if consent_version:
                 await record_consents(
@@ -2534,6 +2537,12 @@ async def add_shipping_method(
         method_name=body.method_name,
         price_cents=quote["price_cents"],
     )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE cart SET shipping_method_code = $1, updated_at = NOW() WHERE id = $2",
+            str(quote.get("code") or body.method_name),
+            body.cart_id,
+        )
     result = await add_shipping_method_to_cart(
         cfg,
         inp,
@@ -3965,6 +3974,43 @@ async def merchant_weigh_slip(
     if settlement["note"]:
         lines.append(f"备注: {settlement['note']}")
     return {"settlement": settlement, "slip_text": "\n".join(lines)}
+
+
+class CustomerCancelOrderRequest(BaseModel):
+    reason: str = "顾客取消"
+
+
+@router.post("/orders/{order_id}/cancel")
+async def customer_cancel_order(
+    order_id: str,
+    request: Request,
+    body: CustomerCancelOrderRequest | None = None,
+    principal: dict[str, Any] = Depends(get_current_customer),
+) -> dict:
+    """顾客取消自己的未完成订单（服务端释放预留/库存）。"""
+    from app.orders.models import OrderStatus
+    from app.orders.service import OrderService
+
+    _require_uuid(order_id, "order_id")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval(
+            "SELECT customer_id FROM customer_order WHERE id = $1", order_id
+        )
+        if owner is None:
+            raise HTTPException(404, "order not found")
+        if str(owner) != str(principal["customer_id"]):
+            raise HTTPException(403, "order does not belong to customer")
+    try:
+        order = await OrderService(pool).transition_status(
+            order_id,
+            OrderStatus.CANCELLED,
+            reason=(body.reason if body else "顾客取消"),
+            operator_id=f"customer:{principal['customer_id']}",
+        )
+    except Exception as exc:  # noqa: BLE001 - 状态机错误要转成 4xx
+        raise HTTPException(409, f"cannot cancel: {exc}") from exc
+    return {"status": "cancelled", "order": order.model_dump(mode="json")}
 
 
 @router.get("/orders/{order_id}/weigh-settlements")

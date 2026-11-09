@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { Order, Fulfillment } from '@/types/api';
@@ -147,6 +148,29 @@ export default function OrdersPage() {
     }
   }
 
+  async function handleWeigh(orderId: string, lineItemId: string, title: string) {
+    const gramsStr = prompt(`${title} 实称重量（克）：`);
+    if (!gramsStr) return;
+    const grams = Number(gramsStr);
+    if (!Number.isInteger(grams) || grams <= 0) { alert('请输入正整数克数'); return; }
+    try {
+      await api.storeOpsWeigh(orderId, lineItemId, grams);
+      refreshSelected();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
+  async function handleVerifyPickup(orderId: string) {
+    if (!confirm('确认顾客已到店提货？核销后订单完成。')) return;
+    try {
+      await api.storeOpsVerifyPickup(orderId);
+      refreshSelected();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
   async function handleCancelFulfillment(id: string) {
     if (!confirm('确认取消此履约单？')) return;
     try {
@@ -263,7 +287,13 @@ export default function OrdersPage() {
                         <span className="text-gray-400 ml-1">{li.variant_sku}</span>
                         <span className="text-gray-400 ml-1">×{li.quantity}</span>
                       </div>
-                      <span>{fmt(li.line_total_cents, selected.currency)}</span>
+                      <span className="flex items-center gap-2 shrink-0">
+                        {li.pricing_mode === 'weight' && !li.actual_weight_grams && (
+                          <button onClick={() => handleWeigh(selected.id, li.id, li.product_title || li.variant_sku || '称重商品')}
+                            className="text-[11px] text-emerald-700 hover:underline">录入实称</button>
+                        )}
+                        <span>{fmt(li.line_total_cents, selected.currency)}</span>
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -278,6 +308,10 @@ export default function OrdersPage() {
                     <button onClick={handleCapturePayment} className="text-xs px-2 py-1 bg-emerald-50 text-emerald-700 rounded hover:bg-emerald-100">捕获支付</button>
                     <button onClick={handleRefund} className="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded hover:bg-amber-100">退款</button>
                     <button onClick={handleCreateFulfillment} className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100">创建履约</button>
+                    {selected.shipping_method_code === 'pickup' && (
+                      <button onClick={() => handleVerifyPickup(selected.id)} className="text-xs px-2 py-1 bg-purple-50 text-purple-700 rounded hover:bg-purple-100">自提核销</button>
+                    )}
+                    <Link href={`/admin/orders/${selected.id}/print`} target="_blank" className="text-xs px-2 py-1 bg-white border rounded hover:bg-gray-50">打印拣货单</Link>
                   </div>
                   {fulfillments.length > 0 && (
                     <div className="text-xs space-y-1 pt-1">
