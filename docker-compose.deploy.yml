@@ -1,14 +1,16 @@
 services:
   api:
-    image: registry.sxueji.com/hemall/backend:0.6.18-prod
+    image: registry.sxueji.com/hemall/backend:sha-72fb397a74162cf56e875f92a3c47bfe8f895799
     volumes:
       - hemall-spider-media:/app/var/omodul_output/ext_bespoke/spider_media
     environment:
       # VLM 截图填价通道 (宿主机 hemal-shotd, 令牌在 .env 插值, 不落明文)
       HEMALL_VLM_SCREENSHOT_URL: http://172.17.0.1:8799/shot
       HEMALL_VLM_SCREENSHOT_TOKEN: ${HEMALL_VLM_SCREENSHOT_TOKEN:?set shotd token in .env}
+      # /metrics 仅带 Bearer/X-Metrics-Token 可读（P0-13，Caddy 之后仍兜底）
+      HEMALL_METRICS_ACCESS_TOKEN: ${HEMALL_METRICS_ACCESS_TOKEN:?set metrics token in .env}
   web:
-    image: registry.sxueji.com/hemall/frontend:0.5.10-prod
+    image: registry.sxueji.com/hemall/frontend:sha-72fb397a74162cf56e875f92a3c47bfe8f895799
     environment:
       HEMALL_BACKEND_URL: http://hemal-api-1:8000
       # BFF 同源闸门放行真实浏览器来源: NextRequest.nextUrl.origin 在
