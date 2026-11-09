@@ -174,7 +174,8 @@ def build_rollback(records: list[dict]) -> str:
         )
         if not rec["batch_existed"]:
             lines.append(
-                "DELETE FROM inventory_batch WHERE batch_no = "
+                "UPDATE inventory_batch SET status = 'inactive', deleted_at = NOW(), "
+                "updated_at = NOW() WHERE batch_no = "
                 f"{sql_literal('STORE-' + rec['sku'])};"
             )
     lines.append("COMMIT;")
@@ -342,7 +343,11 @@ async def publish(
                         UPDATE product_variant
                         SET status = 'active', pricing_mode = $1, reference_price_cents = $2,
                             unit_price_cents = $3, price_basis_grams = $4,
-                            weight_options = $5::jsonb, stock_unit = $6, updated_at = NOW()
+                            weight_options = $5::jsonb, stock_unit = $6,
+                            option_values = CASE WHEN $1 = 'weight'
+                                THEN '{"规格":"按斤称重"}'::jsonb
+                                ELSE option_values END,
+                            updated_at = NOW()
                         WHERE id = $7
                         """,
                         row["pricing"],
