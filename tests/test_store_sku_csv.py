@@ -37,6 +37,11 @@ def test_reference_prices_are_numeric_or_blank_and_flagged_confirm():
                 assert float(value) > 0
         # 参考价不是供应商当日报价，必须保留人工确认标记。
         assert "参考价-待供应商确认" in row["备注"]
+        # 有参考价就必须能追溯来源名称、URL 与日期。
+        if row["参考进价"]:
+            assert row["进价来源"] and row["进价URL"] and row["进价日期"]
+        if row["参考零售价"]:
+            assert row["零售来源"] and row["零售URL"] and row["零售日期"]
         assert row["计价方式"] in ("weight", "piece")
         if row["计价方式"] == "weight":
             assert int(row["计价基准克"]) == 500
