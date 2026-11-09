@@ -1982,6 +1982,40 @@ async def checkout(
     out_root = _output_dir(request, "checkout")
     await _authorize_cart(request, body.cart_id, principal)
     await _require_cart_alcohol_access(request, pool, body.cart_id)
+    # 0. 未选配送方式时按标准配送在服务端计价（防止直连客户端默认 0 运费）。
+    async with pool.acquire() as conn:
+        cart_fee = await conn.fetchrow(
+            "SELECT shipping_method_code, subtotal_cents FROM cart WHERE id = $1",
+            body.cart_id,
+        )
+    if cart_fee is not None and not cart_fee["shipping_method_code"]:
+        from omodul.add_shipping_method_to_cart import (
+            AddShippingMethodToCartConfig,
+            AddShippingMethodToCartInput,
+            add_shipping_method_to_cart,
+        )
+
+        from app.shipping import load_shipping_rules, quote_shipping
+
+        quote = quote_shipping(
+            await load_shipping_rules(pool, cfg_store),
+            method_name="standard",
+            subtotal_cents=int(cart_fee["subtotal_cents"] or 0),
+        )
+        await add_shipping_method_to_cart(
+            _cfg(request, AddShippingMethodToCartConfig),
+            AddShippingMethodToCartInput(
+                cart_id=body.cart_id, method_name="standard", price_cents=quote["price_cents"]
+            ),
+            _step_dir(out_root, "default_shipping_method"),
+            pool=pool,
+        )
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE cart SET shipping_method_code = 'standard', "
+                "updated_at = NOW() WHERE id = $1",
+                body.cart_id,
+            )
 
     # 1. 设置地址
     if body.billing_address:

@@ -29,7 +29,16 @@ export default function CartPage() {
   function loadCart() {
     const cartId = sessionStorage.getItem('hemall_cart_id');
     const pending: Promise<void> = cartId
-      ? api.getCart(cartId).then((data) => {
+      ? api.getCart(cartId).then(async (data) => {
+          // 未选配送方式时默认标准配送并在服务端计价，避免“0 元运费”默认漏单。
+          if (!data.shipping_method_code) {
+            try {
+              await api.storeAddShippingMethod(cartId, 'standard');
+              data = await api.getCart(cartId);
+            } catch {
+              // 计价失败保留原样，结算页仍会由服务端兜底。
+            }
+          }
           setCart(data);
         })
       : Promise.resolve();
@@ -221,7 +230,7 @@ export default function CartPage() {
                     <input
                       type="radio"
                       name="shipping-method"
-                      checked={cart.shipping_cents === m.price_cents}
+                      checked={cart.shipping_method_code === m.code}
                       onChange={() => handleSelectShipping(m.code)}
                     />
                     {m.name}
