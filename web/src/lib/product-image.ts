@@ -37,6 +37,15 @@ function firstMediaRef(value: unknown): string | null {
 }
 
 export function productImage(p: StorefrontProduct): string | null {
-  const b = p.variants?.[0]?.batches?.[0];
-  return firstMediaRef(b?.shelf_image_url) ?? firstMediaRef(b?.media_assets) ?? null;
+  for (const v of p.variants ?? []) {
+    const b = v.batches?.[0];
+    const ref = firstMediaRef(b?.shelf_image_url) ?? firstMediaRef(b?.media_assets);
+    if (ref) return ref;
+  }
+  // 0 库存商品（缺货可预订）不返回批次列表，用后端计算的展示图兜底。
+  for (const v of p.variants ?? []) {
+    const ref = firstMediaRef(v.image_url);
+    if (ref) return ref;
+  }
+  return null;
 }

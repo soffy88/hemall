@@ -302,6 +302,17 @@ async def list_storefront_products(
                     'unit_price_cents', pv.unit_price_cents,
                     'price_basis_grams', COALESCE(pv.price_basis_grams, 500),
                     'weight_options', COALESCE(pv.weight_options, '[]'::jsonb),
+                    'image_url', (
+                        SELECT COALESCE(NULLIF(ib_img.shelf_image_url, ''),
+                                        ib_img.media_assets->>0)
+                        FROM inventory_batch ib_img
+                        WHERE ib_img.variant_id = pv.id AND ib_img.deleted_at IS NULL
+                          AND ib_img.status = 'active'
+                          AND ib_img.inspection_status <> 'failed'
+                        ORDER BY GREATEST(ib_img.stock_qty - ib_img.reserved_qty, 0) DESC,
+                                 ib_img.created_at ASC
+                        LIMIT 1
+                    ),
                     'batches', COALESCE(batches.batch_list, '[]'::jsonb),
                     'total_stock', COALESCE(batches.total_stock, 0),
                     'min_price_cents', COALESCE(batches.min_price, pv.reference_price_cents)
@@ -414,6 +425,17 @@ async def get_storefront_product(
                     'unit_price_cents', pv.unit_price_cents,
                     'price_basis_grams', COALESCE(pv.price_basis_grams, 500),
                     'weight_options', COALESCE(pv.weight_options, '[]'::jsonb),
+                    'image_url', (
+                        SELECT COALESCE(NULLIF(ib_img.shelf_image_url, ''),
+                                        ib_img.media_assets->>0)
+                        FROM inventory_batch ib_img
+                        WHERE ib_img.variant_id = pv.id AND ib_img.deleted_at IS NULL
+                          AND ib_img.status = 'active'
+                          AND ib_img.inspection_status <> 'failed'
+                        ORDER BY GREATEST(ib_img.stock_qty - ib_img.reserved_qty, 0) DESC,
+                                 ib_img.created_at ASC
+                        LIMIT 1
+                    ),
                     'batches', COALESCE(batches.batch_list, '[]'::jsonb),
                     'total_stock', COALESCE(batches.total_stock, 0),
                     'min_price_cents', COALESCE(batches.min_price, pv.reference_price_cents)

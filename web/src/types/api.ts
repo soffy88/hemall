@@ -114,6 +114,8 @@ export interface ProductVariant {
   unit_price_cents?: number | null;
   price_basis_grams?: number;
   weight_options?: { label: string; grams: number }[];
+  /** 无库存时仍可用于展示的图片（后端取任一有效批次首图） */
+  image_url?: string | null;
   status: string;
   batches: InventoryBatch[];
   total_stock: number;
