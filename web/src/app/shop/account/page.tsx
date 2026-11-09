@@ -164,6 +164,18 @@ export default function AccountPage() {
       setPreorders(po);
       setClaims(c);
       setRefunds(r);
+      const weighEntries = await Promise.all(
+        o.filter((order) => (order.line_items || []).some((li) => li.pricing_mode === 'weight'))
+          .map(async (order) => {
+            try {
+              const data = await api.customerWeighSettlements(order.id);
+              return [order.id, data.items] as const;
+            } catch {
+              return [order.id, []] as const;
+            }
+          }),
+      );
+      setWeighByOrder(Object.fromEntries(weighEntries));
     } catch (e) {
       setError(errMessage(e));
     } finally {
