@@ -340,6 +340,7 @@ async def list_storefront_products(
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
                       AND {inner_batch_ok}
+                      AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
                   AND pv.status = 'active'
@@ -463,6 +464,7 @@ async def get_storefront_product(
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
                       AND {inner_batch_ok}
+                      AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
                   AND pv.status = 'active'
