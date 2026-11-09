@@ -17,6 +17,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REGISTRY="${HEMALL_RELEASE_REGISTRY:-registry.sxueji.com/hemall}"
 OUTPUT_ROOT="${HEMALL_RELEASE_OUTPUT_DIR:-$ROOT/release}"
 API_URL="${NEXT_PUBLIC_API_URL:-https://mall.sxueji.com}"
+CHATWOOT_BASE_URL="${NEXT_PUBLIC_CHATWOOT_BASE_URL:-}"
+CHATWOOT_WEBSITE_TOKEN="${NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN:-}"
 PUSH=0
 
 case "${1:-}" in
@@ -74,6 +76,8 @@ build_image backend \
 build_image frontend \
   -f web/Dockerfile \
   --build-arg "NEXT_PUBLIC_API_URL=${API_URL}" \
+  --build-arg "NEXT_PUBLIC_CHATWOOT_BASE_URL=${CHATWOOT_BASE_URL}" \
+  --build-arg "NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN=${CHATWOOT_WEBSITE_TOKEN}" \
   -t "$FRONTEND_IMAGE" \
   web
 
@@ -97,6 +101,7 @@ BUILT_AT=${BUILT_AT}
 BACKEND_IMAGE=${BACKEND_IMAGE}
 FRONTEND_IMAGE=${FRONTEND_IMAGE}
 NEXT_PUBLIC_API_URL=${API_URL}
+NEXT_PUBLIC_CHATWOOT_BASE_URL=${CHATWOOT_BASE_URL}
 EOF
 
 cat > "$OUT_DIR/docker-compose.release.yml" <<EOF

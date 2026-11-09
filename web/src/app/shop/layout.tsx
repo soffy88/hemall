@@ -8,6 +8,7 @@ import { isVisibleCategorySlug } from '@/lib/storefront-assortment';
 import { getSelectedRegion, setSelectedRegion } from '@/lib/region-store';
 import { getCustomerAuth, initCustomerAuth, subscribeCustomerAuth } from '@/lib/customer-auth-store';
 import { ToastProvider, useToast } from '@/components/Toast';
+import ChatwootWidget from '@/components/chatwoot-widget';
 import type { Region } from '@/types/api';
 import { errMessage } from '@/lib/errors';
 
@@ -268,6 +269,7 @@ export default function ShopLayout({ children }: { children: React.ReactNode }) 
   return (
     <ToastProvider>
       <ShopChrome>{children}</ShopChrome>
+      <ChatwootWidget />
     </ToastProvider>
   );
 }
