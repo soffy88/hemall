@@ -6,11 +6,12 @@
   显式 HEMALL_IMPORT_ALLOW_PROD=1，正常流程不要设）。
 - 没有真实报价就不编价：售价/进价留空即 NULL，商品保持 draft 未上架；
   只有 CSV 填了售价且显式 --publish 才发布。
-- 不生成库存批次、不使用网络图片；图片列只写“待拍照”备注。
-- 按 slug / sku_code 幂等；同名同品复用现有商品（保留实拍图与批次）。
+- 不生成库存批次、不下载/上传网络图片；CSV 图片列仅记录本地参考图路径。
+- 按 slug / sku_code 幂等；优先按 merge-decisions.csv 复用现有商品
+  （保留实拍图与批次），其次同名同品。
 
 用法：
-  python scripts/import_store_sku_pricing.py --dry-run
+  python scripts/import_store_sku_pricing.py            # dry-run
   HEMALL_PG_DSN=postgresql://... python scripts/import_store_sku_pricing.py --apply
   ... --apply --publish   # 只发布已填售价的行
 """
@@ -39,6 +40,7 @@ except Exception:  # pragma: no cover - uv 环境可用
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CSV = ROOT / "store-sku-pricing.csv"
+DEFAULT_MERGE = ROOT / "merge-decisions.csv"
 
 CATEGORY_NAMES = {
     "vegetables": "蔬菜",
@@ -75,6 +77,23 @@ def norm(name: str) -> str:
     text = unicodedata.normalize("NFKC", name or "").strip().lower()
     text = "".join(ch for ch in text if not ch.isspace())
     return ALIASES.get(text, text)
+
+
+def load_merge_decisions(path: Path) -> dict[str, str]:
+    """人工确认的同名/同品合并表：SKU -> 现有商品 ID（决定=合并）。"""
+    if not path.is_file():
+        return {}
+    mapping: dict[str, str] = {}
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            if (row.get("决定") or "").strip() != "合并":
+                continue
+            sku = (row.get("SKU") or "").strip()
+            pid = (row.get("现有商品ID") or "").strip()
+            if not sku or not pid:
+                raise SystemExit(f"merge-decisions.csv 合并行缺少 SKU 或现有商品ID: {sku!r}")
+            mapping[sku] = pid
+    return mapping
 
 
 def slugify(sku: str) -> str:
@@ -145,6 +164,7 @@ async def import_rows(
     apply: bool,
     publish: bool,
     reuse: bool,
+    merge_map: dict[str, str] | None = None,
 ) -> dict[str, int]:
     stats = {"created": 0, "reused": 0, "updated": 0, "skipped": 0, "no_price": 0}
     conn = await asyncpg.connect(dsn)
@@ -190,9 +210,19 @@ async def import_rows(
                 category_id = category_ids[slug]
                 status = "published" if (publish and sale_cents is not None) else "draft"
 
-                # 2) 复用同名同品（保留实拍图/批次），否则按 slug 幂等新建。
+                # 2) 优先按人工确认的合并表复用（保留实拍图/批次），
+                #    其次同名同品，最后按 slug 幂等新建。
                 existing = None
-                if reuse and not category_id.startswith("<new:"):
+                merge_pid = (merge_map or {}).get(sku)
+                if merge_pid:
+                    existing = await conn.fetchrow(
+                        "SELECT id, title, slug FROM product "
+                        "WHERE id = $1 AND deleted_at IS NULL",
+                        merge_pid,
+                    )
+                    if existing is None:
+                        raise SystemExit(f"{sku}: 合并目标商品不存在或已删除: {merge_pid}")
+                if existing is None and reuse and not category_id.startswith("<new:"):
                     candidates = await conn.fetch(
                         "SELECT id, title, slug FROM product "
                         "WHERE category_id = $1 AND deleted_at IS NULL",
@@ -315,6 +345,9 @@ async def main() -> int:
     parser.add_argument("--apply", action="store_true", help="真正写库（默认 dry-run）")
     parser.add_argument("--publish", action="store_true", help="仅发布已填售价的行")
     parser.add_argument("--no-reuse", action="store_true", help="不与同名现有商品合并")
+    parser.add_argument(
+        "--merge-csv", type=Path, default=DEFAULT_MERGE, help="人工确认的同品合并表"
+    )
     args = parser.parse_args()
 
     rows = read_rows(args.csv)
@@ -327,7 +360,12 @@ async def main() -> int:
         raise SystemExit("--apply 需要 --dsn 或 HEMALL_PG_DSN")
     check_dsn(args.dsn)
     stats = await import_rows(
-        args.dsn, rows, apply=True, publish=args.publish, reuse=not args.no_reuse
+        args.dsn,
+        rows,
+        apply=True,
+        publish=args.publish,
+        reuse=not args.no_reuse,
+        merge_map=load_merge_decisions(args.merge_csv),
     )
     print(
         f"导入完成: 新建 {stats['created']} / 复用商品 {stats['reused']} / "

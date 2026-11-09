@@ -1,4 +1,4 @@
-"""门店合并 SKU 清单：99 项、来源列、计价方式与“不编价”约束。"""
+"""门店合并 SKU 清单：99 项、来源列、计价方式与参考价约束。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CSV_PATH = ROOT / "store-sku-pricing.csv"
+ASSETS = ROOT / "assets" / "store-sku"
 
 
 def _rows() -> list[dict[str, str]]:
@@ -28,21 +29,56 @@ def test_csv_has_99_unique_skus_and_sources():
     assert sum(budget.values()) == 7400
 
 
-def test_csv_prices_are_blank_and_images_pending():
+def test_reference_prices_are_numeric_or_blank_and_flagged_confirm():
     for row in _rows():
-        assert row["待填进价(元/单位)"] == ""
-        assert row["待填售价(元/单位)"] == ""
-        assert row["图片"] == "待拍照"
+        for col in ("待填进价(元/单位)", "待填售价(元/单位)"):
+            value = row[col]
+            if value != "":
+                assert float(value) > 0
+        # 参考价不是供应商当日报价，必须保留人工确认标记。
+        assert "参考价-待供应商确认" in row["备注"]
         assert row["计价方式"] in ("weight", "piece")
         if row["计价方式"] == "weight":
             assert int(row["计价基准克"]) == 500
 
 
-def test_weight_piece_categories_match_business_rule():
+def test_images_are_reference_files_or_pending():
+    for row in _rows():
+        image = row["图片"]
+        if image.startswith("assets/store-sku/"):
+            rel = image.split("；")[0]
+            path = ROOT / rel
+            assert path.is_file(), rel
+            assert path.stat().st_size <= 500_000
+            assert "参考图-待换实拍" in image
+            assert row["图片来源"]
+        else:
+            assert image.startswith("待拍照")
+
+
+def test_margin_check_flags_insufficient_gross_margin():
+    for row in _rows():
+        w = row["参考进价"]
+        s = row["建议售价"]
+        if w and s:
+            expected = (float(s) - float(w)) / float(s)
+            if expected < 0.15:
+                assert "毛利不足需复核" in row["毛利率"]
+
+
+def test_merge_decisions_cover_all_skus_and_reuse_existing_ids():
     rows = _rows()
-    by_name = {r["商品名称"]: r for r in rows}
-    # 蔬果肉禽鱼豆干千张按重量；大米/油/调味瓶装/豆腐盒/火龙果/西瓜按件。
-    for name in ("菜心", "前腿肉", "鲫鱼", "豆干", "千张豆皮", "苹果"):
-        assert by_name[name]["计价方式"] == "weight"
-    for name in ("大米", "食用油", "生抽", "嫩豆腐", "老豆腐", "火龙果", "西瓜"):
-        assert by_name[name]["计价方式"] == "piece"
+    with (ROOT / "merge-decisions.csv").open(encoding="utf-8-sig", newline="") as fh:
+        decisions = list(csv.DictReader(fh))
+    assert len(decisions) == 99
+    assert {d["SKU"] for d in decisions} == {r["SKU"] for r in rows}
+    assert {d["决定"] for d in decisions} <= {"合并", "新建"}
+    merges = [d for d in decisions if d["决定"] == "合并"]
+    assert len(merges) == 19
+    for d in merges:
+        assert len(d["现有商品ID"]) == 36
+        assert d["现有商品名称"]
+    # 不同品不合并，避免把明确区分的商品压成一条。
+    by_sku = {d["SKU"]: d for d in decisions}
+    for sku in ("EGT-002", "GRN-014", "GRN-022", "GRN-002", "GRN-003", "GRN-008"):
+        assert by_sku[sku]["决定"] == "新建"
