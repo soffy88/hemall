@@ -11,6 +11,7 @@ const navItems: SideBarNavItem[] = [
   { id: 'dashboard', label: '仪表盘', href: '/admin' },
   { id: 'today', label: '今日待办', href: '/admin/today' },
   { id: 'products', label: '商品管理', href: '/admin/products' },
+  { id: 'photo', label: '拍照换图', href: '/admin/photo' },
   { id: 'catalog', label: '分类与合集', href: '/admin/catalog' },
   { id: 'orders', label: '订单管理', href: '/admin/orders' },
   { id: 'reports', label: '每日报表', href: '/admin/reports' },

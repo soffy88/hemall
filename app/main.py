@@ -622,6 +622,12 @@ def create_app() -> FastAPI:
     spider_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media/spider", StaticFiles(directory=spider_root), name="spider_media")
 
+    # 店员实拍商品图 (product_photo 输出): /media/product_photo/<yyyymm>/<hash>.jpg
+    # 落 hemall_output 命名卷 (docker-compose.mall-old.yml) —— 容器重建不丢。
+    photo_root = settings.output_root / "product_photo"
+    photo_root.mkdir(parents=True, exist_ok=True)
+    app.mount("/media/product_photo", StaticFiles(directory=photo_root), name="product_photo")
+
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
     app.include_router(refund_router)

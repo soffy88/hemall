@@ -326,3 +326,46 @@ describe('core2 门店运营接口', () => {
     expect(calls[0].init.method).toBe('POST');
   });
 });
+
+describe('core3 店员拍照接口', () => {
+  it('参考图列表：scope/search 进 query，走后台鉴权', async () => {
+    stubFetch([jsonResponse({ scope: 'store', items: [], progress: {} })]);
+    await api.photoReference({ scope: 'store', search: '菜心', limit: 20 });
+    expect(calls[0].url).toContain('/api/admin/photo-ops/reference?');
+    expect(calls[0].url).toContain('scope=store');
+    expect(calls[0].url).toContain(encodeURIComponent('菜心'));
+  });
+
+  it('上传图片：FormData 不设 Content-Type，带 CSRF 头与 make_primary', async () => {
+    document.cookie = 'hemall_csrf_token=tok-core3; path=/';
+    stubFetch([jsonResponse({ id: 'ph1', url: '/media/product_photo/a.jpg' })]);
+    const file = new File([new Uint8Array([1, 2, 3])], 'a.jpg', { type: 'image/jpeg' });
+    await api.uploadProductPhoto('p1', file, { makePrimary: true });
+    expect(calls[0].url).toBe('/api/admin/photo-ops/products/p1/photos');
+    expect(calls[0].init.method).toBe('POST');
+    const headers = (calls[0].init.headers ?? {}) as Record<string, string>;
+    expect(Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')).toBe(false);
+    expect(headerOf(calls[0], 'X-CSRF-Token')).toBe('tok-core3');
+    const body = calls[0].init.body as FormData;
+    expect(body.get('make_primary')).toBe('true');
+    expect((body.get('file') as File).name).toBe('a.jpg');
+  });
+
+  it('拍照上新走 multipart POST，价格按分传', async () => {
+    document.cookie = 'hemall_csrf_token=tok-core3; path=/';
+    stubFetch([jsonResponse({ product_id: 'p1', status: 'draft' })]);
+    const form = new FormData();
+    form.append('title', '本地菜心');
+    form.append('price_cents', '399');
+    await api.createPhotoProduct(form);
+    expect(calls[0].url).toBe('/api/admin/photo-ops/products');
+    expect((calls[0].init.body as FormData).get('price_cents')).toBe('399');
+  });
+
+  it('顾客能力位走顾客身份', async () => {
+    stubFetch([jsonResponse({ can_ingest: false, is_staff: false })]);
+    const res = await api.myCapabilities();
+    expect(calls[0].url).toBe('/api/store/my-capabilities');
+    expect(res.can_ingest).toBe(false);
+  });
+});

@@ -36,6 +36,10 @@ dependencies = [
     # 代码用 8.x 客户端 API（body= 传参）；9.x 已移除 body 且与 ES 8 服务端不配套
     "elasticsearch>=8.12,<9.0",
     "gunicorn>=23.0,<24.0",
+    # 店员手机拍照上传: iPhone 默认 HEIC, Pillow 本身不解 HEIC;
+    # pillow-heif 自带 libheif wheel, 无需系统包。
+    "pillow>=11.0",
+    "pillow-heif>=0.20",
 ]
 
 [project.optional-dependencies]

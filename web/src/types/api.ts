@@ -1082,3 +1082,63 @@ export interface MerchantWeighRow {
   settlement_status: string | null;
   settlement_note: string | null;
 }
+
+// ── 店员拍照（core3）────────────────────────────────────────────────
+
+export interface ProductPhoto {
+  id: string;
+  product_id: string;
+  variant_id: string | null;
+  url: string;
+  thumb_url: string | null;
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  original_filename: string;
+  source: string;
+  is_primary: boolean;
+  position: number;
+  status: 'active' | 'replaced' | 'deleted' | string;
+  previous_images: Record<string, string | null>;
+  created_by: string;
+  created_at: string;
+  updated_at: string | null;
+  deleted_at: string | null;
+}
+
+export interface PhotoReferenceItem {
+  id: string;
+  title: string;
+  slug: string;
+  category_name: string | null;
+  batch_id: string | null;
+  batch_no: string | null;
+  shelf_image_url: string | null;
+  image_url: string | null;
+  is_reference: boolean;
+}
+
+export interface PhotoReferenceResponse {
+  scope: 'all' | 'store';
+  items: PhotoReferenceItem[];
+  progress: {
+    replaced: number;
+    total: number;
+    reference_remaining: number;
+    store_replaced: number;
+    store_total: number;
+  };
+}
+
+export interface PhotoDraftResult {
+  product_id: string;
+  variant_id: string;
+  batch_id: string;
+  title: string;
+  status: string;
+  category: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  photo: ProductPhoto;
+}

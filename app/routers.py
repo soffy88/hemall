@@ -43,6 +43,7 @@ from .ext.oskill import (
     rerank_feed_by_affinity,
 )
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
+from .product_photo import router as product_photo_router
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
@@ -1105,14 +1106,18 @@ async def agent_ingest(
     retail_price_cents: int | None = Form(None),
     stock_qty: int = Form(30),
     category_slug: str = Form("daily"),
+    target_product_id: str = Form(""),
+    target_sku: str = Form(""),
     principal: dict[str, Any] = Depends(get_current_user),
 ):
     """视频/图片传货: 手机实拍 → 自动上架。
 
     multipart/form-data: file=图片/视频文件, 可选 location_id/
-    retail_price_cents/stock_qty/category_slug。图片先经 VLM 识货 (识别名/
-    品类; 命中已有商品则以图更新、只补新批次), 识别不可用时降级为文件名
-    清洗成商品名; 媒体文件即商品图/视频。
+    retail_price_cents/stock_qty/category_slug/target_product_id/target_sku。
+    指定 target_product_id/target_sku 时只替换该商品主图, 不新建商品。
+    未指定时图片先经 VLM 识货 (识别名/品类; 命中已有商品则以图更新、只补
+    新批次), 识别不可用且文件名为手机相机名 (IMG_/DSC_) 时只建草稿。
+    图片统一压缩到长边 1200、去 EXIF/GPS、heic 转 jpeg、单张 ≤10MB。
     """
 
     return await ingest_media(
@@ -1124,6 +1129,9 @@ async def agent_ingest(
         retail_price_cents=retail_price_cents,
         stock_qty=stock_qty,
         category_slug=category_slug,
+        target_product_id=target_product_id,
+        target_sku=target_sku,
+        can_edit_any=True,
     )
 
 
@@ -1221,6 +1229,7 @@ def build_router() -> APIRouter:
     router.include_router(auth_router)
     router.include_router(storefront_router)
     router.include_router(admin_read_router)
+    router.include_router(product_photo_router)
     router.include_router(ext_bespoke_router)
     router.include_router(hardware_webhook_router)
 

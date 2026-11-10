@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import os
 import uuid
 from pathlib import Path
@@ -20,6 +22,11 @@ import pytest
 from fastapi import UploadFile
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
+
+
+_TINY_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCGiiivhz84P//Z"
+)
 
 
 @pytest.fixture
@@ -133,7 +140,7 @@ class TestCangzhuIngestUpsert:
             out_root,
             location_id,
             f"仓主测试苹果{token}号-1.jpg",
-            b"first-image-bytes",
+            _TINY_JPEG,
             "image/jpeg",
             retail_price_cents=1999,
             stock_qty=50,
@@ -153,7 +160,7 @@ class TestCangzhuIngestUpsert:
             out_root,
             location_id,
             f"仓主测试苹果{token}号-2.jpg",
-            b"second-image-bytes",
+            _TINY_JPEG,
             "image/jpeg",
             retail_price_cents=2500,
             stock_qty=40,
@@ -190,7 +197,7 @@ class TestCangzhuIngestUpsert:
             out_root,
             location_id,
             f"仓主测试梨{token}号-1.jpg",
-            b"pear-v1",
+            _TINY_JPEG,
             "image/jpeg",
             retail_price_cents=1800,
             stock_qty=25,
@@ -203,7 +210,7 @@ class TestCangzhuIngestUpsert:
             out_root,
             location_id,
             f"仓主测试梨{token}号-2.jpg",
-            b"pear-v2",
+            _TINY_JPEG,
             "image/jpeg",
         )
         assert second["status"] == "updated"
@@ -230,7 +237,7 @@ class TestCangzhuIngestUpsert:
                 out_root,
                 location_id,
                 f"仓主测试橙{token}号-{i + 1}.jpg",
-                b"orange-bytes",
+                _TINY_JPEG,
                 "image/jpeg",
             )
             assert result["status"] in ("created", "updated")
@@ -245,7 +252,7 @@ class TestCangzhuIngestUpsert:
             out_root,
             location_id,
             f"仓主测试瓜{token}号-1.jpg",
-            b"melon-photo",
+            _TINY_JPEG,
             "image/jpeg",
             retail_price_cents=1200,
             stock_qty=10,
@@ -280,7 +287,7 @@ class TestCangzhuIngestUpsert:
             out_root,
             location_id,
             f"仓主测试桃{token}号-1.jpg",
-            b"peach",
+            _TINY_JPEG,
             "image/jpeg",
         )
         second = await _ingest(
@@ -288,7 +295,7 @@ class TestCangzhuIngestUpsert:
             out_root,
             location_id,
             f"仓主测试杏{token}号-1.jpg",
-            b"apricot",
+            _TINY_JPEG,
             "image/jpeg",
         )
         assert first["status"] == "created"

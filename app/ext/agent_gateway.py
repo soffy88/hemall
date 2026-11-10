@@ -820,6 +820,9 @@ _ALLOWED_UPLOAD_EXTENSIONS = frozenset(
         ".png",
         ".webp",
         ".gif",
+        ".heic",
+        ".heif",
+        ".avif",
         ".mp4",
         ".mov",
         ".webm",
@@ -828,6 +831,13 @@ _ALLOWED_UPLOAD_EXTENSIONS = frozenset(
 
 #: 传货上传允许的 content-type 前缀 (与扩展名双重校验)。
 _ALLOWED_UPLOAD_CONTENT_PREFIXES = ("image/", "video/")
+
+#: 手机相机/截图/微信默认文件名前缀: 这些不是商品名, 不能拿来建在线商品。
+_CAMERA_FILENAME_RE = re.compile(
+    r"^(?:img|dsc|dscn|pxl|mvimg|screenshot|image|photo|wechat|mmexport|"
+    r"wx_camera|微信图片|图片|截图)[\s_\-]?\d",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_upload_filename(name: str) -> str:
@@ -1163,6 +1173,10 @@ async def ingest_media(
     deterministic_match: bool = False,
     update_in_place: bool = False,
     actor_ref: str | None = None,
+    target_product_id: str | None = None,
+    target_sku: str | None = None,
+    can_edit_any: bool = True,
+    owner_ref: str | None = None,
 ) -> dict[str, Any]:
     """视频/图片传货: 保存实景文件 → (图片先 VLM 识货) → 自动上架/以图更新。
 
@@ -1178,6 +1192,10 @@ async def ingest_media(
          - 售价 = 参数或默认 (成本 + 毛利)
       4. 返回商品 ID + 草稿信息
 
+    指定 target_product_id/target_sku 时只换该商品图片（不新建商品/批次）；
+    未指定且 VLM 不可用时, 手机相机文件名 (IMG_/DSC_/PXL_ 等) 不再当商品名，
+    改为建草稿并在响应里 requires_name=true，等店员补名称。
+
     幂等: 文件名重复会 SKU 冲突, 自动加时间戳后缀避免。
     整个过程在一个事务中执行；没有可用库位时返回 400 并给出明确提示。
     """
@@ -1190,27 +1208,115 @@ async def ingest_media(
     if not content_type.startswith(_ALLOWED_UPLOAD_CONTENT_PREFIXES):
         raise HTTPException(400, f"unsupported content type: {content_type or '(none)'}")
     user_ref = actor_ref or str(principal.get("user_id") or "anonymous")[:8]
+    owner_ref = owner_ref or user_ref
     ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     ingest_dir = out_root / "agent_ingest" / user_ref
     ingest_dir.mkdir(parents=True, exist_ok=True)
-    dest = ingest_dir / f"{ts}_{safe_name}"
     content = await file.read()
     if not content:
         raise HTTPException(400, "empty file")
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(413, "file too large (max 50MB)")
-    dest.write_bytes(content)
+    is_video = (file.content_type or "").startswith("video/")
+
+    # 图片: 统一走压缩/摆正/去 EXIF/GPS/heic→jpeg, 单张 10MB 上限。
+    # 视频: 保持原文件 (上限 50MB)。
+    from .. import product_photo as pp
+
+    processed = None
+    if is_video:
+        if len(content) > 50 * 1024 * 1024:
+            raise HTTPException(413, "file too large (max 50MB)")
+        dest = ingest_dir / f"{ts}_{safe_name}"
+        dest.write_bytes(content)
+        media_url = f"/media/agent_ingest/{user_ref}/{dest.name}"
+        thumb_url = None
+    else:
+        if len(content) > pp.MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "file too large (max 10MB)")
+        try:
+            processed = pp.process_image(content)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        stem = Path(safe_name).stem[:40] or "photo"
+        dest = ingest_dir / f"{ts}_{stem}.jpg"
+        dest.write_bytes(processed.main)
+        thumb_dest = ingest_dir / f"{ts}_{stem}_thumb.jpg"
+        thumb_dest.write_bytes(processed.thumb)
+        media_url = f"/media/agent_ingest/{user_ref}/{dest.name}"
+        thumb_url = f"/media/agent_ingest/{user_ref}/{thumb_dest.name}"
+        content = processed.main
 
     # 2. 商品名 + SKU (加随机后缀防止同秒同名文件冲突)
     filename_title = _clean_filename(safe_name)
+    camera_like = bool(_CAMERA_FILENAME_RE.match(Path(safe_name).stem or ""))
     title = filename_title
     import uuid
 
     sku = f"AGT-{uuid.uuid4().hex[:12]}"
 
+    # ── 指定商品换图: 只更新该商品图片, 不新建商品/批次 ──
+    target_product_id = (target_product_id or "").strip() or None
+    target_sku = (target_sku or "").strip() or None
+    if target_product_id or target_sku:
+        if is_video:
+            raise HTTPException(400, "换图只接受图片; 视频请走新建传货")
+        if processed is None:
+            raise HTTPException(400, "仅支持图片换图")
+        async with pool.acquire() as conn:
+            if not target_product_id:
+                found = await conn.fetchrow(
+                    'SELECT product_id FROM "product_variant" '
+                    "WHERE sku_code = $1 AND deleted_at IS NULL",
+                    target_sku,
+                )
+                if found is None:
+                    raise HTTPException(404, f"SKU 不存在: {target_sku}")
+                target_product_id = str(found["product_id"])
+            variant_id = await conn.fetchval(
+                'SELECT id FROM "product_variant" WHERE product_id = $1 '
+                "AND status = 'active' AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
+                target_product_id,
+            )
+            if variant_id is None:
+                raise HTTPException(400, "该商品没有可售变体, 无法换图")
+            cover = await conn.fetchrow(
+                "SELECT COALESCE(NULLIF(ib.shelf_image_url, ''), "
+                "ib.media_assets->>0, '') AS img "
+                'FROM "inventory_batch" ib WHERE ib.variant_id = $1 '
+                "AND ib.deleted_at IS NULL AND ib.status = 'active' "
+                "ORDER BY ib.created_at DESC LIMIT 1",
+                variant_id,
+            )
+        owned = bool(cover and cover["img"]) and (
+            str(cover["img"]).startswith(f"/media/agent_ingest/{owner_ref}/")
+            or str(cover["img"]).startswith(pp.PHOTO_ROUTE + "/")
+        )
+        if not can_edit_any and not owned:
+            raise HTTPException(403, "只能更换自己上传的商品图; 在售商品图请联系店员")
+        photo = await pp.attach_image_record(
+            pool,
+            product_id=str(target_product_id),
+            variant_id=str(variant_id),
+            url=media_url,
+            thumb_url=thumb_url,
+            sha256=processed.sha256,
+            width=processed.width,
+            height=processed.height,
+            size_bytes=len(processed.main),
+            filename=safe_name,
+            actor=owner_ref,
+            make_primary=True,
+        )
+        return {
+            "status": "image_updated",
+            "matched": True,
+            "media_url": media_url,
+            "media_type": "image",
+            "recognition": "skipped_target",
+            "photo": photo,
+            "hint": "已替换该商品主图 (旧图保留在相册, 可在后台换回); 未新建商品。",
+        }
+
     # 3. 上架 (整个过程放在一个事务里)
-    is_video = (file.content_type or "").startswith("video/")
-    media_url = f"/media/agent_ingest/{user_ref}/{dest.name}"
     effective_stock = stock_qty if stock_qty is not None else 30
     cost = int((retail_price_cents or 1000) * 0.6)
     retail = retail_price_cents or 1299
@@ -1274,9 +1380,30 @@ async def ingest_media(
             logger.warning("ingest deterministic match failed (fallback to create): %s", exc)
             matched = None
 
+    # ── 仓主传货: 命中非本人商品时不得覆盖其图片 ──
+    if matched is not None and not can_edit_any:
+        m_pid0 = matched[0]
+        async with pool.acquire() as conn:
+            cover0 = await conn.fetchrow(
+                "SELECT COALESCE(NULLIF(ib.shelf_image_url, ''), "
+                "ib.media_assets->>0, '') AS img "
+                'FROM "inventory_batch" ib JOIN "product_variant" pv '
+                "ON pv.id = ib.variant_id WHERE pv.product_id = $1 "
+                "AND ib.deleted_at IS NULL AND ib.status = 'active' "
+                "ORDER BY ib.created_at DESC LIMIT 1",
+                m_pid0,
+            )
+        owned0 = bool(cover0 and cover0["img"]) and str(cover0["img"]).startswith(
+            f"/media/agent_ingest/{owner_ref}/"
+        )
+        if not owned0:
+            matched = None
+            matched_via_deterministic = False
+
     # ── 以图更新: 命中同一商品 → 只给其 active variant 补一个新批次 ──
     if matched is not None:
         m_pid, m_vid, m_title, match_via, match_confidence = matched
+        old_image: str | None = None
         async with pool.acquire() as conn:
             async with conn.transaction():
                 if not resolved_location_id:
@@ -1296,6 +1423,13 @@ async def ingest_media(
                 batch_actuals: dict[str, int] | None = None
                 batch_id = None
                 if update_in_place:
+                    prev_row = await conn.fetchrow(
+                        'SELECT id, shelf_image_url FROM "inventory_batch" '
+                        "WHERE variant_id = $1 AND status = 'active' AND deleted_at IS NULL "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        m_vid,
+                    )
+                    old_image = str(prev_row["shelf_image_url"]) if prev_row else None
                     batch_id, updated_fields, batch_actuals = await _update_ingest_batch(
                         conn,
                         variant_id=m_vid,
@@ -1322,6 +1456,25 @@ async def ingest_media(
                         "cost_price_cents": cost,
                         "stock_qty": effective_stock,
                     }
+        if not is_video and processed is not None:
+            try:
+                await pp.attach_image_record(
+                    pool,
+                    product_id=m_pid,
+                    variant_id=m_vid,
+                    url=media_url,
+                    thumb_url=thumb_url,
+                    sha256=processed.sha256,
+                    width=processed.width,
+                    height=processed.height,
+                    size_bytes=len(processed.main),
+                    filename=safe_name,
+                    actor=owner_ref,
+                    make_primary=True,
+                    previous={str(batch_id): old_image} if batch_id else {},
+                )
+            except Exception as exc:  # noqa: BLE001 - 相册记录失败不影响换图本身
+                logger.warning("ingest photo record failed (image already updated): %s", exc)
         return {
             "status": "updated",
             "title": m_title,
@@ -1352,6 +1505,15 @@ async def ingest_media(
             ),
         }
 
+    # 相机默认文件名 (IMG_1234 等) 不是商品名: VLM 不可用时只建草稿, 等店员补名称。
+    force_draft = (not is_video) and camera_like and identified_title is None
+    if force_draft:
+        title = f"待命名实拍 {datetime.now(UTC).strftime('%m-%d %H:%M')}"
+        description = (
+            f"手机拍照上传 (原文件 {safe_name}), VLM 识货不可用, 未自动命名。"
+            "请在后台填写名称/分类/价格后再发布。"
+        )
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             cat_id = await conn.fetchval(
@@ -1381,11 +1543,12 @@ async def ingest_media(
 
             pid = await conn.fetchval(
                 'INSERT INTO "product" (id, title, slug, description, category_id, status) '
-                "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'published') RETURNING id",
+                "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5) RETURNING id",
                 title,
                 unique_slug,
                 description,
                 cat_id,
+                "draft" if force_draft else "published",
             )
             vid = await conn.fetchval(
                 'INSERT INTO "product_variant" (id, product_id, sku_code, option_values, '
@@ -1410,7 +1573,8 @@ async def ingest_media(
             )
 
     return {
-        "status": "created",
+        "status": "draft" if force_draft else "created",
+        "requires_name": force_draft,
         "title": title,
         "product_id": str(pid),
         "variant_id": str(vid),
@@ -1426,7 +1590,9 @@ async def ingest_media(
         "identified_title": identified_title,
         "matched": False,
         "hint": (
-            "已通过 VLM 识别自动上架 (含做市曲线); 识别有误可在后台修改名称/分类。"
+            "未识货且文件名像手机相机 (IMG_/DSC_ 等), 已存为草稿: 请填写名称/分类/价格后再发布。"
+            if force_draft
+            else "已通过 VLM 识别自动上架 (含做市曲线); 识别有误可在后台修改名称/分类。"
             if identified_title
             else "本次未用上 VLM 识别 (视频或识别不可用), 按文件名推导上架; 可在后台修改。"
         ),

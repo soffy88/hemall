@@ -3870,6 +3870,8 @@ async def ingest_my_product(
     retail_price_cents: int | None = Form(None),
     stock_qty: int | None = Form(None),
     category_slug: str = Form("daily"),
+    target_product_id: str = Form(""),
+    target_sku: str = Form(""),
     principal: dict = Depends(get_current_customer),
 ):
     """仓主传货：照片/短视频上传，命中既有商品则原地更新，否则新建。
@@ -3877,7 +3879,8 @@ async def ingest_my_product(
     与员工端 POST /agent/ingest 共用 ingest_media，差异：顾客鉴权、文件名
     确定性标题匹配（不依赖 VLM）、匹配时原地更新最新批次而非只补新批次。
     未提供的价格/库存不覆盖既有值；新建时沿用默认价 ¥12.99 / 库存 30。
-    不设商家门禁：全体注册仓主可用。
+    仓主只能覆盖自己上传的商品图（/media/agent_ingest/<自己>/ 或换图相册）；
+    换员工/供应链维护的在售商品图需店员账号。
     """
     from app.ext.agent_gateway import ingest_media
 
@@ -3898,6 +3901,10 @@ async def ingest_my_product(
         deterministic_match=True,
         update_in_place=True,
         actor_ref=f"c_{customer_id}",
+        owner_ref=f"c_{customer_id}",
+        target_product_id=target_product_id,
+        target_sku=target_sku,
+        can_edit_any=False,
     )
 
 

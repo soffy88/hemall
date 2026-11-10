@@ -109,6 +109,7 @@ export default function AccountPage() {
   const [uploadStock, setUploadStock] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<IngestResult | null>(null);
+  const [canIngest, setCanIngest] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState<string | null>(null);
@@ -156,6 +157,7 @@ export default function AccountPage() {
         api.customerMyClaims(),
         api.customerMyRefunds(),
       ]);
+      api.myCapabilities().then((cap) => setCanIngest(!!cap.can_ingest)).catch(() => setCanIngest(false));
       setProfile(p);
       setName(p.name || '');
       setPhone(p.phone || '');
@@ -518,6 +520,7 @@ export default function AccountPage() {
             {purchaseRequests.length === 0 && <div className="text-sm text-gray-400">暂无点货记录。</div>}
           </div>
         </div>
+        {canIngest && (
         <div className="border-t pt-4 space-y-2">
           <h3 className="font-medium text-sm">拍照/短视频传货上架</h3>
           <p className="text-xs text-gray-500">上传商品照片或短视频：与既有商品同名时自动更新图/价格/库存，不建重复品；否则新建上架。价格、库存不填则新建时用默认价 ¥12.99 / 30 件，更新时保持原值。</p>
@@ -533,6 +536,7 @@ export default function AccountPage() {
             <p className="text-sm text-gray-700">结果：{uploadResult.status === 'updated' ? '已更新' : '已新建'}「{uploadResult.title}」，售价 {formatMoney(uploadResult.retail_price_cents, 'CNY')}，库存 {uploadResult.stock_qty} 件。</p>
           )}
         </div>
+        )}
       </div>
 
       {/* Addresses */}

@@ -44,8 +44,11 @@ import type {
   PaymentIntentResponse,
   PaymentStatusResponse,
   PriceList,
+  PhotoDraftResult,
+  PhotoReferenceResponse,
   Product,
   ProductCategory,
+  ProductPhoto,
   ProductCollection,
   PurchaseRequest,
   RecommendationResult,
@@ -200,6 +203,26 @@ async function request<T>(
     { ...opts, headers, credentials: 'include' },
     auth,
   );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errorMessage(body, res.status));
+  }
+  const data = await res.json();
+  assertNotBusinessFailure(data);
+  return data;
+}
+
+/** multipart 上传：不设 Content-Type（boundary 由浏览器生成），带 CSRF 头。 */
+async function requestForm<T>(path: string, form: FormData, auth: boolean | 'customer' = true): Promise<T> {
+  const headers: Record<string, string> = {};
+  const csrf = await ensureCsrfToken();
+  if (csrf) headers[CSRF_HEADER_NAME] = csrf;
+  const res = await fetchWithSession(path, {
+    method: 'POST',
+    body: form,
+    headers,
+    credentials: 'include',
+  }, auth);
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(errorMessage(body, res.status));
@@ -1602,12 +1625,23 @@ export const api = {
     }, 'customer'),
 
   // 视频/图片传货: multipart 上传, 自动上架
-  agentIngest: async (file: File, opts?: { retailPriceCents?: number; stockQty?: number; categorySlug?: string }) => {
+  agentIngest: async (
+    file: File,
+    opts?: {
+      retailPriceCents?: number;
+      stockQty?: number;
+      categorySlug?: string;
+      targetProductId?: string;
+      targetSku?: string;
+    },
+  ) => {
     const form = new FormData();
     form.append('file', file);
     if (opts?.retailPriceCents) form.append('retail_price_cents', String(opts.retailPriceCents));
     if (opts?.stockQty) form.append('stock_qty', String(opts.stockQty));
     if (opts?.categorySlug) form.append('category_slug', opts.categorySlug);
+    if (opts?.targetProductId) form.append('target_product_id', opts.targetProductId);
+    if (opts?.targetSku) form.append('target_sku', opts.targetSku);
     // 走 BFF 反代：cookie 自动附带，不能设 Content-Type（boundary 由浏览器生成）。
     const res = await fetchWithSession('/agent/ingest', {
       method: 'POST',
@@ -1622,4 +1656,54 @@ export const api = {
     assertNotBusinessFailure(data);
     return data;
   },
+
+  // ── 店员拍照换商品图 / 拍照上新（core3）──────────────────────────
+  photoReference: (params?: { scope?: 'all' | 'store'; search?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.scope) qs.set('scope', params.scope);
+    if (params?.search) qs.set('search', params.search);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    return request<PhotoReferenceResponse>(`/admin/photo-ops/reference?${qs}`, {}, true);
+  },
+
+  productPhotos: (productId: string) =>
+    request<{ items: ProductPhoto[] }>(`/admin/photo-ops/products/${productId}/photos`, {}, true),
+
+  uploadProductPhoto: (productId: string, file: File, opts?: { variantId?: string; makePrimary?: boolean }) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (opts?.variantId) form.append('variant_id', opts.variantId);
+    form.append('make_primary', opts?.makePrimary === false ? 'false' : 'true');
+    return requestForm<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos`, form);
+  },
+
+  setPhotoPrimary: (productId: string, photoId: string) =>
+    request<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos/${photoId}/primary`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, true),
+
+  restorePhoto: (productId: string, photoId: string) =>
+    request<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos/${photoId}/restore`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, true),
+
+  deletePhoto: (productId: string, photoId: string) =>
+    request<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos/${photoId}`, {
+      method: 'DELETE',
+    }, true),
+
+  reorderPhotos: (productId: string, photoIds: string[]) =>
+    request<{ items: ProductPhoto[] }>(`/admin/photo-ops/products/${productId}/photos/order`, {
+      method: 'POST', body: JSON.stringify({ photo_ids: photoIds }),
+    }, true),
+
+  photoCategories: () =>
+    request<Array<{ id: string; name: string; slug: string }>>('/admin/photo-ops/categories', {}, true),
+
+  createPhotoProduct: (form: FormData) =>
+    requestForm<PhotoDraftResult>('/admin/photo-ops/products', form),
+
+  myCapabilities: () =>
+    request<{ can_ingest: boolean; is_staff: boolean }>('/store/my-capabilities', {}, 'customer'),
 };

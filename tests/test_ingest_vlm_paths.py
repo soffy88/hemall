@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +31,11 @@ _IDENTIFY_OK = {
 }
 
 
+_TINY_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCGiiivhz84P//Z"
+)
+
+
 @pytest.fixture(autouse=True)
 def _settings_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -37,7 +44,7 @@ def _settings_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _image_upload(name: str = "随手拍.jpg", content: bytes = b"new-image-bytes"):
+def _image_upload(name: str = "随手拍.jpg", content: bytes = _TINY_JPEG):
     file = MagicMock(spec=UploadFile)
     file.filename = name
     file.content_type = "image/jpeg"
@@ -195,7 +202,7 @@ class TestIdentifyUnavailableDegrades:
         conn = _base_conn()
 
         result = await _ingest(
-            conn, tmp_path, _image_upload(name="黄瓜实拍.jpg", content=b"cucumber")
+            conn, tmp_path, _image_upload(name="黄瓜实拍.jpg", content=_TINY_JPEG)
         )
 
         assert result["status"] == "created"

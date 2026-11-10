@@ -5,10 +5,26 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { Product, ProductVariant } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import ProductPhotoEditor from '@/components/ProductPhotoEditor';
 
 /** 商品/变体的“最低价”本身没有单独的币种字段，取第一个批次的币种做展示。 */
 function fmt(cents: number | null, currency?: string): string {
   return formatMoney(cents, currency);
+}
+
+function productCover(p: Product): string | null {
+  for (const v of p.variants || []) {
+    for (const b of v.batches || []) {
+      if (b.shelf_image_url) return b.shelf_image_url;
+      const first = b.media_assets?.[0];
+      if (first) return first;
+    }
+  }
+  return null;
+}
+
+function isReferenceImage(url: string | null): boolean {
+  return !!url && (url.startsWith('/media/spider/') || url.startsWith('/products/'));
 }
 
 export default function ProductsPage() {
@@ -18,6 +34,7 @@ export default function ProductsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [search, setSearch] = useState('');
+  const [photoProduct, setPhotoProduct] = useState<Product | null>(null);
 
   // Create product form state
   const [title, setTitle] = useState('');
@@ -425,12 +442,27 @@ export default function ProductsPage() {
               {products.map((p) => (
                 <tr key={p.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
-                    <div className="font-medium flex items-center gap-1.5">
+                    <div className="flex items-start gap-2">
+                      <div className="w-12 h-12 shrink-0 rounded-lg bg-gray-50 overflow-hidden">
+                        {productCover(p) ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={productCover(p)!} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-lg">🥬</div>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                    <div className="font-medium flex items-center gap-1.5 flex-wrap">
                       {p.title}
                       {p.is_test && <span className="px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 text-[11px]">测试商品</span>}
                       {p.needs_data && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[11px]">待补资料</span>}
                     </div>
                     <div className="text-xs text-gray-400">{p.slug}</div>
+                    {isReferenceImage(productCover(p)) && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[11px]">参考图</span>
+                    )}
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded text-xs ${p.status === 'published' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
@@ -493,6 +525,7 @@ export default function ProductsPage() {
                       <button onClick={() => handlePublish(p)} className="text-xs text-blue-600 hover:underline">
                         {p.status === 'published' ? '下架' : '发布'}
                       </button>
+                      <button onClick={() => setPhotoProduct(p)} className="text-xs text-emerald-700 hover:underline">拍照/图片</button>
                       <button onClick={() => handleDelete(p.id)} className="text-xs text-red-600 hover:underline">删除</button>
                     </div>
                   </td>
@@ -503,6 +536,19 @@ export default function ProductsPage() {
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {photoProduct && (
+        <div className="fixed inset-0 z-50 bg-black/30 flex items-start justify-center overflow-y-auto p-3 sm:p-6">
+          <div className="w-full max-w-2xl">
+            <ProductPhotoEditor
+              productId={photoProduct.id}
+              productTitle={photoProduct.title}
+              onClose={() => setPhotoProduct(null)}
+              onChanged={() => { setLoading(true); load(); }}
+            />
+          </div>
         </div>
       )}
     </div>
