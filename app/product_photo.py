@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -783,7 +783,7 @@ def _actor(principal: dict[str, Any]) -> str:
 
 @router.get("/admin/photo-ops/reference")
 async def admin_reference_products(
-    request: Any,
+    request: Request,
     scope: str = Query("all"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -798,7 +798,7 @@ async def admin_reference_products(
 @router.get("/admin/photo-ops/products/{product_id}/photos")
 async def admin_list_photos(
     product_id: str,
-    request: Any,
+    request: Request,
     _=Depends(require_staff_role(*_STAFF_ROLES)),
 ):
     return {"items": await list_photos(_pool(request), product_id)}
@@ -807,7 +807,7 @@ async def admin_list_photos(
 @router.post("/admin/photo-ops/products/{product_id}/photos")
 async def admin_upload_photo(
     product_id: str,
-    request: Any,
+    request: Request,
     file: UploadFile = File(...),
     variant_id: str = Form(""),
     make_primary: bool = Form(True),
@@ -828,7 +828,7 @@ async def admin_upload_photo(
 async def admin_photo_primary(
     product_id: str,
     photo_id: str,
-    request: Any,
+    request: Request,
     _=Depends(require_staff_role(*_STAFF_ROLES)),
 ):
     return await set_photo_primary(_pool(request), product_id=product_id, photo_id=photo_id)
@@ -838,7 +838,7 @@ async def admin_photo_primary(
 async def admin_photo_restore(
     product_id: str,
     photo_id: str,
-    request: Any,
+    request: Request,
     _=Depends(require_staff_role(*_STAFF_ROLES)),
 ):
     return await restore_photo(_pool(request), product_id=product_id, photo_id=photo_id)
@@ -848,7 +848,7 @@ async def admin_photo_restore(
 async def admin_photo_delete(
     product_id: str,
     photo_id: str,
-    request: Any,
+    request: Request,
     _=Depends(require_staff_role(*_STAFF_ROLES)),
 ):
     return await delete_photo(_pool(request), product_id=product_id, photo_id=photo_id)
@@ -857,7 +857,7 @@ async def admin_photo_delete(
 @router.post("/admin/photo-ops/products/{product_id}/photos/order")
 async def admin_photo_order(
     product_id: str,
-    request: Any,
+    request: Request,
     body: dict[str, Any],
     _=Depends(require_staff_role(*_STAFF_ROLES)),
 ):
@@ -871,7 +871,7 @@ async def admin_photo_order(
 
 @router.post("/admin/photo-ops/products")
 async def admin_create_photo_product(
-    request: Any,
+    request: Request,
     file: UploadFile = File(...),
     title: str = Form(...),
     category_id: str = Form(...),
@@ -893,7 +893,7 @@ async def admin_create_photo_product(
 
 @router.get("/admin/photo-ops/categories")
 async def admin_photo_categories(
-    request: Any,
+    request: Request,
     _=Depends(require_staff_role(*_STAFF_ROLES)),
 ):
     async with _pool(request).acquire() as conn:
@@ -905,7 +905,7 @@ async def admin_photo_categories(
 
 @router.get("/store/my-capabilities")
 async def my_capabilities(
-    request: Any,
+    request: Request,
     principal: dict[str, Any] = Depends(get_current_customer),
 ):
     """顾客侧能力位：店员邮箱账号, 或已经传过货的仓主, 才显示传货入口。
