@@ -5,9 +5,11 @@ import { useRouter, usePathname } from 'next/navigation';
 import { OAppShell, OSideBar } from '@helios/oui';
 import type { SideBarNavItem } from '@helios/oui';
 import { logout } from '@/lib/auth-store';
+import AdminOrderAlerts from '@/components/ops/AdminOrderAlerts';
 
 const navItems: SideBarNavItem[] = [
   { id: 'dashboard', label: '仪表盘', href: '/admin' },
+  { id: 'today', label: '今日待办', href: '/admin/today' },
   { id: 'products', label: '商品管理', href: '/admin/products' },
   { id: 'catalog', label: '分类与合集', href: '/admin/catalog' },
   { id: 'orders', label: '订单管理', href: '/admin/orders' },
@@ -57,6 +59,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <span className="text-lg font-semibold text-gray-900">Hemall 商家后台</span>
             </div>
             <div className="flex items-center gap-3">
+              <AdminOrderAlerts />
               <a href="/shop" target="_blank" className="text-sm text-blue-600 hover:underline">访问商城</a>
               <button onClick={handleLogout} className="text-sm text-gray-500 hover:text-red-600">退出</button>
             </div>

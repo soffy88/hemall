@@ -326,6 +326,17 @@ export default function AccountPage() {
     }
   }
 
+  async function handlePickupArrived(orderId: string) {
+    try {
+      await api.customerPickupArrived(orderId);
+      showToast('已提醒门店：您已到店', 'info');
+      const o = await api.customerMyOrders();
+      setOrders(o);
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
   async function handleWeighDecision(orderId: string, settlementId: string, accept: boolean) {
     try {
       await api.customerConfirmWeigh(orderId, settlementId, accept);
@@ -575,15 +586,30 @@ export default function AccountPage() {
               </div>
               <div className="flex items-center justify-between mt-1 mb-2">
                 <span className="text-xs text-gray-400">{new Date(o.created_at).toLocaleString('zh-CN')}</span>
-                {['pending', 'draft'].includes(o.status) && (
-                  <button
-                    onClick={() => handleCancelOrder(o.id)}
-                    disabled={cancellingId === o.id}
-                    className="text-xs text-red-600 hover:underline disabled:opacity-50"
-                  >
-                    {cancellingId === o.id ? '取消中...' : '取消订单'}
-                  </button>
-                )}
+                <span className="flex items-center gap-3">
+                  {o.shipping_method_code === 'pickup' &&
+                    ['paid', 'confirmed', 'processing', 'packed', 'shipped', 'delivered'].includes(o.status) &&
+                    !o.pickup_arrived_at && (
+                      <button
+                        onClick={() => handlePickupArrived(o.id)}
+                        className="text-xs text-emerald-700 hover:underline"
+                      >
+                        我已到店
+                      </button>
+                    )}
+                  {o.shipping_method_code === 'pickup' && o.pickup_arrived_at && (
+                    <span className="text-xs text-emerald-600">已提醒到店</span>
+                  )}
+                  {['pending', 'draft'].includes(o.status) && (
+                    <button
+                      onClick={() => handleCancelOrder(o.id)}
+                      disabled={cancellingId === o.id}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      {cancellingId === o.id ? '取消中...' : '取消订单'}
+                    </button>
+                  )}
+                </span>
               </div>
               {(weighByOrder[o.id] || []).some((w) => w.status === 'needs_customer_confirmation') && (
                 <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 space-y-1">

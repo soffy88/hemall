@@ -46,6 +46,7 @@ from app.cangzhu import (
     choose_discount,
     get_voucher_balance,
     hold_redemption,
+    member_discount_cents,
     night_discount_cents,
     night_now,
     night_price_cents,
@@ -1298,6 +1299,76 @@ async def delete_line_item(
     return {"ok": True}
 
 
+async def _cart_discount_preview(pool: Any, cart: dict[str, Any]) -> dict[str, Any]:
+    """购物车展示的会员/夜市/券折扣预览，口径与下单时 choose_discount 一致。
+
+    只在购物车尚无其他折扣时预览（下单时同样只在 discount_cents == 0 时计算）。
+    返回字段：member_discount_cents / preview_discount_kind /
+    preview_discount_cents / preview_grand_total_cents。
+    """
+    cart["member_discount_cents"] = 0
+    cart["preview_discount_kind"] = "none"
+    cart["preview_discount_cents"] = 0
+    cart["preview_grand_total_cents"] = int(cart.get("grand_total_cents") or 0)
+    customer_id = cart.get("customer_id")
+    lines = cart.get("line_items") or []
+    if not customer_id or not lines:
+        return cart
+
+    variant_ids = [str(line["variant_id"]) for line in lines if line.get("variant_id")]
+    if not variant_ids:
+        return cart
+
+    async with pool.acquire() as conn:
+        flags = {
+            str(row["id"]): row
+            for row in await conn.fetch(
+                "SELECT pv.id, COALESCE(p.voucher_excluded, false) AS voucher_excluded, "
+                "COALESCE(p.night_clearance, false) AS night_clearance "
+                "FROM product_variant pv JOIN product p ON p.id = pv.product_id "
+                "WHERE pv.id = ANY($1::uuid[])",
+                variant_ids,
+            )
+        }
+        balance = await get_voucher_balance(conn, str(customer_id))
+
+    excluded = {
+        vid for vid, row in flags.items() if row["voucher_excluded"] or row["night_clearance"]
+    }
+    eligible = sum(
+        int(line.get("line_total_cents") or 0)
+        for line in lines
+        if str(line.get("variant_id") or "") not in excluded
+    )
+    night_total = sum(
+        int(line.get("line_total_cents") or 0)
+        for line in lines
+        if flags.get(str(line.get("variant_id") or ""))
+        and flags[str(line["variant_id"])]["night_clearance"]
+    )
+    member_cents = member_discount_cents(eligible)
+    if int(cart.get("discount_cents") or 0) > 0:
+        kind, amount = "applied", int(cart["discount_cents"])
+    else:
+        kind, amount = choose_discount(
+            eligible,
+            balance,
+            is_member=True,
+            night_cents=night_discount_cents(night_total, night_now()),
+        )
+    cart["member_discount_cents"] = member_cents
+    cart["preview_discount_kind"] = kind
+    cart["preview_discount_cents"] = amount
+    cart["preview_grand_total_cents"] = max(
+        0,
+        int(cart.get("subtotal_cents") or 0)
+        - amount
+        + int(cart.get("tax_cents") or 0)
+        + int(cart.get("shipping_cents") or 0),
+    )
+    return cart
+
+
 @router.get("/carts/{cart_id}")
 async def get_cart(
     cart_id: str, request: Request, principal: dict[str, Any] | None = Depends(_optional_customer)
@@ -1306,7 +1377,7 @@ async def get_cart(
     cart = await queries.get_cart(_pool(request), cart_id)
     if cart is None:
         raise HTTPException(404, "cart not found")
-    return cart
+    return await _cart_discount_preview(_pool(request), cart)
 
 
 # ── 地址 + 客户 ──────────────────────────────────────────────────────────
@@ -4045,6 +4116,46 @@ async def customer_cancel_order(
     except Exception as exc:  # noqa: BLE001 - 状态机错误要转成 4xx
         raise HTTPException(409, f"cannot cancel: {exc}") from exc
     return {"status": "cancelled", "order": order.model_dump(mode="json")}
+
+
+@router.post("/orders/{order_id}/pickup-arrived")
+async def customer_pickup_arrived(
+    order_id: str,
+    request: Request,
+    principal: dict[str, Any] = Depends(get_current_customer),
+) -> dict:
+    """顾客点“我已到店”：仅自提单、已收款未完成；后台据此提醒店员核销。"""
+    _require_uuid(order_id, "order_id")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT customer_id, status, shipping_method_code, pickup_arrived_at "
+            "FROM customer_order WHERE id = $1",
+            order_id,
+        )
+        if row is None:
+            raise HTTPException(404, "order not found")
+        if str(row["customer_id"] or "") != str(principal["customer_id"]):
+            raise HTTPException(403, "order does not belong to customer")
+        if row["shipping_method_code"] != "pickup":
+            raise HTTPException(400, "该订单不是到店自提单")
+        if row["status"] not in (
+            "paid",
+            "confirmed",
+            "processing",
+            "packed",
+            "shipped",
+            "delivered",
+        ):
+            raise HTTPException(400, f"订单状态 {row['status']} 不可到店提醒")
+        arrived_at = row["pickup_arrived_at"]
+        if arrived_at is None:
+            arrived_at = await conn.fetchval(
+                "UPDATE customer_order SET pickup_arrived_at = NOW(), updated_at = NOW() "
+                "WHERE id = $1 RETURNING pickup_arrived_at",
+                order_id,
+            )
+    return {"status": "arrived", "pickup_arrived_at": arrived_at.isoformat()}
 
 
 @router.get("/orders/{order_id}/weigh-settlements")

@@ -14,6 +14,23 @@ from typing import Any
 from .ext.oskill import compute_batch_dynamic_rating
 
 
+def _product_search_sql(search: str, params: list[Any]) -> str:
+    """商品搜索：中文子串 + 别名；空格分词后要求每个词都命中。
+
+    命中范围：标题 / 描述 / search_aliases（如 上海青→青菜、大蒜→蒜头）。
+    """
+    tokens = [t for t in search.split() if t] or [search]
+    parts: list[str] = []
+    for token in tokens:
+        params.append(f"%{token}%")
+        n = len(params)
+        parts.append(
+            f"(p.title ILIKE ${n} OR p.description ILIKE ${n} "
+            f"OR EXISTS (SELECT 1 FROM unnest(p.search_aliases) a WHERE a ILIKE ${n}))"
+        )
+    return "(" + " AND ".join(parts) + ")"
+
+
 async def list_products(
     pool: Any,
     *,
@@ -31,10 +48,7 @@ async def list_products(
             params.append(status)
             where_clauses.append(f"p.status = ${len(params)}")
         if search:
-            params.append(f"%{search}%")
-            where_clauses.append(
-                f"(p.title ILIKE ${len(params)} OR p.description ILIKE ${len(params)})"
-            )
+            where_clauses.append(_product_search_sql(search, params))
 
         where = " AND ".join(where_clauses)
 
@@ -276,10 +290,7 @@ async def list_storefront_products(
         params: list[Any] = []
 
         if search:
-            params.append(f"%{search}%")
-            where_clauses.append(
-                f"(p.title ILIKE ${len(params)} OR p.description ILIKE ${len(params)})"
-            )
+            where_clauses.append(_product_search_sql(search, params))
 
         where = " AND ".join(where_clauses)
 
@@ -520,6 +531,7 @@ async def list_orders(
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.billing_address, o.shipping_address,
                    o.shipping_method_code, o.weigh_status,
+                   o.pickup_arrived_at,
                    o.created_at, o.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
             FROM customer_order o
@@ -644,6 +656,7 @@ async def list_customers(
             """
             SELECT c.id, c.email, c.phone, c.name, c.customer_group_id,
                    c.is_merchant, c.status, c.created_at, c.updated_at,
+                   c.excluded_from_reports,
                    (c.wechat_openid IS NOT NULL) AS wechat_bound,
                    COUNT(co.id)::int AS order_count,
                    COALESCE(SUM(co.grand_total_cents), 0)::int AS total_spent_cents
@@ -690,6 +703,7 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.billing_address, o.shipping_address,
                    o.shipping_method_code, o.weigh_status,
+                   o.pickup_arrived_at,
                    o.created_at, o.updated_at,
                    o.promised_delivery_at, o.sla_compensated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
@@ -828,12 +842,16 @@ async def get_dashboard_kpis(pool: Any) -> dict:
         revenue = await conn.fetchrow(
             """
             SELECT COUNT(*)::int AS total_orders,
-                   COALESCE(SUM(grand_total_cents), 0)::int AS total_revenue_cents,
-                   COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)::int
+                   COALESCE(SUM(o.grand_total_cents), 0)::int AS total_revenue_cents,
+                   COALESCE(SUM(CASE WHEN o.status = 'pending' THEN 1 ELSE 0 END), 0)::int
                        AS pending_orders,
-                   COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days'
-                      THEN grand_total_cents ELSE 0 END), 0)::int AS revenue_30d_cents
-            FROM customer_order
+                   COALESCE(SUM(CASE WHEN o.created_at >= NOW() - INTERVAL '30 days'
+                      THEN o.grand_total_cents ELSE 0 END), 0)::int AS revenue_30d_cents
+            FROM customer_order o
+            WHERE NOT EXISTS (
+                SELECT 1 FROM customer c
+                WHERE c.id = o.customer_id AND c.excluded_from_reports
+            )
             """
         )
         products = await conn.fetchrow(
@@ -844,7 +862,8 @@ async def get_dashboard_kpis(pool: Any) -> dict:
             """
         )
         customers = await conn.fetchrow(
-            "SELECT COUNT(*)::int AS total_customers FROM customer WHERE deleted_at IS NULL"
+            "SELECT COUNT(*)::int AS total_customers FROM customer "
+            "WHERE deleted_at IS NULL AND excluded_from_reports = FALSE"
         )
         return {
             "total_orders": revenue["total_orders"],

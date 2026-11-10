@@ -293,3 +293,36 @@ describe('退款状态机端点（/aftersales/refunds*）', () => {
     expect(calls[0].url).toBe('/api/aftersales/refunds/rf%2Fx/retry');
   });
 });
+
+describe('core2 门店运营接口', () => {
+  it('批次改价走 PATCH 并带零售价/原因', async () => {
+    document.cookie = 'hemall_csrf_token=tok-core2; path=/';
+    stubFetch([jsonResponse({ changed: true, old_price_cents: 300, new_price_cents: 456 })]);
+    await api.updateBatchPrice('batch-1', 456, '晚市调价');
+    expect(calls[0].url).toBe('/api/admin/store-ops/batches/batch-1/price');
+    expect(calls[0].init.method).toBe('PATCH');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      retail_price_cents: 456,
+      reason: '晚市调价',
+    });
+  });
+
+  it('提醒轮询带 after 时间戳；今日待办走同源 GET', async () => {
+    stubFetch([jsonResponse({ server_time: 't', after: 'a', events: [] })]);
+    await api.storeOpsAlerts('2026-11-10T11:00:00+08:00');
+    expect(calls[0].url).toContain('/api/admin/store-ops/alerts?after=');
+    expect(calls[0].url).toContain(encodeURIComponent('2026-11-10T11:00:00+08:00'));
+
+    stubFetch([jsonResponse({ generated_at: 't', total: 0, groups: [] })]);
+    await api.storeOpsToday();
+    expect(calls[1].url).toBe('/api/admin/store-ops/today');
+  });
+
+  it('顾客到店提醒走顾客身份 POST', async () => {
+    document.cookie = 'hemall_csrf_token=tok-core2; path=/';
+    stubFetch([jsonResponse({ status: 'arrived', pickup_arrived_at: 't' })]);
+    await api.customerPickupArrived('order-1');
+    expect(calls[0].url).toBe('/api/store/orders/order-1/pickup-arrived');
+    expect(calls[0].init.method).toBe('POST');
+  });
+});

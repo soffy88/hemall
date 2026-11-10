@@ -1553,6 +1553,54 @@ export const api = {
       method: 'POST', body: JSON.stringify({}),
     }, true),
 
+  // 已有批次直接改价（后台留痕）
+  updateBatchPrice: (batchId: string, retailPriceCents: number, reason = '') =>
+    request<{
+      batch_id: string; batch_no: string; currency?: string;
+      old_price_cents: number; new_price_cents: number; changed: boolean;
+      change_id?: string; created_at?: string; operator?: string;
+    }>(`/admin/store-ops/batches/${batchId}/price`, {
+      method: 'PATCH',
+      body: JSON.stringify({ retail_price_cents: retailPriceCents, reason }),
+    }, true),
+
+  batchPriceHistory: (batchId: string) =>
+    request<{
+      batch_id: string;
+      changes: Array<{
+        id: string; old_price_cents: number; new_price_cents: number;
+        operator_id: string; operator_name: string; reason: string; created_at: string;
+      }>;
+    }>(`/admin/store-ops/batches/${batchId}/price-history`, {}, true),
+
+  // 今日待办 + 新订单提醒轮询
+  storeOpsToday: () =>
+    request<{
+      generated_at: string;
+      total: number;
+      groups: Array<{
+        key: string; label: string; count: number;
+        tasks: Array<{
+          order_id: string; status: string; customer: string;
+          grand_total_cents: number; currency: string;
+          shipping_method_code: string | null; weigh_status: string | null;
+          line_count: number; created_at: string; deadline: string | null;
+          pickup_arrived_at: string | null;
+        }>;
+      }>;
+    }>('/admin/store-ops/today', {}, true),
+
+  storeOpsAlerts: (after?: string) =>
+    request<{
+      server_time: string; after: string;
+      events: Array<{ type: string; at: string; order_id: string; title: string; detail: string; status: string }>;
+    }>(`/admin/store-ops/alerts${after ? `?after=${encodeURIComponent(after)}` : ''}`, {}, true),
+
+  customerPickupArrived: (orderId: string) =>
+    request<{ status: string; pickup_arrived_at: string }>(`/store/orders/${orderId}/pickup-arrived`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, 'customer'),
+
   // 视频/图片传货: multipart 上传, 自动上架
   agentIngest: async (file: File, opts?: { retailPriceCents?: number; stockQty?: number; categorySlug?: string }) => {
     const form = new FormData();

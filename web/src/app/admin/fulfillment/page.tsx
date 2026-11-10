@@ -1,72 +1,94 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api } from '@/lib/api-client';
-import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
+import { errMessage } from '@/lib/errors';
+import { formatMoney } from '@/lib/format';
+import type { Order } from '@/types/api';
 
 /**
- * 履约运维控制台 —— 拣货确认、幽灵库存上报、邻居代送确认。原独立运维页面
- * 页面 §4.3 物理流转 + v2.0 物理世界异常处理里跟"履约"直接相关的三张卡片
- * 搬迁至此，统一改造 Phase 4.3。
+ * 履约运维入口页。
+ *
+ * 旧的“拣货确认 / 幽灵库存 / 邻居代送”裸 JSON 卡片已下线——门店实际在
+ * 订单详情里完成实称、发货、自提核销、创建履约与打印拣货单。这里只做
+ * 待处理订单的入口聚合，避免运维页和门店真实操作各走一套。
  */
-
 export default function FulfillmentPage() {
-  const [ctx, setCtx] = useState<Record<string, string>>({});
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
 
-  function merge(patch: Record<string, unknown>) {
-    const next: Record<string, string> = {};
-    for (const [k, v] of Object.entries(patch)) {
-      if (typeof v === 'string' || typeof v === 'number') next[k] = String(v);
-    }
-    setCtx((c) => ({ ...c, ...next }));
-  }
+  useEffect(() => {
+    api.adminListOrders({ limit: 100 })
+      .then((list) =>
+        setOrders(
+          list.filter((o) =>
+            ['pending', 'paid', 'confirmed', 'processing', 'packed', 'shipped'].includes(o.status),
+          ),
+        ),
+      )
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <div>
       <h1 className="text-2xl font-bold mb-2">履约运维</h1>
       <p className="text-sm text-gray-500 mb-6">
-        拣货确认、幽灵库存上报、邻居代送确认。每张卡片提交后原样展示后端返回的 JSON
-        （绿色=completed，红色=failed），方便直接核对 decision_trail / fingerprint 等字段。
+        门店履约统一在订单详情完成：录入实称、创建履约、发货、自提核销、打印拣货单。
+        本页只汇总当前待处理的订单，点“订单详情”或“拣货单”进入实际入口。
       </p>
 
-      <OpsSection title="物理流转">
-        <ActionCard
-          title="拣货确认 confirm_batch_pick"
-          badge="admin"
-          desc="扫码/CV 验证正确后转出库，顺带按当前积压深度记一笔计件工资。"
-          fields={[
-            { key: 'order_line_item_id', label: 'order_line_item_id' },
-            { key: 'worker_id', label: 'worker_id' },
-          ]}
-          defaults={ctx}
-          onSubmit={(v) => api.hemallConfirmBatchPick(v as Parameters<typeof api.hemallConfirmBatchPick>[0])}
-        />
-        <ActionCard
-          title="幽灵库存上报 report_phantom_stock_workflow"
-          badge="admin"
-          desc="大妈拣货发现实物丢失：清零该批次库存，秒退顾客，记入节点损耗账本。"
-          fields={[
-            { key: 'order_line_item_id', label: 'order_line_item_id' },
-            { key: 'worker_id', label: 'worker_id' },
-            { key: 'reason', label: 'reason (默认 phantom_stock)' },
-          ]}
-          defaults={ctx}
-          onSubmit={(v) => api.hemallReportPhantomStock(v as Parameters<typeof api.hemallReportPhantomStock>[0])}
-        />
-        <ActionCard
-          title="邻居代送确认 execute_peer_delivery_workflow"
-          badge="public"
-          desc="确认邻居扫码接单：释放 Tote，扣买家悬赏金，打入代送邻居余额。"
-          fields={[
-            { key: 'order_id', label: 'order_id' },
-            { key: 'tote_id', label: 'tote_id' },
-            { key: 'neighbor_id', label: 'neighbor_id' },
-            { key: 'bounty_amount', label: 'bounty_amount (分)', type: 'number' },
-          ]}
-          defaults={ctx}
-          onSubmit={(v) => api.hemallExecutePeerDelivery(v as Parameters<typeof api.hemallExecutePeerDelivery>[0])}
-        />
-      </OpsSection>
+      {error && <div className="mb-4 text-red-600 text-sm">{error}</div>}
+
+      <div className="bg-white border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b font-semibold">待处理订单（{orders.length}）</div>
+        {loading ? (
+          <div className="px-4 py-8 text-center text-gray-400">加载中...</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-gray-600">
+              <tr>
+                <th className="px-4 py-2">订单</th>
+                <th className="px-4 py-2">状态</th>
+                <th className="px-4 py-2">配送方式</th>
+                <th className="px-4 py-2">金额</th>
+                <th className="px-4 py-2">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {orders.map((o) => (
+                <tr key={o.id}>
+                  <td className="px-4 py-2 font-mono text-xs">{o.id.slice(0, 12)}…</td>
+                  <td className="px-4 py-2">{o.status}</td>
+                  <td className="px-4 py-2">{o.shipping_method_code || 'standard'}</td>
+                  <td className="px-4 py-2">{formatMoney(o.grand_total_cents, o.currency)}</td>
+                  <td className="px-4 py-2">
+                    <div className="flex gap-3">
+                      <Link href={`/admin/orders?order=${o.id}`} className="text-blue-600 hover:underline">
+                        订单详情
+                      </Link>
+                      <Link
+                        href={`/admin/orders/${o.id}/print`}
+                        target="_blank"
+                        className="text-emerald-600 hover:underline"
+                      >
+                        拣货单
+                      </Link>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {orders.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-400">暂无待处理订单</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

@@ -237,6 +237,8 @@ export interface Order {
   shipping_method_code?: string | null;
   /** 称重差额状态：pending_customer / charge_pending / settled / ... */
   weigh_status?: string | null;
+  /** 自提顾客点“我已到店”的时间 */
+  pickup_arrived_at?: string | null;
   line_items: OrderLineItem[];
 }
 
@@ -254,6 +256,8 @@ export interface Customer {
   total_spent_cents: number;
   /** 商家账号标记：商家可用专属「商家预订」常购清单快速下单 */
   is_merchant?: boolean;
+  /** 测试/停用账号：从报表与顾客统计排除 */
+  excluded_from_reports?: boolean;
 }
 
 // ── Cart types ──────────────────────────────────────────────────
@@ -311,6 +315,12 @@ export interface Cart {
   line_items: CartLineItem[];
   discounts: CartDiscount[];
   gift_cards: CartGiftCard[];
+  /** 会员 9 折（合资格金额的 10%），仅预览 */
+  member_discount_cents?: number;
+  /** none / member / night / voucher / applied */
+  preview_discount_kind?: string;
+  preview_discount_cents?: number;
+  preview_grand_total_cents?: number;
 }
 
 // ── 客户预订 ────────────────────────────────────────────────────

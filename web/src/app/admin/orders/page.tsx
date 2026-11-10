@@ -30,7 +30,11 @@ export default function OrdersPage() {
       .finally(() => setLoading(false));
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const orderId = new URLSearchParams(window.location.search).get('order');
+    if (orderId) void loadDetail(orderId);
+  }, []);
 
   async function loadDetail(id: string) {
     try {

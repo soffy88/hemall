@@ -140,7 +140,7 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
       {/* Header */}
       <header className="bg-white/90 backdrop-blur border-b border-gray-200/80 sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <div className="flex items-center gap-2 shrink-0">
             <Link href="/shop" className="flex items-center gap-2 shrink-0">
               <span className="w-8 h-8 rounded-lg bg-emerald-700 text-white flex items-center justify-center text-base">
@@ -185,43 +185,43 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
               )}
             </div>
           </div>
-          <nav className="flex items-center gap-5 text-sm">
+          <nav className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-sm">
             {regions.length > 0 && (
               <select
                 value={regionCode}
                 onChange={(e) => handleRegionChange(e.target.value)}
-                className="text-xs border border-gray-200 rounded-full px-3 py-1.5 text-gray-600 bg-gray-50 hover:bg-gray-100 transition"
+                className="max-w-[112px] shrink-0 whitespace-nowrap text-xs border border-gray-200 rounded-full px-2 py-1.5 text-gray-600 bg-gray-50 hover:bg-gray-100 transition"
               >
                 {regions.map((r) => (
                   <option key={r.code} value={r.code}>{r.name} ({r.currency})</option>
                 ))}
               </select>
             )}
-            <Link href="/shop" className="text-gray-600 hover:text-emerald-700 transition font-medium">
+            <Link href="/shop" className="hidden sm:inline whitespace-nowrap text-gray-600 hover:text-emerald-700 transition font-medium">
               全部商品
             </Link>
-            <Link href="/shop/cart" className="text-gray-600 hover:text-emerald-700 transition font-medium">
+            <Link href="/shop/cart" className="whitespace-nowrap shrink-0 text-gray-600 hover:text-emerald-700 transition font-medium">
               🛒 购物车
             </Link>
             {isMerchant && (
-              <Link href="/shop/merchant" className="text-gray-600 hover:text-emerald-700 transition font-medium">
+              <Link href="/shop/merchant" className="whitespace-nowrap text-gray-600 hover:text-emerald-700 transition font-medium">
                 🏪 商家预订
               </Link>
             )}
-            <Link href="/shop/lookup" className="text-gray-500 hover:text-emerald-700 transition">
+            <Link href="/shop/lookup" className="whitespace-nowrap text-gray-500 hover:text-emerald-700 transition">
               查单
             </Link>
             {customerEmail ? (
               <Link
                 href="/shop/account"
-                className="text-gray-700 hover:text-emerald-700 transition font-medium bg-emerald-50 rounded-full px-3 py-1.5"
+                className="max-w-[140px] truncate whitespace-nowrap text-gray-700 hover:text-emerald-700 transition font-medium bg-emerald-50 rounded-full px-3 py-1.5"
               >
                 👤 {customerEmail}
               </Link>
             ) : (
               <Link
                 href="/shop/login"
-                className="text-white bg-emerald-700 hover:bg-emerald-800 transition font-medium rounded-full px-4 py-1.5"
+                className="whitespace-nowrap shrink-0 text-white bg-emerald-700 hover:bg-emerald-800 transition font-medium rounded-full px-4 py-1.5"
               >
                 登录/注册
               </Link>

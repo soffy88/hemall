@@ -148,6 +148,45 @@ export default function ProductsPage() {
     }
   }
 
+  async function handleChangePrice(batchId: string, currentCents: number, batchNo: string) {
+    const yuan = prompt(`批次 ${batchNo} 新售价（元）：`, (currentCents / 100).toFixed(2));
+    if (yuan == null || yuan.trim() === '') return;
+    const cents = Math.round(Number(yuan) * 100);
+    if (!Number.isFinite(cents) || cents < 0) {
+      alert('请输入有效价格');
+      return;
+    }
+    const reason = prompt('改价原因（可留空）：') || '';
+    try {
+      const res = await api.updateBatchPrice(batchId, cents, reason);
+      if (res.changed) {
+        alert(`已改价：¥${(res.old_price_cents / 100).toFixed(2)} → ¥${(res.new_price_cents / 100).toFixed(2)}\n操作人：${res.operator || '—'}`);
+      } else {
+        alert('价格未变化');
+      }
+      setLoading(true);
+      load();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
+  async function handlePriceHistory(batchId: string) {
+    try {
+      const res = await api.batchPriceHistory(batchId);
+      if (res.changes.length === 0) {
+        alert('该批次暂无改价记录');
+        return;
+      }
+      const lines = res.changes.map((c) =>
+        `${new Date(c.created_at).toLocaleString('zh-CN')}  ¥${(c.old_price_cents / 100).toFixed(2)} → ¥${(c.new_price_cents / 100).toFixed(2)}  ${c.operator_name || c.operator_id || '—'}${c.reason ? `（${c.reason}）` : ''}`,
+      );
+      alert(lines.join('\n'));
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
   async function handleAddOption(productId: string) {
     const name = prompt('新属性键名称（如 颜色 / 尺码）：');
     if (!name) return;
@@ -433,11 +472,15 @@ export default function ProductsPage() {
                           {(v.batches || []).map((b) => (
                             <div key={b.id} className="flex items-center justify-between gap-2 text-gray-400 pl-2 mt-0.5">
                               <span>
-                                批次 {b.batch_no}: 可售 {b.available_qty}
+                                批次 {b.batch_no}: 可售 {b.available_qty} · ¥{(b.retail_price_cents / 100).toFixed(2)}
                                 {b.needs_data && <span className="ml-1 text-amber-600">待补资料</span>}
                                 {b.is_test_batch && <span className="ml-1 text-fuchsia-600">测试批次</span>}
                               </span>
-                              <button onClick={() => handleAdjustStock(b.id)} className="text-emerald-600 hover:underline shrink-0">调库存</button>
+                              <span className="flex gap-1.5 shrink-0">
+                                <button onClick={() => handleChangePrice(b.id, b.retail_price_cents, b.batch_no)} className="text-blue-600 hover:underline">改价</button>
+                                <button onClick={() => handlePriceHistory(b.id)} className="text-gray-500 hover:underline">记录</button>
+                                <button onClick={() => handleAdjustStock(b.id)} className="text-emerald-600 hover:underline">调库存</button>
+                              </span>
                             </div>
                           ))}
                         </div>

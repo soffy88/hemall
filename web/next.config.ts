@@ -8,6 +8,8 @@ import type { NextConfig } from 'next';
 //   confirmPayment 上行 api.stripe.com，回跳 hooks.stripe.com——漏放行会断支付。
 // - img-src 含 https:：admin 的 media_url / video_url 为自由文本，可填外部地址，
 //   拦截会破坏既有内容；图片不执行脚本，风险可控。
+// - Cloudflare Web Analytics 会自动注入 beacon.min.js 并 POST 到
+//   cloudflareinsights.com；不放行会在控制台报 CSP 拦截。
 // - connect-src 'self'：浏览器侧已统一走同源 /api（F-01），无外部 XHR。
 // dev (next dev) 不下发，避免 HMR websocket / 评估脚本被拦。
 const isDevServer =
@@ -35,11 +37,11 @@ const csp = [
   "base-uri 'self'",
   "object-src 'none'",
   "frame-ancestors 'self'",
-  `script-src 'self' 'unsafe-inline' https://js.stripe.com${chatwootScriptSrc}`,
+  `script-src 'self' 'unsafe-inline' https://js.stripe.com https://static.cloudflareinsights.com${chatwootScriptSrc}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://api.stripe.com${chatwootConnectSrc}`,
+  `connect-src 'self' https://api.stripe.com https://cloudflareinsights.com${chatwootConnectSrc}`,
   `frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://m.stripe.network${chatwootScriptSrc}`,
   "form-action 'self' https://js.stripe.com",
 ].join('; ');

@@ -113,9 +113,13 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
             """
             SELECT id, status, subtotal_cents, discount_cents, tax_cents,
                    shipping_cents, grand_total_cents, created_at
-            FROM customer_order
-            WHERE (created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
-              AND status NOT IN ('cancelled', 'draft', 'failed')
+            FROM customer_order o
+            WHERE (o.created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
+              AND o.status NOT IN ('cancelled', 'draft', 'failed')
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer c
+                  WHERE c.id = o.customer_id AND c.excluded_from_reports
+              )
             """,
             day,
         )
@@ -134,6 +138,10 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
                 LEFT JOIN product_variant pv ON pv.id = oli.variant_id
                 LEFT JOIN product p ON p.id = pv.product_id
                 WHERE oli.order_id = ANY($1::uuid[]) AND oli.preorder_qty = 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM customer c
+                      WHERE c.id = o.customer_id AND c.excluded_from_reports
+                  )
                 """,
                 order_ids,
             )
@@ -182,8 +190,13 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
                        AS refund_cents,
                    COALESCE(SUM(CASE WHEN diff_cents > 0 THEN diff_cents ELSE 0 END), 0)::int
                        AS charge_cents
-            FROM weigh_settlement
-            WHERE (created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
+            FROM weigh_settlement ws
+            JOIN customer_order o ON o.id = ws.order_id
+            WHERE (ws.created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer c
+                  WHERE c.id = o.customer_id AND c.excluded_from_reports
+              )
             """,
             day,
         )
@@ -191,9 +204,14 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
             """
             SELECT COALESCE(SUM(CASE WHEN actual_refunded_amount > 0
                                      THEN actual_refunded_amount ELSE approved_amount END), 0)::int
-            FROM refund_request
-            WHERE (created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
-              AND status NOT IN ('rejected', 'cancelled')
+            FROM refund_request rr
+            JOIN customer_order o ON o.id = rr.order_id
+            WHERE (rr.created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
+              AND rr.status NOT IN ('rejected', 'cancelled')
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer c
+                  WHERE c.id = o.customer_id AND c.excluded_from_reports
+              )
             """,
             day,
         )
@@ -204,6 +222,10 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
             JOIN customer_order o ON o.id = oli.order_id
             WHERE (o.created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
               AND o.status NOT IN ('cancelled', 'failed')
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer c
+                  WHERE c.id = o.customer_id AND c.excluded_from_reports
+              )
             """,
             day,
         )
@@ -223,6 +245,10 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
             WHERE (o.created_at AT TIME ZONE 'Asia/Shanghai')::date = $1
               AND o.status NOT IN ('cancelled', 'failed', 'draft')
               AND oli.preorder_qty = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer c
+                  WHERE c.id = o.customer_id AND c.excluded_from_reports
+              )
             GROUP BY 1
             ORDER BY amount_cents DESC, qty DESC
             LIMIT 20
@@ -816,3 +842,343 @@ async def order_print(
     data = await order_summary(request, order_id, _)
     data["paper"] = paper
     return data
+
+
+# ── 批次直接改价（留痕）────────────────────────────────────────────────
+
+
+class BatchPriceInput(BaseModel):
+    retail_price_cents: int = Field(ge=0, le=100_000_000)
+    reason: str = Field(default="", max_length=200)
+
+
+@router.patch("/batches/{batch_id}/price")
+async def update_batch_price(
+    request: Request,
+    batch_id: str,
+    body: BatchPriceInput,
+    principal: dict[str, Any] = Depends(_ops_admin),
+) -> dict[str, Any]:
+    """已有批次直接改价：同一事务写批次新价 + 改价记录（旧价/新价/操作人/时间）。"""
+    pool = request.app.state.pool
+    operator_id = str(principal.get("user_id") or "")
+    operator_name = str(principal.get("email") or principal.get("user_id") or "")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            batch = await conn.fetchrow(
+                "SELECT id, batch_no, retail_price_cents, currency FROM inventory_batch "
+                "WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                batch_id,
+            )
+            if batch is None:
+                raise HTTPException(404, "batch not found")
+            old_price = int(batch["retail_price_cents"])
+            new_price = int(body.retail_price_cents)
+            if old_price == new_price:
+                return {
+                    "batch_id": batch_id,
+                    "batch_no": batch["batch_no"],
+                    "old_price_cents": old_price,
+                    "new_price_cents": new_price,
+                    "changed": False,
+                }
+            await conn.execute(
+                "UPDATE inventory_batch SET retail_price_cents = $1, updated_at = NOW() "
+                "WHERE id = $2",
+                new_price,
+                batch_id,
+            )
+            log = await conn.fetchrow(
+                """
+                INSERT INTO batch_price_change
+                    (batch_id, old_price_cents, new_price_cents,
+                     operator_id, operator_name, reason)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id, created_at
+                """,
+                batch_id,
+                old_price,
+                new_price,
+                operator_id,
+                operator_name,
+                body.reason,
+            )
+    return {
+        "batch_id": batch_id,
+        "batch_no": batch["batch_no"],
+        "currency": batch["currency"],
+        "old_price_cents": old_price,
+        "new_price_cents": new_price,
+        "changed": True,
+        "change_id": str(log["id"]),
+        "created_at": log["created_at"].isoformat(),
+        "operator": operator_name,
+    }
+
+
+@router.get("/batches/{batch_id}/price-history")
+async def batch_price_history(
+    request: Request,
+    batch_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    _=Depends(_ops_admin),
+) -> dict[str, Any]:
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, old_price_cents, new_price_cents, operator_id, operator_name,
+                   reason, created_at
+            FROM batch_price_change
+            WHERE batch_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            batch_id,
+            limit,
+        )
+    return {
+        "batch_id": batch_id,
+        "changes": [
+            {
+                "id": str(r["id"]),
+                "old_price_cents": int(r["old_price_cents"]),
+                "new_price_cents": int(r["new_price_cents"]),
+                "operator_id": r["operator_id"],
+                "operator_name": r["operator_name"],
+                "reason": r["reason"],
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
+# ── 今日待办 / 新订单提醒 ─────────────────────────────────────────────
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+@router.get("/today")
+async def today_board(
+    request: Request,
+    _=Depends(_ops_admin),
+) -> dict[str, Any]:
+    """今日待办看板：按截止时间排序的六类门店任务。"""
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT o.id, o.status, o.shipping_method_code, o.weigh_status,
+                   o.created_at, o.promised_delivery_at, o.pickup_arrived_at,
+                   o.grand_total_cents, o.currency,
+                   COALESCE(NULLIF(c.name, ''), c.email, '') AS customer,
+                   EXISTS (
+                       SELECT 1 FROM order_line_item li
+                       WHERE li.order_id = o.id AND li.pricing_mode = 'weight'
+                         AND li.actual_weight_grams IS NULL
+                   ) AS needs_weigh,
+                   EXISTS (
+                       SELECT 1 FROM order_line_item li
+                       WHERE li.order_id = o.id AND li.preorder_qty > 0
+                   ) AS has_preorder,
+                   (SELECT COUNT(*) FROM order_line_item li WHERE li.order_id = o.id)::int
+                       AS line_count
+            FROM customer_order o
+            LEFT JOIN customer c ON c.id = o.customer_id
+            WHERE o.status NOT IN ('cancelled', 'failed', 'draft', 'completed', 'refunded')
+              AND COALESCE(c.excluded_from_reports, FALSE) = FALSE
+            ORDER BY COALESCE(o.promised_delivery_at, o.created_at) ASC
+            """
+        )
+
+    groups: dict[str, list[dict[str, Any]]] = {
+        "pick": [],
+        "weigh": [],
+        "weigh_confirm": [],
+        "delivery": [],
+        "pickup": [],
+        "preorder": [],
+    }
+    for r in rows:
+        task = {
+            "order_id": str(r["id"]),
+            "status": r["status"],
+            "customer": r["customer"],
+            "grand_total_cents": int(r["grand_total_cents"] or 0),
+            "currency": r["currency"],
+            "shipping_method_code": r["shipping_method_code"],
+            "weigh_status": r["weigh_status"],
+            "line_count": int(r["line_count"] or 0),
+            "created_at": _iso(r["created_at"]),
+            "deadline": _iso(r["promised_delivery_at"] or r["created_at"]),
+            "pickup_arrived_at": _iso(r["pickup_arrived_at"]),
+        }
+        if r["status"] in ("paid", "confirmed", "processing"):
+            groups["pick"].append(task)
+        if r["needs_weigh"] and r["status"] in (
+            "paid",
+            "confirmed",
+            "processing",
+            "packed",
+        ):
+            groups["weigh"].append(task)
+        if r["weigh_status"] in ("pending_customer", "disputed"):
+            groups["weigh_confirm"].append(task)
+        if r["shipping_method_code"] != "pickup" and r["status"] in (
+            "paid",
+            "confirmed",
+            "processing",
+            "packed",
+        ):
+            groups["delivery"].append(task)
+        if r["shipping_method_code"] == "pickup" and r["status"] in (
+            "paid",
+            "confirmed",
+            "processing",
+            "packed",
+            "shipped",
+            "delivered",
+        ):
+            groups["pickup"].append(task)
+        if r["has_preorder"]:
+            groups["preorder"].append(task)
+
+    labels = {
+        "pick": "待拣货",
+        "weigh": "待称重",
+        "weigh_confirm": "待补差确认",
+        "delivery": "待配送",
+        "pickup": "待自提",
+        "preorder": "缺货预订",
+    }
+    # 自提到店的排到最前（顾客已经在店里等）。
+    groups["pickup"].sort(key=lambda t: (t["pickup_arrived_at"] is None, t["deadline"] or ""))
+    return {
+        "generated_at": datetime.now(TZ).isoformat(),
+        "groups": [
+            {"key": key, "label": labels[key], "count": len(groups[key]), "tasks": groups[key]}
+            for key in labels
+        ],
+        "total": sum(len(v) for v in groups.values()),
+    }
+
+
+def _parse_after(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(TZ)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(400, "after must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=TZ)
+    return parsed
+
+
+@router.get("/alerts")
+async def order_alerts(
+    request: Request,
+    after: str | None = Query(None, description="只返回该时间之后的新事件（ISO-8601）"),
+    limit: int = Query(50, ge=1, le=200),
+    _=Depends(_ops_admin),
+) -> dict[str, Any]:
+    """门店提醒轮询：新待处理订单、顾客补差确认/拒绝、顾客到店自提。"""
+    since = _parse_after(after)
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        new_orders = await conn.fetch(
+            """
+            SELECT o.id, o.status, o.grand_total_cents, o.currency, o.created_at,
+                   COALESCE(NULLIF(c.name, ''), c.email, '') AS customer
+            FROM customer_order o
+            LEFT JOIN customer c ON c.id = o.customer_id
+            WHERE o.created_at > $1
+              AND o.status IN ('pending', 'paid', 'confirmed')
+              AND COALESCE(c.excluded_from_reports, FALSE) = FALSE
+            ORDER BY o.created_at DESC
+            LIMIT $2
+            """,
+            since,
+            limit,
+        )
+        weigh = await conn.fetch(
+            """
+            SELECT ws.id, ws.order_id, ws.status, ws.diff_cents, ws.updated_at,
+                   COALESCE(NULLIF(c.name, ''), c.email, '') AS customer
+            FROM weigh_settlement ws
+            JOIN customer_order o ON o.id = ws.order_id
+            LEFT JOIN customer c ON c.id = o.customer_id
+            WHERE ws.updated_at > $1
+              AND ws.status IN ('customer_accepted', 'customer_rejected',
+                                'estimate_only', 'charge_pending')
+              AND COALESCE(c.excluded_from_reports, FALSE) = FALSE
+            ORDER BY ws.updated_at DESC
+            LIMIT $2
+            """,
+            since,
+            limit,
+        )
+        arrivals = await conn.fetch(
+            """
+            SELECT o.id, o.pickup_arrived_at, o.grand_total_cents, o.currency,
+                   COALESCE(NULLIF(c.name, ''), c.email, '') AS customer
+            FROM customer_order o
+            LEFT JOIN customer c ON c.id = o.customer_id
+            WHERE o.pickup_arrived_at > $1
+              AND COALESCE(c.excluded_from_reports, FALSE) = FALSE
+            ORDER BY o.pickup_arrived_at DESC
+            LIMIT $2
+            """,
+            since,
+            limit,
+        )
+
+    events: list[dict[str, Any]] = []
+    for r in new_orders:
+        events.append(
+            {
+                "type": "new_order",
+                "at": _iso(r["created_at"]),
+                "order_id": str(r["id"]),
+                "title": f"新订单 ¥{int(r['grand_total_cents'] or 0) / 100:.2f}",
+                "detail": r["customer"] or "",
+                "status": r["status"],
+            }
+        )
+    for r in weigh:
+        labels = {
+            "customer_accepted": "顾客已确认补差",
+            "customer_rejected": "顾客拒绝补差",
+            "estimate_only": "顾客拒绝补差（按预估出货）",
+            "charge_pending": "补差待线下收款",
+        }
+        events.append(
+            {
+                "type": "weigh_decision",
+                "at": _iso(r["updated_at"]),
+                "order_id": str(r["order_id"]),
+                "title": labels.get(r["status"], f"称重结算 {r['status']}"),
+                "detail": f"{r['customer'] or ''} 差额 ¥{int(r['diff_cents'] or 0) / 100:.2f}",
+                "status": r["status"],
+            }
+        )
+    for r in arrivals:
+        events.append(
+            {
+                "type": "pickup_arrived",
+                "at": _iso(r["pickup_arrived_at"]),
+                "order_id": str(r["id"]),
+                "title": "顾客已到店自提",
+                "detail": r["customer"] or "",
+                "status": "pickup_arrived",
+            }
+        )
+    events.sort(key=lambda e: e["at"] or "", reverse=True)
+    return {
+        "server_time": datetime.now(TZ).isoformat(),
+        "after": since.isoformat(),
+        "events": events[:limit],
+    }

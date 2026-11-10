@@ -145,6 +145,19 @@ export default function CartPage() {
     }
   }
 
+  const previewCents = cart?.preview_discount_cents ?? 0;
+  const previewKind = cart?.preview_discount_kind ?? 'none';
+  const effectiveTotal = cart
+    ? (cart.preview_grand_total_cents ?? cart.grand_total_cents)
+    : 0;
+  const previewLabel = previewKind === 'member'
+    ? '会员 9 折（预估）'
+    : previewKind === 'night'
+      ? '夜市价（预估）'
+      : previewKind === 'voucher'
+        ? '购物券抵扣（预估）'
+        : '优惠（预估）';
+
   if (loading) return <div className="text-center py-12 text-gray-500">加载中...</div>;
   if (error) return <div className="text-center py-12 text-red-600">{error}</div>;
 
@@ -304,11 +317,16 @@ export default function CartPage() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between"><span className="text-gray-500">小计</span><span>{fmt(cart.subtotal_cents)}</span></div>
             <div className="flex justify-between"><span className="text-gray-500">折扣</span><span>-{fmt(cart.discount_cents)}</span></div>
+            {previewCents > 0 && previewKind !== 'applied' && (
+              <div className="flex justify-between text-emerald-700">
+                <span>{previewLabel}</span><span>-{fmt(previewCents)}</span>
+              </div>
+            )}
             <div className="flex justify-between"><span className="text-gray-500">税费</span><span>{fmt(cart.tax_cents)}</span></div>
             <div className="flex justify-between"><span className="text-gray-500">运费</span><span>{fmt(cart.shipping_cents)}</span></div>
             <div className="border-t pt-2 flex justify-between font-bold text-base">
-              <span>合计</span>
-              <span className="text-emerald-700">{fmt(cart.grand_total_cents)}</span>
+              <span>{previewCents > 0 && previewKind !== 'applied' ? '合计（优惠后）' : '合计'}</span>
+              <span className="text-emerald-700">{fmt(effectiveTotal)}</span>
             </div>
             {cart.gift_cards.length > 0 && (
               <>
@@ -319,7 +337,7 @@ export default function CartPage() {
                 <div className="flex justify-between font-bold text-base border-t pt-2">
                   <span>应付金额</span>
                   <span className="text-emerald-700">
-                    {fmt(Math.max(0, cart.grand_total_cents - cart.gift_cards.reduce((sum, g) => sum + g.applied_amount_cents, 0)))}
+                    {fmt(Math.max(0, effectiveTotal - cart.gift_cards.reduce((sum, g) => sum + g.applied_amount_cents, 0)))}
                   </span>
                 </div>
               </>

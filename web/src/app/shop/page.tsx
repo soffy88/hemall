@@ -35,6 +35,9 @@ export default function ShopPage() {
   const [loading, setLoading] = useState(true);
   const [activeCat, setActiveCat] = useState<string>('all');
   const [search, setSearch] = useState('');
+  // 后端搜索结果（null=未搜索，用全量列表）；中文子串与别名由后端匹配。
+  const [searchResults, setSearchResults] = useState<StorefrontProduct[] | null>(null);
+  const [searching, setSearching] = useState(false);
   // 图片加载失败的 product id — 回落占位图而不是隐藏 (缺图不再留白块)
   const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
   const [addingId, setAddingId] = useState<string | null>(null);
@@ -69,6 +72,22 @@ export default function ShopPage() {
     load();
   }, []);
 
+  // 搜索走后端（分词/别名在 SQL 里），300ms 防抖；空串回退全量。
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) return;
+    const timer = setTimeout(() => {
+      api.storeProducts({ search: q, limit: 500 })
+        .then((data) => setSearchResults(data.filter(isAssortmentProduct)))
+        .catch((e) => {
+          showToast(errMessage(e) || '搜索失败', 'error');
+          setSearchResults([]);
+        })
+        .finally(() => setSearching(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   // 聚合分类 (按 category_id + 后端返回的分类名/图标映射)
   const categories: GroceryCategory[] = useMemo(() => {
     const map = new Map<string, GroceryCategory>();
@@ -100,16 +119,13 @@ export default function ShopPage() {
 
   const filtered = useMemo(() => {
     // 整个 shop 就是社区小超市模型: 只显示模型内品类 (其余仅前台隐藏)
-    let list = visibleProducts.filter((p) => p.category_id);
+    const base = searchResults ?? visibleProducts;
+    let list = base.filter((p) => p.category_id);
     if (activeCat !== 'all') {
       list = list.filter((p) => p.category_id === activeCat);
     }
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      list = list.filter((p) => p.title.toLowerCase().includes(q));
-    }
     return [...list].sort((a, b) => (a.min_price_cents ?? 0) - (b.min_price_cents ?? 0));
-  }, [visibleProducts, activeCat, search]);
+  }, [visibleProducts, searchResults, activeCat]);
 
   // 取商品划线价 (variant.reference_price_cents 优先)
   function referencePrice(p: StorefrontProduct): number | null {
@@ -174,13 +190,25 @@ export default function ShopPage() {
       {/* 顶部搜索栏 */}
       <div className="sticky top-0 z-30 bg-emerald-700 px-4 pb-3 pt-4 shadow-lg">
         <div className="flex items-center gap-2">
-          <div className="flex-1 rounded-full bg-white/95 px-4 py-2.5">
+          <div className="relative flex-1 rounded-full bg-white/95 px-4 py-2.5">
             <input
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="🔍 搜索生鲜日用"
+              onChange={(e) => {
+                const value = e.target.value;
+                setSearch(value);
+                if (value.trim()) {
+                  setSearching(true);
+                } else {
+                  setSearchResults(null);
+                  setSearching(false);
+                }
+              }}
+              placeholder="🔍 搜索生鲜日用（支持别名，如 青菜/蒜头）"
               className="w-full bg-transparent text-[15px] outline-none"
             />
+            {searching && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">搜索中…</span>
+            )}
           </div>
           <Link
             href="/shop/feed"

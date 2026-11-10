@@ -172,6 +172,9 @@ async def _ensure_schema_and_verify(pool: PgPool, *, apply_runtime_role: bool) -
         try:
             await ensure_commerce_batch_schema(pool)
             await _ensure_hemall_local_schema(pool)
+            from .core2_schema import ensure_core2_schema
+
+            await ensure_core2_schema(pool)
             await _ensure_app_user_totp_schema(pool)
             await ensure_ext_schema(pool)
 
