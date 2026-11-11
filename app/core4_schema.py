@@ -92,9 +92,30 @@ CREATE INDEX IF NOT EXISTS idx_core4_purchase_order_line_po
     ON core4_purchase_order_line(po_id);
 """
 
+CORE4_ALERT_DDL = """
+CREATE TABLE IF NOT EXISTS core4_alert (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    alert_type TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning'
+        CHECK (severity IN ('info', 'warning', 'critical')),
+    title TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    details JSONB NOT NULL DEFAULT '{}',
+    acknowledged_at TIMESTAMPTZ,
+    acknowledged_by TEXT,
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_core4_alert_type_severity
+    ON core4_alert(alert_type, severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_core4_alert_unresolved
+    ON core4_alert(resolved_at) WHERE resolved_at IS NULL;
+"""
+
 
 async def ensure_core4_schema(pool: Any) -> None:
     async with pool.acquire() as conn:
         await conn.execute(CORE4_DELIVERY_DDL)
         await conn.execute(CORE4_EXPIRY_DDL)
         await conn.execute(CORE4_REPLENISH_DDL)
+        await conn.execute(CORE4_ALERT_DDL)

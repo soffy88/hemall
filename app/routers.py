@@ -51,6 +51,7 @@ from .core4_expiry import router as expiry_router
 from .core4_replenish import router as replenish_router
 from .core4_personalization import router as personalization_router
 from .core4_traceability import router as traceability_router
+from .core4_monitoring import router as monitoring_router
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
@@ -1244,6 +1245,7 @@ def build_router() -> APIRouter:
     router.include_router(replenish_router)
     router.include_router(personalization_router)
     router.include_router(traceability_router)
+    router.include_router(monitoring_router)
     router.include_router(ext_bespoke_router)
     router.include_router(hardware_webhook_router)
 
