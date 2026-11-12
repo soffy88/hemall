@@ -2026,6 +2026,11 @@ class CheckoutRequest(BaseModel):
     privacy_consent: bool = False
     terms_consent: bool = False
     consent_version: str = ""
+    # 自营配送（cart.shipping_method_code='local' 时必填）
+    delivery_lat: float | None = None
+    delivery_lon: float | None = None
+    delivery_slot: str | None = None
+    delivery_note: str = ""
 
 
 @router.post("/checkout")
@@ -2139,6 +2144,45 @@ async def checkout(
         if r["status"] == "failed":
             raise HTTPException(400, f"shipping_address: {r['error']['message']}")
 
+    # 2.5 自营配送：服务端复算范围/起送/运费/时段，再落单；关闭时完全跳过。
+    delivery_quote = None
+    async with pool.acquire() as conn:
+        cart_delivery = await conn.fetchrow(
+            "SELECT shipping_method_code, subtotal_cents FROM cart "
+            "WHERE id = $1 AND deleted_at IS NULL",
+            body.cart_id,
+        )
+    if cart_delivery is not None and cart_delivery["shipping_method_code"] == "local":
+        from app.core4_delivery import load_delivery_config, quote_for_cart
+
+        delivery_cfg = await load_delivery_config(pool)
+        if not delivery_cfg.get("enabled"):
+            raise HTTPException(400, "自营配送未开启")
+        delivery_quote = await quote_for_cart(
+            pool,
+            delivery_cfg,
+            cart_id=body.cart_id,
+            lat=body.delivery_lat,
+            lon=body.delivery_lon,
+            slot_start=body.delivery_slot,
+        )
+        if not delivery_quote["ok"]:
+            raise HTTPException(400, delivery_quote["reason"] or "自营配送不可用")
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                cart_row = await conn.fetchrow(
+                    "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                    body.cart_id,
+                )
+                if cart_row is None:
+                    raise HTTPException(404, "cart not found")
+                await conn.execute(
+                    "UPDATE cart SET shipping_cents = $1, updated_at = NOW() WHERE id = $2",
+                    int(delivery_quote["fee_cents"]),
+                    body.cart_id,
+                )
+                await _recompute_cart_totals(conn, cart_row)
+
     # 3. 只建立待支付订单。provider capture/confirm 不能在这里伪造成功；
     # 支付 intent 先落库，再由真实 provider 回调进入 verified PAID。
     try:
@@ -2168,6 +2212,43 @@ async def checkout(
     except Exception as exc:  # noqa: BLE001 - translate provider/db failures
         logger.exception("store checkout failed")
         raise HTTPException(503, "payment service unavailable") from exc
+
+    # 2.6 自营配送任务：下单成功后建一条任务，供店员/骑手手机端接单。
+    if delivery_quote:
+        from app.core4_delivery import create_delivery_task
+
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await create_delivery_task(
+                        conn,
+                        order_id=order["order_id"],
+                        quote=delivery_quote,
+                        note=body.delivery_note,
+                    )
+                    await conn.execute(
+                        "UPDATE customer_order SET shipping_address = "
+                        "COALESCE(shipping_address, '{}'::jsonb) || $2::jsonb WHERE id = $1",
+                        order["order_id"],
+                        json.dumps(
+                            {
+                                "delivery_lat": body.delivery_lat,
+                                "delivery_lon": body.delivery_lon,
+                                "delivery_slot": delivery_quote["slot"]["label"],
+                                "delivery_distance_km": delivery_quote["distance_km"],
+                                "delivery_fee_cents": delivery_quote["fee_cents"],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+        except HTTPException:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE customer_order SET status = 'cancelled', updated_at = NOW() "
+                    "WHERE id = $1 AND status IN ('pending', 'draft')",
+                    order["order_id"],
+                )
+            raise
 
     # 收据可以用于查“待支付”订单，但前端只有在 verified PAID 后才显示成功。
     order_id = order["order_id"]
@@ -2579,27 +2660,50 @@ class AddShippingMethodRequest(BaseModel):
     method_name: str
     # 兼容旧客户端：字段仍接受但服务端永不采用。
     price_cents: int | None = None
+    # 自营配送（method_name=local）必填：浏览器定位与所选时段。
+    delivery_lat: float | None = None
+    delivery_lon: float | None = None
+    delivery_slot: str | None = None
 
 
 @router.get("/shipping-options")
 async def shipping_options(request: Request):
     """公开配送方式与时窗；价格由服务端规则计算。"""
+    from app.core4_delivery import load_delivery_config
     from app.shipping import load_shipping_rules
 
     settings = get_settings()
-    rules = await load_shipping_rules(_pool(request), settings)
+    pool = _pool(request)
+    rules = await load_shipping_rules(pool, settings)
+    methods = [
+        {
+            "code": code,
+            "name": method["name"],
+            "price_cents": method["price_cents"],
+            "free_threshold_cents": method["free_threshold_cents"],
+        }
+        for code, method in rules["methods"].items()
+    ]
+    delivery = await load_delivery_config(pool)
+    if delivery.get("enabled"):
+        methods.append(
+            {
+                "code": "local",
+                "name": "门店自营配送",
+                "price_cents": None,
+                "price_from_cents": min(
+                    (int(t["fee_cents"]) for t in delivery["fee_tiers"]), default=0
+                ),
+                "free_threshold_cents": 0,
+                "min_order_cents": int(delivery["min_order_cents"]),
+                "requires_location": True,
+                "requires_slot": True,
+            }
+        )
     return {
         "service_area": rules["service_area"],
         "delivery_windows": rules["delivery_windows"],
-        "methods": [
-            {
-                "code": code,
-                "name": method["name"],
-                "price_cents": method["price_cents"],
-                "free_threshold_cents": method["free_threshold_cents"],
-            }
-            for code, method in rules["methods"].items()
-        ],
+        "methods": methods,
         "quoted_by_server": True,
     }
 
@@ -2628,20 +2732,55 @@ async def add_shipping_method(
         )
     if cart_row is None:
         raise HTTPException(404, "cart not found")
-    rules = await load_shipping_rules(pool, get_settings())
-    try:
-        quote = quote_shipping(
-            rules,
-            method_name=body.method_name,
-            subtotal_cents=int(cart_row["subtotal_cents"] or 0),
+    method_key = body.method_name.strip().lower()
+    if method_key in ("local", "自营配送", "同城配送"):
+        from app.core4_delivery import load_delivery_config, quote_for_cart
+
+        delivery_cfg = await load_delivery_config(pool)
+        if not delivery_cfg.get("enabled"):
+            raise HTTPException(400, "自营配送未开启")
+        quote = await quote_for_cart(
+            pool,
+            delivery_cfg,
+            cart_id=body.cart_id,
+            lat=body.delivery_lat,
+            lon=body.delivery_lon,
+            slot_start=body.delivery_slot,
         )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    inp = AddShippingMethodToCartInput(
-        cart_id=body.cart_id,
-        method_name=body.method_name,
-        price_cents=quote["price_cents"],
-    )
+        if not quote["ok"]:
+            raise HTTPException(400, quote["reason"] or "自营配送不可用")
+        quote = {
+            **quote,
+            "code": "local",
+            "name": "门店自营配送",
+            "price_cents": int(quote["fee_cents"]),
+            "base_price_cents": int(quote["fee_cents"]),
+            "free_threshold_cents": 0,
+            "free_shipping_applied": False,
+            "delivery_windows": [s["label"] for s in quote.get("slots") or []],
+            "service_area": delivery_cfg["store"]["address"],
+            "quoted_by_server": True,
+        }
+        inp = AddShippingMethodToCartInput(
+            cart_id=body.cart_id,
+            method_name="local",
+            price_cents=int(quote["fee_cents"]),
+        )
+    else:
+        rules = await load_shipping_rules(pool, get_settings())
+        try:
+            quote = quote_shipping(
+                rules,
+                method_name=body.method_name,
+                subtotal_cents=int(cart_row["subtotal_cents"] or 0),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        inp = AddShippingMethodToCartInput(
+            cart_id=body.cart_id,
+            method_name=body.method_name,
+            price_cents=quote["price_cents"],
+        )
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE cart SET shipping_method_code = $1, updated_at = NOW() WHERE id = $2",
