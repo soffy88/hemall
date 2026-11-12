@@ -171,7 +171,8 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
 
         entries = await conn.fetch(
             """
-            SELECT variant_id, sku_code, product_name, entry_type, qty, unit, unit_cost_cents
+            SELECT variant_id, sku_code, product_name, entry_type, qty, unit, unit_cost_cents,
+                   loss_category
             FROM store_inventory_entry WHERE biz_date = $1
             """,
             day,
@@ -308,6 +309,23 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
     journal.sort(key=lambda r: (r["sales_qty"] + r["in_qty"] + r["loss_qty"]) * -1)
     total_sales = sum(_num(o["grand_total_cents"]) for o in orders)
     aov = int(total_sales / len(orders)) if orders else 0
+    loss_by_category: dict[str, dict[str, int]] = {}
+    loss_value_cents = 0
+    for e in entries:
+        if e["entry_type"] != "loss":
+            continue
+        category = e["loss_category"] or "other"
+        qty = _num(e["qty"])
+        value = qty * _num(e["unit_cost_cents"]) if e["unit_cost_cents"] is not None else 0
+        loss_value_cents += value
+        bucket = loss_by_category.setdefault(category, {"qty": 0, "value_cents": 0, "entries": 0})
+        bucket["qty"] += qty
+        bucket["value_cents"] += value
+        bucket["entries"] += 1
+    loss_denominator = total_sales + loss_value_cents
+    loss_rate_pct = (
+        round(loss_value_cents * 100 / loss_denominator, 2) if loss_denominator > 0 else None
+    )
     return {
         "date": day.isoformat(),
         "kpis": {
@@ -318,6 +336,16 @@ async def _daily_rows(pool: Any, day: date) -> dict[str, Any]:
             "weigh_charge_cents": _num(settlements[0]["charge_cents"]) if settlements else 0,
             "refund_cents": _num(refunds),
             "preorder_qty": _num(preorders),
+            "loss_value_cents": loss_value_cents,
+            "loss_rate_pct": loss_rate_pct,
+            "loss_by_category": [
+                {
+                    "category": category,
+                    "label": LOSS_CATEGORY_LABELS.get(category, category),
+                    **values,
+                }
+                for category, values in sorted(loss_by_category.items())
+            ],
         },
         "top_skus": [
             {
@@ -357,7 +385,16 @@ async def daily_report_csv(
         ["称重补收(分)", k["weigh_charge_cents"]],
         ["退款(分)", k["refund_cents"]],
         ["缺货预订数量", k["preorder_qty"]],
+        ["损耗金额(分)", k["loss_value_cents"]],
+        ["损耗率(%)", k["loss_rate_pct"] if k["loss_rate_pct"] is not None else "无销售/损耗"],
     ]
+    for item in k["loss_by_category"]:
+        rows.append(
+            [
+                f"损耗-{item['label']}",
+                f"数量 {item['qty']} / 金额 {item['value_cents']}分 / {item['entries']} 笔",
+            ]
+        )
     for s in data["top_skus"]:
         rows.append([f"Top: {s['title']}", f"{s['qty']}{s['unit']} / {s['amount_cents']}分"])
     return _csv_response(f"daily-report-{data['date']}.csv", ["指标", "值"], rows)
@@ -374,7 +411,8 @@ async def journal(
         entries = await conn.fetch(
             """
             SELECT id, biz_date, variant_id, sku_code, product_name, entry_type,
-                   qty, unit, unit_cost_cents, supplier, reason, note, created_at
+                   qty, unit, unit_cost_cents, supplier, reason, note, created_at,
+                   loss_category
             FROM store_inventory_entry
             WHERE biz_date = $1 ORDER BY created_at DESC
             """,
@@ -396,6 +434,10 @@ async def journal(
                 "unit_cost_cents": e["unit_cost_cents"],
                 "supplier": e["supplier"],
                 "reason": e["reason"],
+                "loss_category": e["loss_category"],
+                "loss_category_label": LOSS_CATEGORY_LABELS.get(
+                    e["loss_category"] or "other", "其他"
+                ),
                 "note": e["note"],
                 "created_at": e["created_at"].isoformat(),
             }
@@ -455,11 +497,21 @@ class InboundInput(BaseModel):
     note: str = ""
 
 
+LOSS_CATEGORIES = ("expired", "damaged", "tasting", "other")
+LOSS_CATEGORY_LABELS = {
+    "expired": "过期",
+    "damaged": "破损",
+    "tasting": "试吃",
+    "other": "其他",
+}
+
+
 class LossInput(BaseModel):
     variant_id: str
     qty: int = Field(gt=0)
     reason: str = Field(min_length=1)
     note: str = ""
+    loss_category: str = "other"
 
 
 async def _variant(conn: Any, variant_id: str) -> Any:
@@ -493,6 +545,8 @@ async def journal_in(
     principal: dict[str, Any] = Depends(_ops_admin),
 ) -> dict[str, Any]:
     pool = request.app.state.pool
+    if body.loss_category not in LOSS_CATEGORIES:
+        raise HTTPException(400, "loss_category must be expired/damaged/tasting/other")
     async with pool.acquire() as conn:
         async with conn.transaction():
             v = await _variant(conn, body.variant_id)
@@ -587,13 +641,15 @@ async def journal_loss(
     principal: dict[str, Any] = Depends(_ops_admin),
 ) -> dict[str, Any]:
     pool = request.app.state.pool
+    if body.loss_category not in LOSS_CATEGORIES:
+        raise HTTPException(400, "loss_category must be expired/damaged/tasting/other")
     async with pool.acquire() as conn:
         async with conn.transaction():
             v = await _variant(conn, body.variant_id)
             unit = "g" if (v["pricing_mode"] == "weight" or v["stock_unit"] == "gram") else "件"
             batch = await conn.fetchrow(
                 """
-                SELECT id, location_id, stock_qty, reserved_qty
+                SELECT id, location_id, stock_qty, reserved_qty, cost_price_cents
                 FROM inventory_batch
                 WHERE variant_id = $1 AND status = 'active' AND deleted_at IS NULL
                   AND stock_qty - reserved_qty >= $2
@@ -630,8 +686,8 @@ async def journal_loss(
                 """
                 INSERT INTO store_inventory_entry
                     (variant_id, product_id, sku_code, product_name, entry_type,
-                     qty, unit, reason, note, operator_id)
-                VALUES ($1, $2, $3, $4, 'loss', $5, $6, $7, $8, $9)
+                     qty, unit, unit_cost_cents, reason, note, operator_id, loss_category)
+                VALUES ($1, $2, $3, $4, 'loss', $5, $6, $7, $8, $9, $10, $11)
                 RETURNING id
                 """,
                 v["id"],
@@ -640,9 +696,11 @@ async def journal_loss(
                 v["title"],
                 body.qty,
                 unit,
+                batch["cost_price_cents"],
                 body.reason,
                 body.note,
                 str(principal.get("user_id") or ""),
+                body.loss_category,
             )
             stock = await conn.fetchval(
                 "SELECT stock_qty FROM inventory_batch WHERE id = $1", batch["id"]

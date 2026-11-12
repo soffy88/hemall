@@ -101,6 +101,7 @@ class ExtOservi:
     mercenary_routing: CronSchedulerEngine
     affiliate_settlement: CronSchedulerEngine
     inventory_decay: CronSchedulerEngine
+    expiry_discount: CronSchedulerEngine
     competitor_spider: CronSchedulerEngine
     spider_listing: CronSchedulerEngine
     sla_promise: CronSchedulerEngine
@@ -123,6 +124,7 @@ class ExtOservi:
             self.mercenary_routing,
             self.affiliate_settlement,
             self.inventory_decay,
+            self.expiry_discount,
             self.competitor_spider,
             self.spider_listing,
             self.sla_promise,
@@ -198,6 +200,9 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     mercenary_routing = build_mercenary_routing_engine(pool)
     affiliate_settlement = build_affiliate_settlement_engine(pool)
     inventory_decay = build_inventory_decay_engine(pool, settings=settings)
+    from app.core4_expiry import build_expiry_discount_engine
+
+    expiry_discount = build_expiry_discount_engine(pool)
     competitor_spider = build_competitor_spider_engine(pool)
     if not settings.engine_spider_enabled:
         # 开关关闭: 同 market_maker, 空任务占位
@@ -230,6 +235,7 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         mercenary_routing=mercenary_routing,
         affiliate_settlement=affiliate_settlement,
         inventory_decay=inventory_decay,
+        expiry_discount=expiry_discount,
         competitor_spider=competitor_spider,
         spider_listing=spider_listing,
         sla_promise=sla_promise,

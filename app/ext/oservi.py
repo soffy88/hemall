@@ -241,6 +241,12 @@ def build_inventory_reaper_engine(pool: Any, *, settings: Settings) -> CronSched
 
     async def reap_expiring_batches(**_: Any) -> dict[str, Any]:
         now = datetime.now(UTC)
+        # core4: 后台临期规则开启后，价格由 core4_expiry 的 5 分钟引擎统一管理，
+        # 本引擎只保留“过期销毁”，不再自行改价，避免两套价格互相覆盖。
+        from app.core4_expiry import load_expiry_rules
+
+        expiry_rules = await load_expiry_rules(pool)
+        managed_by_core4 = bool(expiry_rules.get("enabled"))
         candidates = await db_query_many(
             pool,
             sql=(
@@ -276,6 +282,8 @@ def build_inventory_reaper_engine(pool: Any, *, settings: Settings) -> CronSched
                         errors.append({"batch_id": batch_id, "error": result["error"]})
                     continue
 
+                if managed_by_core4:
+                    continue
                 hours_to_expiry = (expiration_time - now).total_seconds() / 3600
                 if hours_to_expiry > _MARKDOWN_WINDOW_HOURS:
                     continue

@@ -131,7 +131,10 @@ async def list_products(
                             ELSE FALSE
                         END,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -197,7 +200,10 @@ async def get_product(pool: Any, product_id: str) -> dict | None:
                         'location_id', ib.location_id,
                         'status', ib.status,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -344,7 +350,13 @@ async def list_storefront_products(
                         'origin_region', ib.origin_region,
                         'storage_condition', ib.storage_condition,
                         'shelf_life_days', ib.shelf_life_days,
-                        'quality_certificate_url', ib.quality_certificate_url
+                        'quality_certificate_url', ib.quality_certificate_url,
+                        'inspection_status', ib.inspection_status,
+                        'inspection_note', ib.inspection_note,
+                        'created_at', ib.created_at,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -468,7 +480,13 @@ async def get_storefront_product(
                         'origin_region', ib.origin_region,
                         'storage_condition', ib.storage_condition,
                         'shelf_life_days', ib.shelf_life_days,
-                        'quality_certificate_url', ib.quality_certificate_url
+                        'quality_certificate_url', ib.quality_certificate_url,
+                        'inspection_status', ib.inspection_status,
+                        'inspection_note', ib.inspection_note,
+                        'created_at', ib.created_at,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
