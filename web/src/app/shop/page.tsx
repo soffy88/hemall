@@ -13,16 +13,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api-client';
+import { isAssortmentProduct } from '@/lib/storefront-assortment';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
 import type { GroceryCategory, StorefrontProduct } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import { getSelectedRegion } from '@/lib/region-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 
 // 分类图标映射 (后端只存 name/slug，图标前端映射)
 const CATEGORY_ICONS: Record<string, string> = {
   vegetables: '🥬', fruits: '🍎', 'meat-eggs': '🥩', 'grain-oil': '🌾',
   'dairy-bakery': '🥛', frozen: '🧊', snacks: '🍫', drinks: '🥤', daily: '🧻',
+  seafood: '🦐', electronics: '📱',
 };
 
 export default function ShopPage() {
@@ -31,13 +35,28 @@ export default function ShopPage() {
   const [loading, setLoading] = useState(true);
   const [activeCat, setActiveCat] = useState<string>('all');
   const [search, setSearch] = useState('');
+  // 后端搜索结果（null=未搜索，用全量列表）；中文子串与别名由后端匹配。
+  const [searchResults, setSearchResults] = useState<StorefrontProduct[] | null>(null);
+  const [searching, setSearching] = useState(false);
   // 图片加载失败的 product id — 回落占位图而不是隐藏 (缺图不再留白块)
   const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
+  const [addingId, setAddingId] = useState<string | null>(null);
+
+  // 社区小超市模型: 只显示模型内品类的商品, 其余仅前台隐藏 (数据保留)。
+  const visibleProducts = useMemo(
+    () => products.filter(isAssortmentProduct),
+    [products],
+  );
 
   function load() {
-    api.storeProducts({ limit: 200 })
+    api.storeProducts({ limit: 500 })
       .then((data) => {
         setProducts(data);
+        // 菜单栏分类下拉带 ?cat= 进来: 非法分类回落全部。
+        const cat = new URLSearchParams(window.location.search).get('cat');
+        if (cat && cat !== 'all' && !data.some((p) => p.category_id === cat && isAssortmentProduct(p))) {
+          setActiveCat('all');
+        }
       })
       .catch((e) => {
         showToast(errMessage(e) || '加载失败');
@@ -47,12 +66,32 @@ export default function ShopPage() {
       });
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const cat = new URLSearchParams(window.location.search).get('cat');
+    if (cat) setActiveCat(cat);
+    load();
+  }, []);
+
+  // 搜索走后端（分词/别名在 SQL 里），300ms 防抖；空串回退全量。
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) return;
+    const timer = setTimeout(() => {
+      api.storeProducts({ search: q, limit: 500 })
+        .then((data) => setSearchResults(data.filter(isAssortmentProduct)))
+        .catch((e) => {
+          showToast(errMessage(e) || '搜索失败', 'error');
+          setSearchResults([]);
+        })
+        .finally(() => setSearching(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   // 聚合分类 (按 category_id + 后端返回的分类名/图标映射)
   const categories: GroceryCategory[] = useMemo(() => {
     const map = new Map<string, GroceryCategory>();
-    for (const p of products) {
+    for (const p of visibleProducts) {
       if (!p.category_id) continue;
       if (!map.has(p.category_id)) {
         const slug = p.category_slug ?? p.category_id;
@@ -66,7 +105,7 @@ export default function ShopPage() {
       }
       map.get(p.category_id)!.count++;
     }
-    // 保持 9 大分类的展示顺序
+    // 保持模型内 5 个分类的展示顺序
     const order = Object.keys(CATEGORY_ICONS);
     return Array.from(map.values()).sort((a, b) => {
       const ia = order.indexOf(a.slug);
@@ -76,20 +115,17 @@ export default function ShopPage() {
       if (ib === -1) return -1;
       return ia - ib;
     });
-  }, [products]);
+  }, [visibleProducts]);
 
   const filtered = useMemo(() => {
-    // 整个 shop 就是生鲜日用: 只显示有分类的商品 (数码等无分类不进超市视图)
-    let list = products.filter((p) => p.category_id);
+    // 整个 shop 就是社区小超市模型: 只显示模型内品类 (其余仅前台隐藏)
+    const base = searchResults ?? visibleProducts;
+    let list = base.filter((p) => p.category_id);
     if (activeCat !== 'all') {
       list = list.filter((p) => p.category_id === activeCat);
     }
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      list = list.filter((p) => p.title.toLowerCase().includes(q));
-    }
     return [...list].sort((a, b) => (a.min_price_cents ?? 0) - (b.min_price_cents ?? 0));
-  }, [products, activeCat, search]);
+  }, [visibleProducts, searchResults, activeCat]);
 
   // 取商品划线价 (variant.reference_price_cents 优先)
   function referencePrice(p: StorefrontProduct): number | null {
@@ -106,8 +142,47 @@ export default function ShopPage() {
     return '';
   }
 
-  function addToCart(p: StorefrontProduct) {
-    showToast(`已加入购物车: ${p.title}`);
+  async function addToCart(p: StorefrontProduct) {
+    if (addingId) return;
+    const variant =
+      p.variants.find((v) => (v.total_stock ?? 0) > 0) || p.variants[0];
+    if (!variant) {
+      showToast('该商品暂无可选规格', 'error');
+      return;
+    }
+    const batch =
+      variant.batches.find((b) => b.available_qty > 0) || variant.batches[0] || null;
+
+    setAddingId(p.id);
+    try {
+      let cartId = sessionStorage.getItem('hemall_cart_id');
+      if (!cartId) {
+        const region = getSelectedRegion();
+        const cart = region
+          ? await api.createCart(region.code, region.currency)
+          : await api.createCart();
+        cartId = cart.cart_id;
+        sessionStorage.setItem('hemall_cart_id', cartId);
+
+        await initCustomerAuth();
+        const customerAuth = getCustomerAuth();
+        if (customerAuth) {
+          await api.setCartCustomer(cartId, customerAuth.customerId).catch(() => {});
+        }
+      }
+
+      if (batch) {
+        await api.addLineItem(cartId, batch.id, 1);
+        showToast(`已加入购物车: ${p.title}`);
+      } else {
+        await api.addVariantLineItem(cartId, variant.id, 1);
+        showToast(`已按预订加入购物车: ${p.title}`);
+      }
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    } finally {
+      setAddingId(null);
+    }
   }
 
   return (
@@ -115,13 +190,25 @@ export default function ShopPage() {
       {/* 顶部搜索栏 */}
       <div className="sticky top-0 z-30 bg-emerald-700 px-4 pb-3 pt-4 shadow-lg">
         <div className="flex items-center gap-2">
-          <div className="flex-1 rounded-full bg-white/95 px-4 py-2.5">
+          <div className="relative flex-1 rounded-full bg-white/95 px-4 py-2.5">
             <input
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="🔍 搜索生鲜日用"
+              onChange={(e) => {
+                const value = e.target.value;
+                setSearch(value);
+                if (value.trim()) {
+                  setSearching(true);
+                } else {
+                  setSearchResults(null);
+                  setSearching(false);
+                }
+              }}
+              placeholder="🔍 搜索生鲜日用（支持别名，如 青菜/蒜头）"
               className="w-full bg-transparent text-[15px] outline-none"
             />
+            {searching && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">搜索中…</span>
+            )}
           </div>
           <Link
             href="/shop/feed"
@@ -177,7 +264,11 @@ export default function ShopPage() {
             {filtered.map((p) => {
               const img = brokenImgs.has(p.id) ? null : productImage(p);
               const ref = referencePrice(p);
-              const retail = p.min_price_cents ?? 0;
+              const weightVariant = p.variants?.find((v) => v.pricing_mode === 'weight');
+              const isWeight = !!weightVariant;
+              const retail = isWeight
+                ? (weightVariant?.unit_price_cents ?? p.min_price_cents ?? 0)
+                : (p.min_price_cents ?? 0);
               const stock = p.total_stock ?? 0;
               const spec = specOf(p);
               return (
@@ -210,9 +301,9 @@ export default function ShopPage() {
                         </span>
                       )}
                       {stock === 0 && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-sm font-black text-white">
-                          售罄
-                        </div>
+                        <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-black text-white">
+                          缺货可预订
+                        </span>
                       )}
                     </div>
                   </Link>
@@ -229,8 +320,9 @@ export default function ShopPage() {
                       <div className="flex shrink-0 items-baseline gap-1">
                         <span className="font-black text-emerald-700" style={{ fontSize: 18, fontWeight: 800 }}>
                           ¥{(retail / 100).toFixed(2)}
+                          {isWeight && <span className="text-[10px] font-medium text-gray-500">/斤</span>}
                         </span>
-                        {ref && ref > retail && (
+                        {!isWeight && ref && ref > retail && (
                           <span className="text-[10px] text-gray-400 line-through">
                             ¥{(ref / 100).toFixed(2)}
                           </span>
@@ -240,10 +332,12 @@ export default function ShopPage() {
                     <button
                       type="button"
                       onClick={() => addToCart(p)}
-                      disabled={stock === 0}
-                      className="mt-1.5 w-full rounded-lg bg-emerald-600 py-1.5 text-[13px] font-bold text-white transition active:scale-95 disabled:bg-gray-200 disabled:text-gray-400"
+                      disabled={addingId === p.id}
+                      className={`mt-1.5 w-full rounded-lg py-1.5 text-[13px] font-bold text-white transition active:scale-95 ${
+                        stock === 0 ? 'bg-amber-500' : 'bg-emerald-600'
+                      } disabled:cursor-wait disabled:opacity-60`}
                     >
-                      {stock === 0 ? '已售罄' : '+ 加购'}
+                      {addingId === p.id ? '加入中...' : stock === 0 ? '预订' : '+ 加购'}
                     </button>
                   </div>
                 </div>

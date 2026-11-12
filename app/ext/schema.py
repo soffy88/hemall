@@ -355,7 +355,7 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
             ("message_id", "VARCHAR(64) NOT NULL UNIQUE"),
-            ("event_type", "VARCHAR(20) NOT NULL"),  # 'pick' | 'gate'
+            ("event_type", "VARCHAR(20) NOT NULL"),  # 'pick' | 'gate' | 'weigh'
             ("node_id", "VARCHAR(32)"),
             ("shelf_id", "VARCHAR(32)"),
             ("tote_id", "VARCHAR(32)"),
@@ -363,7 +363,16 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("qty_delta", "INT DEFAULT 0"),
             ("unit_weight_grams", "INT DEFAULT 0"),
             ("payload", "JSONB"),
-            ("status", "VARCHAR(20) DEFAULT 'processed'"),  # processed|orphan|duplicate
+            ("status", "VARCHAR(20) DEFAULT 'processed'"),  # processed|orphan|duplicate|unpriced
+            # 称重台列 (IoT 报告 §4.2)：称重行项与 pick 同记一本账。
+            ("session_id", "TEXT"),
+            ("settlement_status", "VARCHAR(20) NOT NULL DEFAULT 'unsettled'"),
+            ("weight_grams", "INT"),
+            ("unit_price_cents", "INT"),
+            ("price_basis_grams", "INT"),
+            ("amount_cents", "INT"),
+            ("source", "VARCHAR(20) NOT NULL DEFAULT 'scale'"),
+            ("ticket_id", "UUID"),
             ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
         ],
     ),

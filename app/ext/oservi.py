@@ -43,10 +43,13 @@ v6.0 §5 抖音做市与清算守护进程：
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import asyncpg
 
 from ..config import Settings
 from .omodul.commission_new_location import (
@@ -87,13 +90,16 @@ from .oprim import (
     ext_pay_transfer,
     ext_weather_forecast,
     spider_fetch_competitor_prices,
+    spider_fetch_products,
     vlm_assess_damage,
+    vlm_extract_price,
 )
 from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
 from .oskill import (
     SLA_COMPENSATION_CENTS,
     WAVE_SHIPPING_PRICE_CENTS,
     adjust_demand_curve_by_weather,
+    build_default_vwap_curve,
     calculate_broadcast_priority,
     calculate_decay_price,
     calculate_next_probe_price,
@@ -104,9 +110,30 @@ from .oskill import (
     evaluate_claim_credibility,
     normalize_sku_price,
 )
+from .spider_hygiene import (
+    brand_screen_to_inspection,
+    clean_spider_description,
+    clean_spider_title,
+    localize_and_screen_spider_image,
+    localize_spider_image,
+)
 from .spider_targets import extract_unit_from_text
 
 logger = logging.getLogger("hemall.ext.oservi")
+
+# 支付成功回调把订单写成 confirmed；paid 仅用于兼容历史数据。所有履约/SLA
+# 查询必须使用同一组口径，不能只看 paid。
+FULFILLABLE_ORDER_STATUSES = ("confirmed", "paid", "processing", "packed")
+PAID_ORDER_STATUSES = (
+    "confirmed",
+    "paid",
+    "processing",
+    "packed",
+    "shipped",
+    "delivered",
+    "completed",
+    "returning",
+)
 
 
 def _output_dir(settings: Settings, engine_name: str, omodul_name: str) -> Path:
@@ -214,6 +241,12 @@ def build_inventory_reaper_engine(pool: Any, *, settings: Settings) -> CronSched
 
     async def reap_expiring_batches(**_: Any) -> dict[str, Any]:
         now = datetime.now(UTC)
+        # core4: 后台临期规则开启后，价格由 core4_expiry 的 5 分钟引擎统一管理，
+        # 本引擎只保留“过期销毁”，不再自行改价，避免两套价格互相覆盖。
+        from app.core4_expiry import load_expiry_rules
+
+        expiry_rules = await load_expiry_rules(pool)
+        managed_by_core4 = bool(expiry_rules.get("enabled"))
         candidates = await db_query_many(
             pool,
             sql=(
@@ -249,6 +282,8 @@ def build_inventory_reaper_engine(pool: Any, *, settings: Settings) -> CronSched
                         errors.append({"batch_id": batch_id, "error": result["error"]})
                     continue
 
+                if managed_by_core4:
+                    continue
                 hours_to_expiry = (expiration_time - now).total_seconds() / 3600
                 if hours_to_expiry > _MARKDOWN_WINDOW_HOURS:
                     continue
@@ -335,6 +370,7 @@ def build_delivery_wave_engine(pool: Any) -> CronSchedulerEngine:
     """
 
     async def dispatch_wave_orders(**_: Any) -> dict[str, Any]:
+        placeholders = ", ".join(f"${i + 2}" for i in range(len(FULFILLABLE_ORDER_STATUSES)))
         rows = await db_query_many(
             pool,
             sql=(
@@ -342,10 +378,10 @@ def build_delivery_wave_engine(pool: Any) -> CronSchedulerEngine:
                 'FROM "customer_order" o '
                 'JOIN "order_line_item" oli ON oli.order_id = o.id '
                 'JOIN "inventory_batch" b ON b.id = oli.batch_id '
-                "WHERE o.shipping_cents = $1 AND o.status = 'paid' "
+                f"WHERE o.shipping_cents = $1 AND o.status IN ({placeholders}) "
                 "AND o.dispatch_status = 'pending'"
             ),
-            params=(WAVE_SHIPPING_PRICE_CENTS,),
+            params=(WAVE_SHIPPING_PRICE_CENTS, *FULFILLABLE_ORDER_STATUSES),
         )
         # 一个订单可能有多行 order_line_item (多个 batch)；只取第一次出现的
         # location_id 当发车点分组依据，不代表真实路径规划。
@@ -598,7 +634,7 @@ def build_market_maker_engine(
         batches = await db_query_many(
             pool,
             sql=(
-                "SELECT id, retail_price_cents, created_at AS intake_time, "
+                "SELECT id, retail_price_cents, cost_price_cents, created_at AS intake_time, "
                 "expiration_time, vwap_target_curve "
                 'FROM "inventory_batch" '
                 "WHERE status = 'active' AND vwap_target_curve IS NOT NULL"
@@ -644,6 +680,7 @@ def build_market_maker_engine(
                 batch["retail_price_cents"],
                 vwap_deviation=deviation,
                 theta_decay=theta_decay,
+                floor_cents=batch["cost_price_cents"] or 0,
             )
             if new_price == batch["retail_price_cents"]:
                 continue
@@ -1502,12 +1539,14 @@ def build_sla_promise_engine(pool: Any, settings: Settings) -> CronSchedulerEngi
     async def backfill_promises(**_: Any) -> dict[str, Any]:
         from datetime import datetime
 
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(PAID_ORDER_STATUSES)))
         rows = await db_query_many(
             pool,
             sql=(
                 'SELECT id, shipping_cents, created_at FROM "customer_order" '
-                "WHERE status = 'paid' AND promised_delivery_at IS NULL"
+                f"WHERE status IN ({placeholders}) AND promised_delivery_at IS NULL"
             ),
+            params=PAID_ORDER_STATUSES,
         )
         if not rows:
             return {"promises_backfilled": 0, "orders": []}
@@ -1543,6 +1582,63 @@ def build_sla_promise_engine(pool: Any, settings: Settings) -> CronSchedulerEngi
         trigger={"on_interval": 3600},
         config={"interval_seconds": 3600},
         name="ext-sla-promise",
+    )
+
+
+def build_order_timeout_engine(pool: Any, settings: Settings) -> CronSchedulerEngine:
+    """取消超时未支付订单，并按 reservation 精确释放库存。
+
+    多 worker 同时扫描时由订单状态机 CAS 和数据库行锁兜底，重复处理只会
+    产生一次成功转换。已支付/退款中的订单永远不会被本引擎取消。
+    """
+
+    async def cancel_timed_out_orders(**_: Any) -> dict[str, Any]:
+        from ..orders.service import OrderService
+
+        timeout_minutes = max(1, int(settings.order_payment_timeout_minutes))
+        rows = await db_query_many(
+            pool,
+            sql=(
+                'SELECT o.id FROM "customer_order" o '
+                "WHERE o.status IN ('pending', 'draft') "
+                "AND o.created_at < NOW() - ($1 * INTERVAL '1 minute') "
+                "AND NOT EXISTS ("
+                '  SELECT 1 FROM "payment_intent" p '
+                "  WHERE p.order_id = o.id::text "
+                "    AND p.status IN ('paid', 'partial_refund', 'refunded')"
+                ") "
+                "ORDER BY o.created_at ASC LIMIT $2"
+            ),
+            params=(timeout_minutes, 100),
+        )
+        service = OrderService(pool)
+        cancelled: list[str] = []
+        errors: list[dict[str, str]] = []
+        for row in rows:
+            order_id = str(row["id"])
+            try:
+                await service.cancel_order(
+                    order_id,
+                    reason=f"payment timeout ({timeout_minutes}m)",
+                    operator_id="system:order-timeout",
+                )
+                cancelled.append(order_id)
+            except Exception as exc:  # noqa: BLE001 - one bad order must not stop the tick
+                errors.append({"order_id": order_id, "error": str(exc)})
+        return {
+            "timeout_minutes": timeout_minutes,
+            "cancelled_count": len(cancelled),
+            "cancelled_orders": cancelled,
+            "errors": errors,
+        }
+
+    cancel_timed_out_orders.__name__ = "cancel_timed_out_orders"
+    interval = max(10, int(settings.order_timeout_engine_interval_seconds))
+    return CronSchedulerEngine(
+        tasks=[cancel_timed_out_orders],
+        trigger={"on_interval": interval},
+        config={"interval_seconds": interval},
+        name="ext-order-timeout",
     )
 
 
@@ -1723,4 +1819,790 @@ def build_wechat_cert_rotation_engine(pool: Any, settings: Settings) -> CronSche
         trigger={"on_cron": "0 */12 * * *"},
         config={"interval_seconds": 43200},
         name="ext-wechat-cert-rotation",
+    )
+
+
+# ── 蜘蛛自动上架 + VLM 截图填价 ──────────────────────────────────────
+
+#: 自动上架来源短名 (进 product.slug / variant.sku_code 幂等键)。
+_SPIDER_LISTING_SOURCES = ("suning", "off")
+
+#: 蜘蛛填价 advisory lock 的 key1 (本管线固定常数, 与其它管线的锁命名
+#: 空间隔离); key2 取 hashtext(variant_id::text), 按变体粒度串行化。
+_SPIDER_PRICING_LOCK_KEY1 = 0x53505243  # "SPRC"
+
+#: 标题关键词 → 分类名映射 (按顺序优先匹配; 分类名不在库里时整条跳过)。
+#: 顺序按"具体品类先于泛品类": 蛋糕先归乳品烘焙而不是被"蛋"带去肉禽蛋,
+#: 果汁先归酒水饮料而不是时令水果。库里实际分类以 product_category 为准
+#: (种子: 蔬菜豆品/时令水果/肉禽蛋/海鲜水产/粮油调味/乳品烘焙/冷冻速食/
+#: 休闲零食/酒水饮料/日用百货), 映射不到时归库里第一个分类。
+_SPIDER_LISTING_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "冷冻速食",
+        (
+            "速冻",
+            "冷冻",
+            "冰淇淋",
+            "冰激凌",
+            "雪糕",
+            "汤圆",
+            "水饺",
+            "馄饨",
+            "手抓饼",
+            "棒冰",
+            "饺子",
+        ),
+    ),
+    (
+        "酒水饮料",
+        (
+            "白酒",
+            "啤酒",
+            "红酒",
+            "葡萄酒",
+            "饮料",
+            "可乐",
+            "雪碧",
+            "果汁",
+            "矿泉水",
+            "纯净水",
+            "苏打水",
+            "气泡水",
+            "咖啡",
+            "茶饮",
+            "椰子水",
+            "椰汁",
+            "橙汁",
+            "饮用水",
+            "天然水",
+            "凉茶",
+            "拿铁",
+            "摩卡",
+        ),
+    ),
+    (
+        "乳品烘焙",
+        (
+            "牛奶",
+            "酸奶",
+            "奶酪",
+            "芝士",
+            "黄油",
+            "奶油",
+            "鲜奶",
+            "豆奶",
+            "豆浆",
+            "面包",
+            "蛋糕",
+            "吐司",
+            "烘焙",
+            "灭菌乳",
+            "山羊奶",
+            "鮮乳",
+            "发酵乳",
+            "優格",
+            "优格",
+            "Bread",
+        ),
+    ),
+    (
+        "海鲜水产",
+        (
+            "海鲜",
+            "虾",
+            "蟹",
+            "带鱼",
+            "鲈鱼",
+            "黄鱼",
+            "三文鱼",
+            "鳕鱼",
+            "扇贝",
+            "生蚝",
+            "鲍鱼",
+            "海参",
+            "鱿鱼",
+            "章鱼",
+            "蛤蜊",
+            "鲜鱼",
+            "活鱼",
+            "刀鱼",
+        ),
+    ),
+    (
+        "肉禽蛋",
+        (
+            "牛肉",
+            "猪肉",
+            "羊肉",
+            "鸡肉",
+            "鸭肉",
+            "牛排",
+            "排骨",
+            "鸡蛋",
+            "鸭蛋",
+            "鹅蛋",
+            "皮蛋",
+            "咸蛋",
+            "火腿",
+            "香肠",
+            "腊肉",
+            "五花肉",
+            "猪蹄",
+            "里脊",
+            "鸡翅",
+            "鸡腿",
+            "乳鸽",
+            "鸽子",
+            "腱",
+            "公鸡",
+            "走地鸡",
+            "白条猪",
+        ),
+    ),
+    (
+        "时令水果",
+        (
+            "苹果",
+            "草莓",
+            "香蕉",
+            "橙子",
+            "柑橘",
+            "橘子",
+            "梨",
+            "桃子",
+            "葡萄",
+            "西瓜",
+            "芒果",
+            "榴莲",
+            "蓝莓",
+            "樱桃",
+            "车厘子",
+            "猕猴桃",
+            "柠檬",
+            "柚子",
+            "水果",
+            "鲜果",
+            "冬桃",
+            "蜜柚",
+            "果粒",
+            "青枣",
+            "小米蕉",
+        ),
+    ),
+    (
+        "蔬菜豆品",
+        (
+            "西红柿",
+            "番茄",
+            "土豆",
+            "黄瓜",
+            "萝卜",
+            "茄子",
+            "辣椒",
+            "豆腐",
+            "豆芽",
+            "豆皮",
+            "菌菇",
+            "蘑菇",
+            "菠菜",
+            "白菜",
+            "南瓜",
+            "蔬菜",
+            "青菜",
+            "玉米",
+            "红薯",
+            "山药",
+            "莲藕",
+            "四季豆",
+            "腐竹",
+            "大豆",
+            "野菜",
+            "Tofu",
+        ),
+    ),
+    (
+        "粮油调味",
+        (
+            "大米",
+            "小米",
+            "面粉",
+            "食用油",
+            "橄榄油",
+            "花生油",
+            "菜籽油",
+            "酱油",
+            "陈醋",
+            "香醋",
+            "调味",
+            "五谷",
+            "杂粮",
+            "燕麦",
+            "挂面",
+            "糯米",
+            "红豆",
+            "绿豆",
+            "食盐",
+            "白糖",
+            "白醋",
+            "腐乳",
+            "小麦粉",
+            "精制粉",
+            "籽油",
+            "粉丝",
+            "番茄沙司",
+            "番茄酱",
+            "蕃茄沙司",
+            "蕃茄酱",
+        ),
+    ),
+    (
+        "休闲零食",
+        (
+            "零食",
+            "饼干",
+            "薯片",
+            "巧克力",
+            "糖果",
+            "坚果",
+            "瓜子",
+            "辣条",
+            "果冻",
+            "膨化",
+            "蜜饯",
+            "话梅",
+            "方便面",
+            "肉脯",
+            "海苔",
+            "巴旦木",
+            "腰果",
+            "花生",
+            "松子",
+            "拉面",
+            "即食面",
+            "即食麵",
+        ),
+    ),
+    (
+        "日用百货",
+        (
+            "纸巾",
+            "卫生纸",
+            "牙膏",
+            "牙刷",
+            "洗发",
+            "沐浴露",
+            "洗衣液",
+            "洗洁精",
+            "毛巾",
+            "口罩",
+            "垃圾袋",
+            "绑枝机",
+            "绑蔓器",
+            "捆绑机",
+            "电池",
+            "湿巾",
+            "抽纸",
+            "鱼缸",
+        ),
+    ),
+    (
+        "数码家电",
+        (
+            "iPhone",
+            "iPad",
+            "MacBook",
+            "AirPods",
+            "手机壳",
+            "手机",
+            "平板",
+            "笔记本",
+            "台式机",
+            "显示器",
+            "耳机",
+            "音箱",
+            "充电器",
+            "充电宝",
+            "数据线",
+            "键盘",
+            "鼠标",
+            "智能手表",
+            "手环",
+            "电脑",
+            "路由器",
+            "硬盘",
+            "U盘",
+            "养生壶",
+            "电磁炉",
+        ),
+    ),
+)
+
+
+# 非食品标记: 带这些标记的标题不是食品, 不参与食品分类 (如图书)。
+_NON_FOOD_MARKERS = ("[M]", "978", "图书", "绘本", "书籍", "种子")
+
+# 并列优先级 (在前者胜): 产品型分类优先于口味/配料型分类。
+_CATEGORY_PRIORITY = (
+    "日用百货",
+    "冷冻速食",
+    "数码家电",
+    "乳品烘焙",
+    "休闲零食",
+    "肉禽蛋",
+    "海鲜水产",
+    "酒水饮料",
+    "粮油调味",
+    "蔬菜豆品",
+    "时令水果",
+)
+_CATEGORY_PRIORITY_INDEX = {name: i for i, name in enumerate(_CATEGORY_PRIORITY)}
+
+
+def _map_spider_listing_category(title: str, categories: list[dict[str, Any]]) -> Any:
+    """按标题关键词把外部商品映射到库里已有分类 id; 映射不到返回 None。
+
+    最长关键词命中优先 (如“蟹稻共生大米”: “大米”胜过“蟹”);
+    同长并列时取规则表在前的分类; 带非食品标记的直接返回 None。
+    """
+    if any(marker in title for marker in _NON_FOOD_MARKERS):
+        return None
+    by_name = {str(c.get("name") or ""): c.get("id") for c in categories}
+    best_id: Any = None
+    best_key: tuple[int, int] | None = None
+    for cat_name, keywords in _SPIDER_LISTING_CATEGORY_RULES:
+        if cat_name not in by_name:
+            continue
+        for keyword in keywords:
+            if not keyword or keyword not in title:
+                continue
+            # (关键词长度, 负优先级): 长者胜; 同长时产品型分类胜出
+            # (如水果味牙膏归日用、咖啡伴侣牛奶归乳品、番茄方便面归零食)。
+            key = (len(keyword), -_CATEGORY_PRIORITY_INDEX.get(cat_name, len(_CATEGORY_PRIORITY)))
+            if best_key is None or key > best_key:
+                best_id = by_name[cat_name]
+                best_key = key
+    return best_id
+
+
+def build_spider_listing_engine(
+    pool: Any,
+    *,
+    settings: Settings,
+    spider_provider: str = "layered",
+) -> CronSchedulerEngine:
+    """蜘蛛自动上架 + VLM 截图填价引擎 (on_cron, 每日 04:30)。
+
+    Soffy 指令: 价格不再走源站价格接口 (苏宁价格 JSONP 只回信封、京东
+    到家 JS 壳、OFP 价格字段覆盖率近零——三源实测都无价)。改为两段:
+
+      填价段 (先行, 补历史未定价): 未定价集合 = slug LIKE 'ext-%' 且无
+      active 批次的商品。逐个拿 variant option_values 里的 detail_url
+      调截图服务 (settings.vlm_screenshot_url, GET ?url= 带 X-Shot-Token
+      → PNG), oprim.vlm_extract_price 让本地 VLM 看截图读价; 校验
+      (非空、0.01<=价<=99999、confidence>=0.5) 通过后一个事务里建
+      inventory_batch (active 库位按商品序轮转、默认库存、成本=售价
+      60%、72h vwap 消化曲线、media=商品图) + product 翻 published +
+      price_benchmark 落一行 (source_type='spider_vlm')。
+      vlm_screenshot_url 未配置 (空串) 时整段跳过, tick 里
+      skipped_no_screenshot=True 留痕, 等服务配好下一轮自动补价。
+
+      上架段: 遍历 settings.spider_listing_keywords, 每词调
+      oprim.spider_fetch_products 抓商品本体 (标题/图片/介绍/详情页),
+      取前 spider_listing_max_per_keyword 个未上架新品。幂等键
+      product.slug = "ext-{source}-{source_id}" (source: suning/off),
+      variant sku_code = "EXT-{source}-{source_id}"; option_values 记
+      {"来源", "detail_url", "source_id", "image_url"} 供填价段回读;
+      reference_price_cents 留 NULL (未定价不用 0 冒充); description =
+      介绍 (已去品牌词/来源行, 只留产品本身); 分类按标题关键词映射既有
+      分类名, 映射不到归第一个分类。
+
+    状态选择 (storefront 行为核查结论): queries.list_storefront_products
+    与 get_storefront_product 都硬性要求 status='published' 且
+    total_stock>0 (存在有可用量的 active 批次), 加购/结算也只认批次——
+    无批次商品在前台既不展示也买不了 (天然"已建档不可购买")。因此新品
+    直接以 draft 建档, 只是多一层保险: 后台/报表口径里未定价商品不会
+    混进 published 集合; 填价建批次后才翻 published 正式开卖。
+
+    单品失败 try/except 计数不中断整轮; tick 返回
+    {"listed", "priced", "skipped_no_screenshot", "failed",
+    "skipped_has_batch"}。
+    """
+
+    async def _price_one(row: dict[str, Any], location_id: Any, stats: dict[str, Any]) -> None:
+        import json
+
+        import httpx
+        from obase.uuid7 import uuid7
+
+        option_values = row.get("option_values") or {}
+        if isinstance(option_values, str):
+            try:
+                option_values = json.loads(option_values)
+            except (json.JSONDecodeError, ValueError):
+                option_values = {}
+        detail_url = str(option_values.get("detail_url") or "")
+        image_url = str(option_values.get("image_url") or "")
+        store = str(option_values.get("来源") or "")
+        if not detail_url:
+            raise ValueError("spider listing: variant option_values missing detail_url")
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(
+                settings.vlm_screenshot_url,
+                params={"url": detail_url},
+                headers={"X-Shot-Token": settings.vlm_screenshot_token},
+            )
+            resp.raise_for_status()
+            png = resp.content
+        verdict = await vlm_extract_price(settings.default_vlm_provider, image_bytes=png)
+        price_yuan = verdict.get("price_yuan")
+        confidence = float(verdict.get("confidence") or 0.0)
+        if price_yuan is None or not (0.01 <= float(price_yuan) <= 99999) or confidence < 0.5:
+            raise ValueError(f"spider listing: vlm price not usable: {verdict}")
+
+        retail = int(round(float(price_yuan) * 100))
+        cost = int(round(retail * 0.6))
+        stock_qty = int(settings.spider_listing_default_stock)
+        batch_no = (
+            f"EXT-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{str(uuid7()).replace('-', '')[:8]}"
+        )
+        # 商品图本地化: 下载失败保留原 URL, 由 tick 回填重试。
+        # 新下载图片过 OCR 品牌门: 命中 -> failed(禁售), 干净 -> passed, 未筛出 -> pending。
+        local_image, brand_screen = await localize_and_screen_spider_image(
+            image_url, output_root=settings.output_root
+        )
+        inspection_status, inspection_note = brand_screen_to_inspection(brand_screen)
+        shelf_url = local_image or image_url or None
+        media_json = json.dumps([shelf_url] if shelf_url else [])
+        curve_json = json.dumps(build_default_vwap_curve(stock_qty))
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    'INSERT INTO "inventory_batch" '
+                    "(id, variant_id, location_id, batch_no, video_url, "
+                    "cost_price_cents, retail_price_cents, stock_qty, currency, "
+                    "media_assets, shelf_image_url, vwap_target_curve, status, "
+                    "inspection_status, inspection_note) "
+                    "VALUES ($1, $2, $3, $4, '', $5, $6, $7, 'CNY', "
+                    "$8::jsonb, $9, $10::jsonb, 'active', $11, $12)",
+                    uuid7(),
+                    row["variant_id"],
+                    location_id,
+                    batch_no,
+                    cost,
+                    retail,
+                    stock_qty,
+                    media_json,
+                    shelf_url,
+                    curve_json,
+                    inspection_status,
+                    inspection_note,
+                )
+                await conn.execute(
+                    "UPDATE \"product\" SET status = 'published' WHERE id = $1",
+                    row["product_id"],
+                )
+                await conn.execute(
+                    'INSERT INTO "price_benchmark" '
+                    "(id, variant_id, raw_item_name, source_type, competitor_name, "
+                    " raw_price_cents, raw_unit, normalized_price_per_unit) "
+                    "VALUES ($1, $2, $3, 'spider_vlm', $4, $5, 'item', NULL)",
+                    uuid7(),
+                    row["variant_id"],
+                    str(row.get("title") or "")[:128],
+                    store[:64],
+                    retail,
+                )
+        stats["priced"] += 1
+
+    async def _price_one_locked(
+        row: dict[str, Any], location_id: Any, stats: dict[str, Any]
+    ) -> None:
+        """填价单个变体: PG advisory lock 跨进程串行化 + 锁内复查。
+
+        生产 api 是多 worker 部署, 每个 worker 都装配本引擎且 tick 时点
+        相同: 无防护时同一变体会被多个 worker 并发建 EXT- 批次 (库存
+        虚增数倍)。这里按变体取会话级 advisory lock: key1 = 本管线固定
+        常数 _SPIDER_PRICING_LOCK_KEY1, key2 = hashtext(variant_id
+        文本); 同一变体同一时刻只允许一个 worker 进入填价。
+
+        锁绑定在连接上: worker 进程死亡时连接关闭, PG 自动释放锁, 不
+        留死锁; 但连接归还连接池后会被复用, 所以必须在 finally 里显
+        式 unlock, 不能指望靠关连接解。unlock 自身失败 (连接已断) 时
+        吞掉异常 —— 断连即释放, 语义不变。
+
+        取锁后先在锁连接上复查该变体是否已有批次: 待填价集合是本轮
+        开始时的一次性快照, 别的 worker 可能已在本轮内建好。复查口
+        径与 _price_pending 待填价查询的 NOT EXISTS 一致 (active 且未
+        软删); 命中则跳过该行, 计 skipped_has_batch (不算 priced,
+        也不算 failed)。
+        """
+        variant_key = str(row["variant_id"])
+        async with pool.acquire() as lock_conn:
+            await lock_conn.execute(
+                "SELECT pg_advisory_lock($1, hashtext($2))",
+                _SPIDER_PRICING_LOCK_KEY1,
+                variant_key,
+            )
+            try:
+                existing = await lock_conn.fetchval(
+                    'SELECT 1 FROM "inventory_batch" '
+                    "WHERE variant_id = $1 AND status = 'active' "
+                    "AND deleted_at IS NULL LIMIT 1",
+                    row["variant_id"],
+                )
+                if existing is not None:
+                    stats["skipped_has_batch"] += 1
+                    return
+                await _price_one(row, location_id, stats)
+            finally:
+                try:
+                    await lock_conn.execute(
+                        "SELECT pg_advisory_unlock($1, hashtext($2))",
+                        _SPIDER_PRICING_LOCK_KEY1,
+                        variant_key,
+                    )
+                except Exception:  # noqa: BLE001 - 连接已断时锁随连接关闭释放
+                    pass
+
+    async def _price_pending(stats: dict[str, Any]) -> None:
+        stats.setdefault("skipped_has_batch", 0)
+        rows = await db_query_many(
+            pool,
+            sql=(
+                "SELECT p.id AS product_id, p.title AS title, "
+                "v.id AS variant_id, v.option_values AS option_values "
+                'FROM "product" p '
+                'JOIN "product_variant" v ON v.product_id = p.id '
+                "AND v.status = 'active' AND v.deleted_at IS NULL "
+                "WHERE p.deleted_at IS NULL AND p.slug LIKE 'ext-%' "
+                "AND NOT EXISTS ("
+                'SELECT 1 FROM "inventory_batch" b '
+                "WHERE b.variant_id = v.id AND b.status = 'active' "
+                "AND b.deleted_at IS NULL"
+                ") "
+                "ORDER BY p.created_at DESC"
+            ),
+        )
+        if not rows:
+            return
+        locations = await db_query_many(
+            pool,
+            sql=("SELECT id FROM \"stock_location\" WHERE status = 'active' ORDER BY created_at"),
+        )
+        if not locations:
+            stats["failed"] += len(rows)
+            logger.warning(
+                "spider listing: %d unpriced products but no active stock_location",
+                len(rows),
+            )
+            return
+        # 单轮尝试上限 (settings.spider_listing_max_price_per_tick): 老积压
+        # 多为源页无价的结构性失败, 无上限时单轮能跑数小时。配合上面的
+        # created_at DESC 新品优先, 保证当天上新当天开卖; 积压在队列短于
+        # 上限时仍会被处理到。尝试数按 priced+failed 计 (成功失败都消耗
+        # 一次截图+VLM 调用)。
+        max_attempts = int(settings.spider_listing_max_price_per_tick)
+        attempts = 0
+        for idx, row in enumerate(rows):
+            if attempts >= max_attempts:
+                logger.info(
+                    "spider listing: pricing cap %d reached, %d products left for next tick",
+                    max_attempts,
+                    len(rows) - idx,
+                )
+                break
+            attempts += 1
+            try:
+                await _price_one_locked(row, locations[idx % len(locations)]["id"], stats)
+            except asyncpg.UniqueViolationError:
+                # 纵深防御兜底: EXT 批次部分唯一索引 (p0_schema 的
+                # uq_inventory_batch_spider_ext_variant) 触发 —— 另一
+                # worker 已抢先建好该变体批次, 按竞态跳过计, 不算失败。
+                stats["skipped_has_batch"] += 1
+                logger.info(
+                    "spider listing price skipped (ext batch race) product=%s",
+                    row.get("product_id"),
+                )
+            except Exception as exc:  # noqa: BLE001 - 单品填价失败不中断整轮
+                stats["failed"] += 1
+                logger.warning(
+                    "spider listing price failed product=%s: %s",
+                    row.get("product_id"),
+                    exc,
+                )
+
+    async def _create_listing(
+        item: dict[str, Any],
+        *,
+        slug: str,
+        categories: list[dict[str, Any]],
+    ) -> None:
+        import json
+
+        source = str(item.get("source") or "")
+        source_id = str(item.get("source_id") or "")
+        title = clean_spider_title(str(item.get("item") or "").strip())[:120]
+        store = str(item.get("store") or "")
+        detail_url = str(item.get("detail_url") or "")
+        image_url = str(item.get("image_url") or "")
+        intro = str(item.get("description") or "").strip()
+        # 前台不展示来源行: 介绍只留产品本身, 店铺/详情页只记 option_values 内部留痕。
+        description = clean_spider_description(intro)
+        category_id = _map_spider_listing_category(title, categories)
+        option_values = {
+            "来源": store,
+            "detail_url": detail_url,
+            "source_id": source_id,
+            "image_url": image_url,
+        }
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                pid = await conn.fetchval(
+                    'INSERT INTO "product" (id, title, slug, description, category_id, status) '
+                    "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'draft') RETURNING id",
+                    title,
+                    slug,
+                    description,
+                    category_id,
+                )
+                await conn.fetchval(
+                    'INSERT INTO "product_variant" (id, product_id, sku_code, option_values, '
+                    "reference_price_cents, status) "
+                    "VALUES (gen_random_uuid(), $1, $2, $3::jsonb, NULL, 'active') RETURNING id",
+                    pid,
+                    f"EXT-{source}-{source_id}"[:128],
+                    json.dumps(option_values, ensure_ascii=False),
+                )
+
+    async def _list_new(stats: dict[str, Any]) -> None:
+        categories = await db_query_many(
+            pool,
+            sql=(
+                'SELECT id, name FROM "product_category" '
+                "WHERE deleted_at IS NULL ORDER BY created_at"
+            ),
+        )
+        for keyword in settings.spider_listing_keywords:
+            try:
+                products = await spider_fetch_products(spider_provider, keywords=[keyword])
+            except Exception as exc:  # noqa: BLE001 - 单关键词抓取失败不中断整轮
+                stats["failed"] += 1
+                logger.warning("spider listing fetch failed keyword=%s: %s", keyword, exc)
+                continue
+            taken = 0
+            for item in products:
+                if taken >= settings.spider_listing_max_per_keyword:
+                    break
+                source = str(item.get("source") or "")
+                source_id = str(item.get("source_id") or "").strip()
+                title = str(item.get("item") or "").strip()
+                if source not in _SPIDER_LISTING_SOURCES or not source_id or not title:
+                    continue
+                slug = f"ext-{source}-{source_id}"[:128]
+                existing = await db_query_one(
+                    pool,
+                    sql='SELECT id FROM "product" WHERE slug = $1',
+                    params=(slug,),
+                )
+                if existing:
+                    continue
+                try:
+                    await _create_listing(
+                        item,
+                        slug=slug,
+                        categories=categories,
+                    )
+                    stats["listed"] += 1
+                    taken += 1
+                except Exception as exc:  # noqa: BLE001 - 单品上架失败不中断整轮
+                    stats["failed"] += 1
+                    logger.warning("spider listing create failed slug=%s: %s", slug, exc)
+
+    async def _backfill_remote_images(stats: dict[str, Any]) -> None:
+        """把仍挂外链的 active 批次图下载本地化 (每轮 ≤30, 单品失败不中断)。
+
+        新上架写入时下载失败的批次 (或历史遗留外链图) 在此收敛:
+        同 URL 哈希已落盘则直接复用, 无需重复下载。
+        """
+        try:
+            async with pool.acquire() as conn:
+                rows = (
+                    await conn.fetch(
+                        "SELECT id, shelf_image_url, media_assets FROM inventory_batch "
+                        "WHERE deleted_at IS NULL AND status = 'active' "
+                        "AND shelf_image_url LIKE 'http%' LIMIT 30"
+                    )
+                    or []
+                )
+        except Exception as exc:  # noqa: BLE001 - 回填查询失败不拖垮整轮
+            logger.warning("spider image backfill select failed: %s", exc)
+            return
+        for row in rows:
+            try:
+                remote_url = str(row["shelf_image_url"] or "")
+                local = await localize_spider_image(remote_url, output_root=settings.output_root)
+                if not local:
+                    continue
+                media = row["media_assets"]
+                if isinstance(media, str):
+                    try:
+                        media = json.loads(media)
+                    except (json.JSONDecodeError, ValueError):
+                        media = media
+                if isinstance(media, list):
+                    new_media = [local if m == remote_url else m for m in media]
+                else:
+                    new_media = [local]
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE inventory_batch SET shelf_image_url = $2, "
+                        "media_assets = $3::jsonb WHERE id = $1",
+                        row["id"],
+                        local,
+                        json.dumps(new_media, ensure_ascii=False),
+                    )
+                stats["images_localized"] = stats.get("images_localized", 0) + 1
+            except Exception as exc:  # noqa: BLE001 - 单品回填失败不中断整轮
+                logger.warning("spider image backfill failed batch=%s: %s", row.get("id"), exc)
+
+    async def spider_listing_tick(**_: Any) -> dict[str, Any]:
+        stats: dict[str, Any] = {
+            "listed": 0,
+            "priced": 0,
+            "skipped_no_screenshot": False,
+            "failed": 0,
+            "skipped_has_batch": 0,
+        }
+        # 填价段先行: 先把历史未定价商品补上价开卖, 再抓新品建档。
+        if settings.vlm_screenshot_url:
+            try:
+                await _price_pending(stats)
+            except Exception as exc:  # noqa: BLE001 - 填价段整体失败不拖垮上架段
+                stats["failed"] += 1
+                logger.warning("spider listing pricing phase failed: %s", exc)
+        else:
+            stats["skipped_no_screenshot"] = True
+        await _list_new(stats)
+        try:
+            await _backfill_remote_images(stats)
+        except Exception as exc:  # noqa: BLE001 - 回填失败不拖垮整轮
+            stats["failed"] += 1
+            logger.warning("spider image backfill failed: %s", exc)
+        return stats
+
+    spider_listing_tick.__name__ = "spider_listing_tick"
+
+    async def spider_listing_tick_logged(**_: Any) -> dict[str, Any]:
+        result = await spider_listing_tick()
+        logger.info("spider listing engine tick: %s", result)
+        return result
+
+    spider_listing_tick_logged.__name__ = "spider_listing_tick_logged"
+
+    return CronSchedulerEngine(
+        tasks=[spider_listing_tick_logged],
+        trigger={"on_cron": "30 4 * * *"},
+        config={"interval_seconds": 86400},
+        name="ext-spider-listing",
     )

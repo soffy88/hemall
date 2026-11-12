@@ -196,6 +196,33 @@ def get_current_customer(
     return {"customer_id": customer_id, "email": payload.get("email")}
 
 
+def get_current_customer_optional(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any] | None:
+    """解析顾客主体 (typ=customer)，无 token 或无效时返回 None 而非 401。
+
+    用于公开端点（如溯源查询），允许匿名访问但也能识别已登录用户。
+    """
+    token = _token_from_request(request, creds)
+    if token is None:
+        return None
+    try:
+        payload = decode_token(
+            token=token,
+            typ=TOKEN_TYPE_CUSTOMER,
+            secret=settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+        )
+    except Exception:
+        return None
+    customer_id = payload.get("customer_id")
+    if not isinstance(customer_id, str) or not customer_id.strip():
+        return None
+    return {"customer_id": customer_id, "email": payload.get("email")}
+
+
 def build_output_dir(settings: Settings, principal: dict[str, Any], omodul_name: str) -> Path:
     """omodul 输出目录: <output_root>/<omodul_name>/<伪名化用户引用>。"""
     ref = anon_ref(str(principal.get("user_id") or "anonymous"), settings)

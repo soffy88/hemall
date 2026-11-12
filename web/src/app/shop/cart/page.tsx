@@ -9,12 +9,9 @@ import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { Cart } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import { displayOptionLabel, isInternalSku } from '@/lib/option-label';
 
-const SHIPPING_METHODS = [
-  { name: '标准配送', price_cents: 0 },
-  { name: '快速配送', price_cents: 1500 },
-  { name: '次日达', price_cents: 3000 },
-];
+type ShippingMethod = { code: string; name: string; price_cents: number; free_threshold_cents: number };
 
 export default function CartPage() {
   const router = useRouter();
@@ -26,11 +23,22 @@ export default function CartPage() {
   const [discountCode, setDiscountCode] = useState('');
   const [giftCardCode, setGiftCardCode] = useState('');
   const [applying, setApplying] = useState(false);
+  const [shippingMethods, setShippingMethods] = useState<ShippingMethod[]>([]);
+  const [shippingWindows, setShippingWindows] = useState<string[]>([]);
 
   function loadCart() {
     const cartId = sessionStorage.getItem('hemall_cart_id');
     const pending: Promise<void> = cartId
-      ? api.getCart(cartId).then((data) => {
+      ? api.getCart(cartId).then(async (data) => {
+          // 未选配送方式时默认标准配送并在服务端计价，避免“0 元运费”默认漏单。
+          if (!data.shipping_method_code) {
+            try {
+              await api.storeAddShippingMethod(cartId, 'standard');
+              data = await api.getCart(cartId);
+            } catch {
+              // 计价失败保留原样，结算页仍会由服务端兜底。
+            }
+          }
           setCart(data);
         })
       : Promise.resolve();
@@ -43,7 +51,15 @@ export default function CartPage() {
       });
   }
 
-  useEffect(() => { loadCart(); }, []);
+  useEffect(() => {
+    loadCart();
+    api.storeShippingOptions()
+      .then((data) => {
+        setShippingMethods(data.methods);
+        setShippingWindows(data.delivery_windows);
+      })
+      .catch(() => {});
+  }, []);
 
   async function handleUpdateQty(lineItemId: string, newQty: number) {
     if (!cart) return;
@@ -119,15 +135,28 @@ export default function CartPage() {
     }
   }
 
-  async function handleSelectShipping(methodName: string, priceCents: number) {
+  async function handleSelectShipping(methodName: string) {
     if (!cart) return;
     try {
-      await api.storeAddShippingMethod(cart.id, methodName, priceCents);
+      await api.storeAddShippingMethod(cart.id, methodName);
       loadCart();
     } catch (e) {
       showToast(errMessage(e), 'error');
     }
   }
+
+  const previewCents = cart?.preview_discount_cents ?? 0;
+  const previewKind = cart?.preview_discount_kind ?? 'none';
+  const effectiveTotal = cart
+    ? (cart.preview_grand_total_cents ?? cart.grand_total_cents)
+    : 0;
+  const previewLabel = previewKind === 'member'
+    ? '会员 9 折（预估）'
+    : previewKind === 'night'
+      ? '夜市价（预估）'
+      : previewKind === 'voucher'
+        ? '购物券抵扣（预估）'
+        : '优惠（预估）';
 
   if (loading) return <div className="text-center py-12 text-gray-500">加载中...</div>;
   if (error) return <div className="text-center py-12 text-red-600">{error}</div>;
@@ -156,12 +185,29 @@ export default function CartPage() {
               <div className="flex-1 min-w-0">
                 <h3 className="font-medium text-gray-900 truncate">{item.product_title || '—'}</h3>
                 <p className="text-xs text-gray-500">
-                  {item.variant_sku}
-                  {item.option_values && Object.values(item.option_values).length > 0 && (
-                    <> · {Object.values(item.option_values).join(' / ')}</>
-                  )}
+                  {[
+                    !isInternalSku(item.variant_sku) ? String(item.variant_sku) : '',
+                    displayOptionLabel(item.option_values, ''),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </p>
-                <p className="text-sm text-emerald-700 font-medium mt-1">{fmt(item.unit_price_cents)}</p>
+                <p className="text-sm text-emerald-700 font-medium mt-1">
+                  {item.pricing_mode === 'weight'
+                    ? `¥${((item.unit_price_cents_per_jin ?? 0) / 100).toFixed(2)}/斤 · 预估 ${item.estimated_weight_grams ?? 0} 克`
+                    : fmt(item.unit_price_cents)}
+                </p>
+                {item.pricing_mode === 'weight' && (
+                  <p className="text-xs text-emerald-600 mt-0.5">
+                    预估价 {fmt(item.line_total_cents)}，称重后多退少补
+                  </p>
+                )}
+                {(item.preorder_qty_preview ?? 0) > 0 && (
+                  <p className="text-xs text-amber-600 mt-0.5">
+                    其中预订 ×{item.preorder_qty_preview}
+                    {item.pricing_mode === 'weight' ? ' 克' : ''}（到货后配货）
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -191,14 +237,14 @@ export default function CartPage() {
           <div className="bg-white rounded-xl p-4 border border-gray-200">
             <h3 className="font-medium text-gray-900 mb-3">配送方式</h3>
             <div className="space-y-2">
-              {SHIPPING_METHODS.map((m) => (
-                <label key={m.name} className="flex items-center justify-between text-sm cursor-pointer">
+              {shippingMethods.map((m) => (
+                <label key={m.code} className="flex items-center justify-between text-sm cursor-pointer">
                   <span className="flex items-center gap-2">
                     <input
                       type="radio"
                       name="shipping-method"
-                      checked={cart.shipping_cents === m.price_cents}
-                      onChange={() => handleSelectShipping(m.name, m.price_cents)}
+                      checked={cart.shipping_method_code === m.code}
+                      onChange={() => handleSelectShipping(m.code)}
                     />
                     {m.name}
                   </span>
@@ -206,6 +252,10 @@ export default function CartPage() {
                 </label>
               ))}
             </div>
+            {shippingWindows.length > 0 && (
+              <p className="mt-2 text-xs text-gray-500">可预约时窗：{shippingWindows.join(' / ')}</p>
+            )}
+            <p className="mt-1 text-[11px] text-gray-400">运费与免运门槛由服务端按配置计算。</p>
           </div>
 
           {/* Discount Code */}
@@ -267,11 +317,16 @@ export default function CartPage() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between"><span className="text-gray-500">小计</span><span>{fmt(cart.subtotal_cents)}</span></div>
             <div className="flex justify-between"><span className="text-gray-500">折扣</span><span>-{fmt(cart.discount_cents)}</span></div>
+            {previewCents > 0 && previewKind !== 'applied' && (
+              <div className="flex justify-between text-emerald-700">
+                <span>{previewLabel}</span><span>-{fmt(previewCents)}</span>
+              </div>
+            )}
             <div className="flex justify-between"><span className="text-gray-500">税费</span><span>{fmt(cart.tax_cents)}</span></div>
             <div className="flex justify-between"><span className="text-gray-500">运费</span><span>{fmt(cart.shipping_cents)}</span></div>
             <div className="border-t pt-2 flex justify-between font-bold text-base">
-              <span>合计</span>
-              <span className="text-emerald-700">{fmt(cart.grand_total_cents)}</span>
+              <span>{previewCents > 0 && previewKind !== 'applied' ? '合计（优惠后）' : '合计'}</span>
+              <span className="text-emerald-700">{fmt(effectiveTotal)}</span>
             </div>
             {cart.gift_cards.length > 0 && (
               <>
@@ -282,7 +337,7 @@ export default function CartPage() {
                 <div className="flex justify-between font-bold text-base border-t pt-2">
                   <span>应付金额</span>
                   <span className="text-emerald-700">
-                    {fmt(Math.max(0, cart.grand_total_cents - cart.gift_cards.reduce((sum, g) => sum + g.applied_amount_cents, 0)))}
+                    {fmt(Math.max(0, effectiveTotal - cart.gift_cards.reduce((sum, g) => sum + g.applied_amount_cents, 0)))}
                   </span>
                 </div>
               </>

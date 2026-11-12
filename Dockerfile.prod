@@ -45,6 +45,12 @@ RUN uv sync --frozen --no-dev --extra observability --extra phase2
 # ── 生产阶段 ────────────────────────────────────────────────────────────
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
+ARG GIT_SHA=unknown
+ARG BUILD_CREATED=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_CREATED}" \
+      org.opencontainers.image.title="hemall-backend"
+
 # 创建非 root 用户
 #
 # uid/gid 必须**写死**。`useradd -r` 不带 -u 时会挑一个空闲的系统号
@@ -65,6 +71,8 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
     apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true \
     libpq-dev \
     curl \
+    tesseract-ocr \
+    tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 
 # 从构建阶段复制虚拟环境 (3O 平台包已在 venv 内，源码来自 git rev)
@@ -85,7 +93,12 @@ COPY deploy-tools/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # 修改文件所有权
-RUN chown -R hemall:hemall /app
+# var/omodul_output 被 .dockerignore 排除，镜像里不会有这个目录；缺省情况下
+# gunicorn root master 首次写文件时才创建，降权后的 worker (hemall) 随即
+# PermissionError（2026-11-08 冒烟 create_cart 500）。这里显式建目录并授权，
+# 保证即使没有挂数据卷也能写。
+RUN mkdir -p /app/var/omodul_output /app/logs && \
+    chown -R hemall:hemall /app
 
 # 注：不设 USER hemall —— entrypoint 需以 root 运行以修复挂载数据卷属主，
 # 随后 gunicorn 通过 user/group 配置将 worker 降权为 hemall。

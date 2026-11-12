@@ -12,6 +12,7 @@ import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
 import type { StorefrontProduct, ProductVariant, InventoryBatch } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import { displayOptionLabel } from '@/lib/option-label';
 
 export default function ProductDetailPage() {
   const params = useParams();
@@ -25,9 +26,16 @@ export default function ProductDetailPage() {
   const [selectedVariant, setSelectedVariant] = useState<ProductVariant | null>(null);
   const [selectedBatch, setSelectedBatch] = useState<InventoryBatch | null>(null);
   const [quantity, setQuantity] = useState(1);
+  const [weightOption, setWeightOption] = useState<{ label: string; grams: number } | null>(null);
   const [adding, setAdding] = useState(false);
   const [similar, setSimilar] = useState<StorefrontProduct[]>([]);
   const [imgBroken, setImgBroken] = useState(false);
+
+  // 选批次：先挑有可用库存的，没有就用首个批次（0 库存也可加购=预订），无批次返回 null。
+  function pickBatch(v: ProductVariant): InventoryBatch | null {
+    const batches = v.batches || [];
+    return batches.find((b) => b.available_qty > 0) || batches[0] || null;
+  }
 
   useEffect(() => {
     api.storeProduct(productId)
@@ -36,9 +44,8 @@ export default function ProductDetailPage() {
         setImgBroken(false);
         if (p.variants?.length > 0) {
           setSelectedVariant(p.variants[0]);
-          if (p.variants[0].batches?.length > 0) {
-            setSelectedBatch(p.variants[0].batches[0]);
-          }
+          setSelectedBatch(pickBatch(p.variants[0]));
+          setWeightOption(p.variants[0].weight_options?.[0] ?? null);
         }
       })
       .catch((e) => setError(e.message))
@@ -60,16 +67,13 @@ export default function ProductDetailPage() {
 
   function handleVariantChange(v: ProductVariant) {
     setSelectedVariant(v);
-    if (v.batches?.length > 0) {
-      setSelectedBatch(v.batches[0]);
-    } else {
-      setSelectedBatch(null);
-    }
+    setSelectedBatch(pickBatch(v));
+    setWeightOption(v.weight_options?.[0] ?? null);
     setQuantity(1);
   }
 
   async function handleAddToCart() {
-    if (!selectedBatch) {
+    if (!selectedVariant) {
       showToast('请选择规格', 'error');
       return;
     }
@@ -91,7 +95,19 @@ export default function ProductDetailPage() {
           await api.setCartCustomer(cartId, customerAuth.customerId).catch(() => {});
         }
       }
-      await api.addLineItem(cartId, selectedBatch.id, quantity);
+      const weight =
+        selectedVariant.pricing_mode === 'weight' && weightOption
+          ? { weight_option_label: weightOption.label }
+          : undefined;
+      if (selectedBatch) {
+        await api.addLineItem(cartId, selectedBatch.id, quantity, weight);
+      } else if (weight) {
+        // 称重商品无批次：按变体 + 预估重量档预订
+        await api.addWeightLineItem(cartId, selectedVariant.id, weight, quantity);
+      } else {
+        // 商品无任何批次：按变体加购，下单时整行计入预订待配货
+        await api.addVariantLineItem(cartId, selectedVariant.id, quantity);
+      }
       router.push('/shop/cart');
     } catch (e) {
       showToast(errMessage(e), 'error');
@@ -105,6 +121,9 @@ export default function ProductDetailPage() {
   if (!product) return <div className="text-center py-12 text-gray-400">商品不存在</div>;
 
   const heroImg = imgBroken ? null : productImage(product);
+  // 预订态：选中变体没有任何可用库存（无批次或批次可用量为 0）——仍可加购，下单后待配货。
+  const isPreorder = !!selectedVariant && (!selectedBatch || selectedBatch.available_qty <= 0);
+  const maxQty = isPreorder ? 999 : (selectedBatch?.available_qty || 1);
 
   return (
     <div>
@@ -137,10 +156,25 @@ export default function ProductDetailPage() {
           </div>
 
           <div className="text-3xl font-bold text-emerald-700">
-            {selectedBatch
-              ? formatMoney(selectedBatch.retail_price_cents, selectedBatch.currency)
-              : formatMoney(product.min_price_cents, getSelectedRegion()?.currency)}
+            {selectedVariant?.pricing_mode === 'weight' ? (
+              <>
+                ¥{((selectedVariant.unit_price_cents ?? selectedBatch?.retail_price_cents ?? 0) / 100).toFixed(2)}
+                <span className="ml-1 text-base font-medium text-gray-500">/斤</span>
+              </>
+            ) : selectedBatch ? (
+              formatMoney(selectedBatch.retail_price_cents, selectedBatch.currency)
+            ) : (
+              formatMoney(
+                product.min_price_cents ?? selectedVariant?.min_price_cents ?? selectedVariant?.reference_price_cents,
+                getSelectedRegion()?.currency,
+              )
+            )}
           </div>
+          {selectedVariant?.pricing_mode === 'weight' && (
+            <p className="text-sm text-gray-500">
+              下单按预估重量付款，称重后多退少补（差额超出容差需您确认）。
+            </p>
+          )}
 
           {/* Variant Selection */}
           {product.variants && product.variants.length > 0 && (
@@ -148,23 +182,23 @@ export default function ProductDetailPage() {
               <h3 className="text-sm font-medium text-gray-700 mb-2">选择规格</h3>
               <div className="flex flex-wrap gap-2">
                 {product.variants.map((v) => {
-                  const label = Object.values(v.option_values || {}).join(' / ') || v.sku_code;
+                  const label = displayOptionLabel(v.option_values);
                   const isSelected = selectedVariant?.id === v.id;
                   const hasStock = (v.batches || []).some((b) => b.available_qty > 0);
                   return (
                     <button
                       key={v.id}
                       onClick={() => handleVariantChange(v)}
-                      disabled={!hasStock}
                       className={`px-4 py-2 rounded-lg text-sm border transition ${
                         isSelected
                           ? 'border-emerald-600 bg-emerald-50 text-emerald-700'
                           : hasStock
                           ? 'border-gray-300 text-gray-700 hover:border-gray-400'
-                          : 'border-gray-200 text-gray-300 cursor-not-allowed'
+                          : 'border-amber-300 text-amber-700 hover:border-amber-400'
                       }`}
                     >
                       {label}
+                      {!hasStock && <span className="ml-1 text-xs">（缺货可预订）</span>}
                     </button>
                   );
                 })}
@@ -172,13 +206,53 @@ export default function ProductDetailPage() {
             </div>
           )}
 
+          {selectedVariant?.pricing_mode === 'weight' && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">预估重量</h3>
+              <div className="flex flex-wrap gap-2">
+                {(selectedVariant.weight_options?.length
+                  ? selectedVariant.weight_options
+                  : [{ label: '约1斤', grams: 500 }]
+                ).map((opt) => (
+                  <button
+                    key={opt.label}
+                    onClick={() => setWeightOption(opt)}
+                    className={`px-4 py-2 rounded-lg text-sm border transition ${
+                      weightOption?.grams === opt.grams
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-700'
+                        : 'border-gray-300 text-gray-700 hover:border-gray-400'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-sm text-emerald-700">
+                预估金额 ¥
+                {(
+                  ((weightOption?.grams ?? 500) *
+                    (selectedVariant.unit_price_cents ?? selectedBatch?.retail_price_cents ?? 0)) /
+                  500 /
+                  100
+                ).toFixed(2)}
+                × {quantity}
+              </p>
+            </div>
+          )}
+
           {/* Stock Info */}
-          {selectedBatch && (
+          {selectedBatch && selectedBatch.available_qty > 0 && (
             <div className="text-sm text-gray-500">
               <span>可售库存: </span>
               <span className={`font-medium ${selectedBatch.available_qty > 5 ? 'text-green-600' : 'text-amber-600'}`}>
-                {selectedBatch.available_qty} 件
+                {selectedBatch.available_qty}
+                {selectedVariant?.pricing_mode === 'weight' ? ' 克' : ' 件'}
               </span>
+            </div>
+          )}
+          {isPreorder && (
+            <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              缺货可预订：暂时无货，可先下单预订，到货后按订单顺序配货。
             </div>
           )}
 
@@ -195,13 +269,13 @@ export default function ProductDetailPage() {
               <input
                 type="number"
                 min={1}
-                max={selectedBatch?.available_qty || 1}
+                max={maxQty}
                 value={quantity}
-                onChange={(e) => setQuantity(Math.max(1, Math.min(Number(e.target.value), selectedBatch?.available_qty || 1)))}
+                onChange={(e) => setQuantity(Math.max(1, Math.min(Number(e.target.value) || 1, maxQty)))}
                 className="w-16 text-center border-x border-gray-300 py-1 text-sm"
               />
               <button
-                onClick={() => setQuantity(Math.min(quantity + 1, selectedBatch?.available_qty || 1))}
+                onClick={() => setQuantity(Math.min(quantity + 1, maxQty))}
                 className="px-3 py-1 text-gray-600 hover:text-gray-900"
               >
                 +
@@ -212,10 +286,12 @@ export default function ProductDetailPage() {
           {/* Add to Cart */}
           <button
             onClick={handleAddToCart}
-            disabled={adding || !selectedBatch || (selectedBatch.available_qty <= 0)}
-            className="w-full py-3 bg-emerald-700 text-white rounded-xl hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed transition font-medium text-lg"
+            disabled={adding || !selectedVariant}
+            className={`w-full py-3 text-white rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition font-medium text-lg ${
+              isPreorder ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-700 hover:bg-emerald-800'
+            }`}
           >
-            {adding ? '加入中...' : '加入购物车'}
+            {adding ? '加入中...' : isPreorder ? '预订' : '加入购物车'}
           </button>
         </div>
       </div>

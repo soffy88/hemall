@@ -1,14 +1,25 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { api } from '@/lib/api-client';
+import { isVisibleCategorySlug } from '@/lib/storefront-assortment';
 import { getSelectedRegion, setSelectedRegion } from '@/lib/region-store';
 import { getCustomerAuth, initCustomerAuth, subscribeCustomerAuth } from '@/lib/customer-auth-store';
 import { ToastProvider, useToast } from '@/components/Toast';
+import ChatwootWidget from '@/components/chatwoot-widget';
 import type { Region } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+
+// 分类图标映射 (与 /shop 胶囊条一致, 后端只存 name/slug)。
+const CATEGORY_ICONS: Record<string, string> = {
+  vegetables: '🥬', fruits: '🍎', 'meat-eggs': '🥩', 'grain-oil': '🌾',
+  'dairy-bakery': '🥛', frozen: '🧊', snacks: '🍫', drinks: '🥤', daily: '🧻',
+  seafood: '🦐', electronics: '📱',
+};
+
+type StoreCategory = { id: string; name: string; slug: string; count: number };
 
 function ShopChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -16,6 +27,13 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
   const [regions, setRegions] = useState<Region[]>([]);
   const [regionCode, setRegionCode] = useState('');
   const [customerEmail, setCustomerEmail] = useState<string | null>(null);
+  const [isMerchant, setIsMerchant] = useState(false);
+  const [categories, setCategories] = useState<StoreCategory[]>([]);
+  const [complianceNotice, setComplianceNotice] = useState('');
+  const [officialOpen, setOfficialOpen] = useState(true);
+  const [catOpen, setCatOpen] = useState(false);
+  const [activeCatId, setActiveCatId] = useState('all');
+  const catRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -31,6 +49,52 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
     };
   }, [pathname]);
 
+  // 商家账号才显示「商家预订」入口：登录态确定后拉一次 me 看 is_merchant。
+  useEffect(() => {
+    if (!customerEmail) {
+      setIsMerchant(false);
+      return;
+    }
+    let alive = true;
+    api.customerMe()
+      .then((me) => { if (alive) setIsMerchant(!!me.is_merchant); })
+      .catch(() => { if (alive) setIsMerchant(false); });
+    return () => { alive = false; };
+  }, [customerEmail]);
+
+  // 菜单栏分类下拉: 分类列表 + 当前选中分类 (读 ?cat=)。
+  useEffect(() => {
+    api.storeCategories()
+      .then((cats) => setCategories(cats.filter((c) => isVisibleCategorySlug(c.slug))))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setActiveCatId(new URLSearchParams(window.location.search).get('cat') || 'all');
+    setCatOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!catOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (catRef.current && !catRef.current.contains(e.target as Node)) setCatOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCatOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [catOpen]);
+
+  function goCategory(id: string) {
+    setCatOpen(false);
+    window.location.assign(id === 'all' ? '/shop' : `/shop?cat=${encodeURIComponent(id)}`);
+  }
+
   useEffect(() => {
     api.storeRegions().then((data) => {
       setRegions(data);
@@ -41,6 +105,15 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
         setSelectedRegion({ code: initial.code, currency: initial.currency });
       }
     }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api.storeComplianceStatus()
+      .then((status) => {
+        setOfficialOpen(status.official_open);
+        setComplianceNotice(status.site_notice);
+      })
+      .catch(() => {});
   }, []);
 
   async function handleRegionChange(code: string) {
@@ -67,45 +140,88 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
       {/* Header */}
       <header className="bg-white/90 backdrop-blur border-b border-gray-200/80 sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-          <Link href="/shop" className="flex items-center gap-2 shrink-0">
-            <span className="w-8 h-8 rounded-lg bg-emerald-700 text-white flex items-center justify-center text-base">
-              🛍
-            </span>
-            <span className="text-lg font-bold tracking-tight text-gray-900">Hemall</span>
-          </Link>
-          <nav className="flex items-center gap-5 text-sm">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex items-center gap-2 shrink-0">
+            <Link href="/shop" className="flex items-center gap-2 shrink-0">
+              <span className="w-8 h-8 rounded-lg bg-emerald-700 text-white flex items-center justify-center text-base">
+                🛍
+              </span>
+              <span className="text-lg font-bold tracking-tight text-gray-900">Hemall</span>
+            </Link>
+            {/* 商品分类下拉: 菜单栏最左侧, 点击弹出分类列表 */}
+            <div className="relative" ref={catRef}>
+              <button
+                type="button"
+                onClick={() => setCatOpen((v) => !v)}
+                aria-expanded={catOpen}
+                className="flex items-center gap-1 rounded-full bg-emerald-700 px-3 py-1.5 text-sm font-bold text-white hover:bg-emerald-800 transition"
+              >
+                🗂 商品分类 {catOpen ? '▴' : '▾'}
+              </button>
+              {catOpen && (
+                <div className="absolute left-0 top-full z-50 mt-2 w-60 rounded-xl border border-gray-200 bg-white py-2 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => goCategory('all')}
+                    className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-emerald-50 ${activeCatId === 'all' ? 'font-bold text-emerald-700 bg-emerald-50' : 'text-gray-700'}`}
+                  >
+                    <span className="w-5 text-center">🛒</span>
+                    <span className="flex-1">全部商品</span>
+                    <span className="text-xs text-gray-400">{categories.reduce((n, c) => n + c.count, 0)}</span>
+                  </button>
+                  {categories.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => goCategory(c.id)}
+                      className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-emerald-50 ${activeCatId === c.id ? 'font-bold text-emerald-700 bg-emerald-50' : 'text-gray-700'}`}
+                    >
+                      <span className="w-5 text-center">{CATEGORY_ICONS[c.slug] ?? '🛒'}</span>
+                      <span className="flex-1">{c.name}</span>
+                      <span className="text-xs text-gray-400">{c.count}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <nav className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 text-sm">
             {regions.length > 0 && (
               <select
                 value={regionCode}
                 onChange={(e) => handleRegionChange(e.target.value)}
-                className="text-xs border border-gray-200 rounded-full px-3 py-1.5 text-gray-600 bg-gray-50 hover:bg-gray-100 transition"
+                className="max-w-[112px] shrink-0 whitespace-nowrap text-xs border border-gray-200 rounded-full px-2 py-1.5 text-gray-600 bg-gray-50 hover:bg-gray-100 transition"
               >
                 {regions.map((r) => (
                   <option key={r.code} value={r.code}>{r.name} ({r.currency})</option>
                 ))}
               </select>
             )}
-            <Link href="/shop" className="text-gray-600 hover:text-emerald-700 transition font-medium">
+            <Link href="/shop" className="hidden sm:inline whitespace-nowrap text-gray-600 hover:text-emerald-700 transition font-medium">
               全部商品
             </Link>
-            <Link href="/shop/cart" className="text-gray-600 hover:text-emerald-700 transition font-medium">
+            <Link href="/shop/cart" className="whitespace-nowrap shrink-0 text-gray-600 hover:text-emerald-700 transition font-medium">
               🛒 购物车
             </Link>
-            <Link href="/shop/lookup" className="text-gray-500 hover:text-emerald-700 transition">
+            {isMerchant && (
+              <Link href="/shop/merchant" className="whitespace-nowrap text-gray-600 hover:text-emerald-700 transition font-medium">
+                🏪 商家预订
+              </Link>
+            )}
+            <Link href="/shop/lookup" className="whitespace-nowrap text-gray-500 hover:text-emerald-700 transition">
               查单
             </Link>
             {customerEmail ? (
               <Link
                 href="/shop/account"
-                className="text-gray-700 hover:text-emerald-700 transition font-medium bg-emerald-50 rounded-full px-3 py-1.5"
+                className="max-w-[140px] truncate whitespace-nowrap text-gray-700 hover:text-emerald-700 transition font-medium bg-emerald-50 rounded-full px-3 py-1.5"
               >
                 👤 {customerEmail}
               </Link>
             ) : (
               <Link
                 href="/shop/login"
-                className="text-white bg-emerald-700 hover:bg-emerald-800 transition font-medium rounded-full px-4 py-1.5"
+                className="whitespace-nowrap shrink-0 text-white bg-emerald-700 hover:bg-emerald-800 transition font-medium rounded-full px-4 py-1.5"
               >
                 登录/注册
               </Link>
@@ -116,12 +232,34 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
 
       {/* Content */}
       <main className="max-w-6xl mx-auto px-4 py-8">
+        {!officialOpen && complianceNotice && (
+          <div className="mb-6 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+            <strong className="mr-2">未正式营业</strong>
+            {complianceNotice}
+          </div>
+        )}
         {children}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-gray-200 mt-16 py-8 text-center text-xs text-gray-400">
-        Hemall Commerce · Powered by 3O
+      <footer className="border-t border-gray-200 mt-16 py-8 text-xs text-gray-500">
+        <div className="mx-auto mb-4 flex max-w-4xl flex-wrap justify-center gap-x-5 gap-y-2 px-4">
+          <Link href="/about" className="hover:text-emerald-700">关于我们</Link>
+          <Link href="/contact" className="hover:text-emerald-700">联系我们</Link>
+          <Link href="/privacy" className="hover:text-emerald-700">隐私政策</Link>
+          <Link href="/terms" className="hover:text-emerald-700">用户协议</Link>
+          <Link href="/returns" className="hover:text-emerald-700">退换货规则</Link>
+          <Link href="/food-license" className="hover:text-emerald-700">食品经营资质</Link>
+          <Link href="/business-license" className="hover:text-emerald-700">营业执照</Link>
+          <Link href="/invoice" className="hover:text-emerald-700">发票说明</Link>
+          <Link href="/complaint" className="hover:text-emerald-700">投诉与售后</Link>
+        </div>
+        <div className="mb-2 text-center">
+          <Link href="/shop/alcohol" className="text-gray-500 hover:text-emerald-700">
+            酒类专区（年龄确认）
+          </Link>
+        </div>
+        <div className="text-center text-gray-400">Hemall Commerce · Powered by 3O</div>
       </footer>
     </div>
   );
@@ -131,6 +269,7 @@ export default function ShopLayout({ children }: { children: React.ReactNode }) 
   return (
     <ToastProvider>
       <ShopChrome>{children}</ShopChrome>
+      <ChatwootWidget />
     </ToastProvider>
   );
 }

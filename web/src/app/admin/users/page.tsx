@@ -129,6 +129,7 @@ export default function UsersPage() {
                 <th className="px-4 py-3 font-medium text-gray-600">邮箱</th>
                 <th className="px-4 py-3 font-medium text-gray-600">姓名</th>
                 <th className="px-4 py-3 font-medium text-gray-600">状态</th>
+                <th className="px-4 py-3 font-medium text-gray-600">两步验证</th>
                 <th className="px-4 py-3 font-medium text-gray-600">创建时间</th>
                 <th className="px-4 py-3 font-medium text-gray-600">操作</th>
               </tr>
@@ -140,6 +141,11 @@ export default function UsersPage() {
                   <td className="px-4 py-3">{u.name || '—'}</td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded text-xs ${u.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{u.status}</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-0.5 rounded text-xs ${u.totp_enabled ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>
+                      {u.totp_enabled ? '已绑定' : '未绑定'}
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-500">{new Date(u.created_at).toLocaleString('zh-CN')}</td>
                   <td className="px-4 py-3">
@@ -154,7 +160,7 @@ export default function UsersPage() {
                 </tr>
               ))}
               {users.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">暂无账号</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">暂无账号</td></tr>
               )}
             </tbody>
           </table>

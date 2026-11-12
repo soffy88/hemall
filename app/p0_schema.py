@@ -8,6 +8,16 @@ from __future__ import annotations
 
 from obase.persistence.pool import PgPool
 
+from .cangzhu import CANGZHU_DDL
+from .counter_closeout import COUNTER_CLOSEOUT_DDL
+from .counter_settlement_order import COUNTER_SETTLEMENT_ORDER_DDL
+from .counter_vision import COUNTER_VISION_DDL
+from .ext.spider_hygiene import OCR_GATE_DDL
+from .membership import MEMBERSHIP_DDL
+from .night_pintuan import NIGHT_PINTUAN_DDL
+from .weigh import WEIGH_DDL
+from .weigh_price import WEIGH_PRICE_DDL
+
 P0_SCHEMA_DDL = """
 -- ── payment authority / outbox / refund idempotency ────────────────
 CREATE TABLE IF NOT EXISTS payment_intent (
@@ -158,6 +168,121 @@ CREATE TRIGGER trg_hemall_wire_order_line_item
     BEFORE INSERT OR UPDATE OF batch_id, location_id, reservation_id
     ON order_line_item
     FOR EACH ROW EXECUTE FUNCTION hemall_wire_order_line_item();
+
+-- ── customer preorder / merchant reserve ──────────────────────────
+-- 客户预订: 无货也可下单。购物车行/订单行允许只绑变体不绑批次
+-- (batch_id 可空 + variant_id), 订单行用 preorder_qty 记未配货部分;
+-- 商家客户带 is_merchant 标记, 常购清单存 customer_reserve_list。
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE cart_line_item
+    ADD COLUMN IF NOT EXISTS variant_id UUID;
+-- 本行对批次 reserved_qty 计数器的占位量（仅 omodul 加购/改量产生，
+-- 预订回退行恒 0）；结算时按此转正，避免双重占位。
+ALTER TABLE cart_line_item
+    ADD COLUMN IF NOT EXISTS reserved_qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cart_line_item
+    ALTER COLUMN batch_id DROP NOT NULL;
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS variant_id UUID;
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS preorder_qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE order_line_item
+    ALTER COLUMN batch_id DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS customer_reserve_list (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id UUID NOT NULL,
+    variant_id UUID NOT NULL,
+    default_qty INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_reserve_list_active
+    ON customer_reserve_list(customer_id, variant_id)
+    WHERE deleted_at IS NULL;
+
+-- ── 微信小程序登录 ──────────────────────────────────────────────
+-- 客户的微信身份绑定（小程序 jscode2session 换得）。openid 部分唯一：
+-- 一个微信号只能绑一个客户；unionid 仅记录、不强制唯一；未绑定行
+-- 为 NULL 不占唯一位。
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS wechat_openid TEXT;
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS wechat_unionid TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_wechat_openid
+    ON customer(wechat_openid)
+    WHERE wechat_openid IS NOT NULL;
+
+-- ── 蜘蛛填价 EXT 批次防重 (纵深防御) ────────────────────────────
+-- 蜘蛛填价段已用 advisory lock 按变体串行化 + 锁内复查 (见
+-- app/ext/oservi.py _price_one_locked), 本索引作跨进程兜底: 同一
+-- 变体只允许一个 active 的 EXT- 蜘蛛批次。正常库存批次 (人工/其它
+-- 来源) 同变体多批次是合法的, 故只约束 batch_no LIKE 'EXT-%' 的行。
+-- 注意: 建索引前必须先清理存量重复 EXT 批次, 否则 CREATE UNIQUE
+-- INDEX 会失败 (生产存量已于 2026-10-23 清理)。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_batch_spider_ext_variant
+    ON inventory_batch (variant_id)
+    WHERE batch_no LIKE 'EXT-%' AND status = 'active' AND deleted_at IS NULL;
+
+-- ── 食品经营信息与测试商品门禁 ──────────────────────────────────────
+ALTER TABLE product
+    ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS origin_region TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS storage_condition TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS shelf_life_days INTEGER;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS quality_certificate_url TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS is_test_batch BOOLEAN NOT NULL DEFAULT FALSE;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'inventory_batch_shelf_life_days_check'
+    ) THEN
+        ALTER TABLE inventory_batch
+            ADD CONSTRAINT inventory_batch_shelf_life_days_check
+            CHECK (shelf_life_days IS NULL OR shelf_life_days > 0);
+    END IF;
+END $$;
+
+-- ── 后台可编辑的履约/通知配置 ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS runtime_setting (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_by TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── 隐私/协议同意与商家通知投递记录 ────────────────────────────────
+CREATE TABLE IF NOT EXISTS consent_record (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_type TEXT NOT NULL CHECK (subject_type IN ('customer', 'order')),
+    subject_id TEXT NOT NULL,
+    document_slug TEXT NOT NULL,
+    document_version TEXT NOT NULL,
+    consented_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (subject_type, subject_id, document_slug, document_version)
+);
+CREATE INDEX IF NOT EXISTS idx_consent_record_subject
+    ON consent_record(subject_type, subject_id, consented_at DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_notification_delivery (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_merchant_notification_delivery_status
+    ON merchant_notification_delivery(status, created_at DESC);
 """
 
 
@@ -166,3 +291,25 @@ async def ensure_p0_schema(pool: PgPool) -> None:
 
     async with pool.acquire() as conn:
         await conn.execute(P0_SCHEMA_DDL)
+        # 仓主试点：推荐码/券账本/点货/邀请礼 DDL（幂等，见 app/cangzhu.py）。
+        await conn.execute(CANGZHU_DDL)
+        # 会员补齐（缺口 4）：等级/积分/储值 DDL（幂等，见 app/membership.py）。
+        await conn.execute(MEMBERSHIP_DDL)
+        # 缺口 6（夜市+拼单）：清货标记 + 拼单表（幂等，见 app/night_pintuan.py）。
+        await conn.execute(NIGHT_PINTUAN_DDL)
+        # OCR 品牌门: inventory_batch.inspection_note 留痕列 (幂等, 见 spider_hygiene.py)。
+        await conn.execute(OCR_GATE_DDL)
+        # 柜台称重试点：hardware_event 账本列 + counter_ticket 单据头。
+        await conn.execute(WEIGH_DDL)
+        # 线上称重定价：计价方式/预估与实称重量/多退少补结算/每日进销存。
+        await conn.execute(WEIGH_PRICE_DDL)
+        # 门店运营：进销存日记、订单配送方式/称重确认状态（幂等，见 store_ops）。
+        from .store_ops import OPS_DDL
+
+        await conn.execute(OPS_DDL)
+        # 柜台收尾件：现金结算记录 + 交接班账本（幂等，见 app/counter_closeout.py）。
+        await conn.execute(COUNTER_CLOSEOUT_DDL)
+        # 柜台视觉识别接线：帧存档 + 识别评估账本（幂等，见 app/counter_vision.py）。
+        await conn.execute(COUNTER_VISION_DDL)
+        # counter-settlement-order: 柜台结算建单（渠道列 + 单据↔订单链 + 行项重量列）。
+        await conn.execute(COUNTER_SETTLEMENT_ORDER_DDL)

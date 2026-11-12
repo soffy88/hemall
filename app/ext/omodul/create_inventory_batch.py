@@ -11,12 +11,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateInventoryBatchConfig(BaseConfig):
@@ -37,6 +37,43 @@ class CreateInventoryBatchInput(BaseModel):
     retail_price: int
     expiration_time: str | None = None
     supplier_id: str | None = None
+    origin_region: str | None = None
+    storage_condition: str | None = None
+    shelf_life_days: int | None = Field(None, gt=0)
+    quality_certificate_url: str | None = None
+    is_test_batch: bool = False
+
+
+_NON_FOOD_CATEGORY_SLUGS = frozenset({"daily", "electronics"})
+
+
+def _parse_expiration(value: str | None) -> datetime | None:
+    """解析入库效期；无时区输入按 UTC 处理，避免服务器本地时区漂移。"""
+    if not value or not value.strip():
+        return None
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+async def _is_food_variant(pool: Any, variant_id: str) -> bool:
+    """未知/空分类按食品处理（安全默认）；仅明确的日用/数码豁免。"""
+    async with pool.acquire() as conn:
+        category_slug = await conn.fetchval(
+            """
+            SELECT pc.slug
+            FROM product_variant pv
+            JOIN product p ON p.id = pv.product_id
+            LEFT JOIN product_category pc
+              ON pc.id = p.category_id AND pc.deleted_at IS NULL
+            WHERE pv.id = $1 AND pv.deleted_at IS NULL AND p.deleted_at IS NULL
+            """,
+            variant_id,
+        )
+    if category_slug is None:
+        return True
+    return str(category_slug).strip().lower() not in _NON_FOOD_CATEGORY_SLUGS
 
 
 async def create_inventory_batch(
@@ -87,6 +124,23 @@ async def create_inventory_batch(
                 "pool is required — create_inventory_batch always touches persisted stock"
             )
 
+        expiration_dt = _parse_expiration(input_data.expiration_time)
+        is_food = await _is_food_variant(pool, input_data.variant_id)
+        if is_food:
+            missing = []
+            if expiration_dt is None:
+                missing.append("expiration_time")
+            elif expiration_dt <= datetime.now(UTC):
+                raise ValueError("expiration_time must be in the future")
+            if not (input_data.origin_region or "").strip():
+                missing.append("origin_region")
+            if not (input_data.storage_condition or "").strip():
+                missing.append("storage_condition")
+            if input_data.shelf_life_days is None or input_data.shelf_life_days <= 0:
+                missing.append("shelf_life_days")
+            if missing:
+                raise ValueError("food batch missing required fields: " + ", ".join(missing))
+
         # batch_no 是共享 schema 的必填唯一列，旧版 Input 从没有
         # 过这个字段——用 fingerprint 当 batch_no，保证同一批次重复提交能被
         # 共享层的幂等语义识别 (跟共享 omodul 自己的 compute_fingerprint_for
@@ -112,19 +166,23 @@ async def create_inventory_batch(
         batch_id = shared_result["batch_id"]
         trail.record(event="shared_batch_created", batch_id=batch_id)
 
-        # asyncpg 对 TIMESTAMPTZ 参数要求真 datetime 对象，不接受 ISO 字符串——
-        # Input.expiration_time 保持 str (HTTP JSON 契约里时间戳本来就是字符
-        # 串)，这里解析成 datetime 再传给驱动。
-        expiration_dt = (
-            datetime.fromisoformat(input_data.expiration_time)
-            if input_data.expiration_time
-            else None
-        )
         async with pool.acquire() as conn:
             await conn.execute(
-                'UPDATE "inventory_batch" SET expiration_time = $1, supplier_id = $2 WHERE id = $3',
+                """
+                UPDATE "inventory_batch"
+                SET expiration_time = $1, supplier_id = $2,
+                    origin_region = $3, storage_condition = $4,
+                    shelf_life_days = $5, quality_certificate_url = $6,
+                    is_test_batch = $7
+                WHERE id = $8
+                """,
                 expiration_dt,
                 input_data.supplier_id,
+                (input_data.origin_region or "").strip() or None,
+                (input_data.storage_condition or "").strip() or None,
+                input_data.shelf_life_days,
+                (input_data.quality_certificate_url or "").strip() or None,
+                input_data.is_test_batch,
                 batch_id,
             )
         trail.record(
@@ -132,6 +190,11 @@ async def create_inventory_batch(
             batch_id=batch_id,
             expiration_time=input_data.expiration_time,
             supplier_id=input_data.supplier_id,
+            origin_region=input_data.origin_region,
+            storage_condition=input_data.storage_condition,
+            shelf_life_days=input_data.shelf_life_days,
+            quality_certificate_url=input_data.quality_certificate_url,
+            is_test_batch=input_data.is_test_batch,
         )
 
         trail_path = trail.write(output_dir)

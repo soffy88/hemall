@@ -20,7 +20,14 @@ import logging
 from typing import Any
 
 from ..config import Settings
-from .models import DeviceToken, PushBatchResponse, PushNotification, PushPlatform, PushResult
+from .models import (
+    DeviceToken,
+    PushBatchResponse,
+    PushNotification,
+    PushPlatform,
+    PushPriority,
+    PushResult,
+)
 from .providers import APNSClient, FCMClient
 
 logger = logging.getLogger("hemall.push.manager")
@@ -157,11 +164,11 @@ class PushManager:
 
     def get_user_tokens(self, user_id: str, platform: PushPlatform | None = None) -> list[str]:
         """获取用户的所有有效设备 token。"""
-        tokens = self._device_tokens.get(user_id, [])
+        stored = self._device_tokens.get(user_id, [])
         if platform:
-            tokens = [t.device_token for t in tokens if t.platform == platform]
+            tokens = [t.device_token for t in stored if t.platform == platform]
         else:
-            tokens = [t.device_token for t in tokens]
+            tokens = [t.device_token for t in stored]
         return tokens
 
     # ── 推送发送 ────────────────────────────────────────────────
@@ -188,13 +195,22 @@ class PushManager:
             logger.warning("No tokens found for user %s", user_id)
             return PushBatchResponse(total=0, success=0, failed=0)
 
+        # PushNotification.priority 是 PushPriority 枚举；调用方传的是字符串。
+        # 直接透传会导致下游 priority_map.get(notification.priority) 永远 miss、
+        # 优先级被静默忽略——此处做显式转换，无效值回退为 NORMAL（与原先行为一致）。
+        try:
+            priority_enum = PushPriority(priority)
+        except ValueError:
+            logger.warning("未知推送优先级 %r，回退为 normal", priority)
+            priority_enum = PushPriority.NORMAL
+
         notifications = [
             PushNotification(
                 title=title,
                 body=body,
                 target_device_ids=[token],
                 data=data,
-                priority=priority,
+                priority=priority_enum,
             )
             for token in tokens[:3]  # 限制最多 3 台设备
         ]

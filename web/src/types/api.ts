@@ -85,6 +85,13 @@ export interface InventoryBatch {
   currency: string;
   location_id: string;
   status: string;
+  inspection_status?: 'pending' | 'passed' | 'failed' | string;
+  expiration_time?: string | null;
+  origin_region?: string | null;
+  storage_condition?: string | null;
+  shelf_life_days?: number | null;
+  quality_certificate_url?: string | null;
+  is_test_batch?: boolean;
   shelf_image_url?: string | null;
   media_assets?: string[] | null;
 }
@@ -102,6 +109,13 @@ export interface ProductVariant {
   sku_code: string;
   option_values: Record<string, string>;
   reference_price_cents: number | null;
+  pricing_mode?: 'piece' | 'weight';
+  /** 按重量计价时的元/斤价格（分/斤），按件商品为 null */
+  unit_price_cents?: number | null;
+  price_basis_grams?: number;
+  weight_options?: { label: string; grams: number }[];
+  /** 无库存时仍可用于展示的图片（后端取任一有效批次首图） */
+  image_url?: string | null;
   status: string;
   batches: InventoryBatch[];
   total_stock: number;
@@ -120,6 +134,8 @@ export interface Product {
   description: string | null;
   category_id: string | null;
   status: string;
+  is_test?: boolean;
+  needs_data?: boolean;
   created_at: string;
   updated_at: string | null;
   options: ProductOption[];
@@ -134,8 +150,18 @@ export interface OrderLineItem {
   id: string;
   batch_id: string | null;
   quantity: number;
+  /** 该行中待配货的预订量（>0 表示部分/全部为缺货预订，到货后配货） */
+  preorder_qty: number;
   unit_price_cents: number;
   line_total_cents: number;
+  pricing_mode?: 'piece' | 'weight';
+  unit_price_cents_per_jin?: number | null;
+  estimated_weight_grams?: number | null;
+  actual_weight_grams?: number | null;
+  estimated_amount_cents?: number | null;
+  actual_amount_cents?: number | null;
+  weight_diff_cents?: number | null;
+  settlement_status?: string;
   product_title: string | null;
   variant_sku: string | null;
   option_values: Record<string, string> | null;
@@ -207,6 +233,12 @@ export interface Order {
   updated_at: string | null;
   promised_delivery_at: string | null;
   sla_compensated_at: string | null;
+  /** delivery / pickup / standard / express / next_day（历史订单可能为空） */
+  shipping_method_code?: string | null;
+  /** 称重差额状态：pending_customer / charge_pending / settled / ... */
+  weigh_status?: string | null;
+  /** 自提顾客点“我已到店”的时间 */
+  pickup_arrived_at?: string | null;
   line_items: OrderLineItem[];
 }
 
@@ -222,20 +254,33 @@ export interface Customer {
   created_at: string;
   order_count: number;
   total_spent_cents: number;
+  /** 商家账号标记：商家可用专属「商家预订」常购清单快速下单 */
+  is_merchant?: boolean;
+  /** 测试/停用账号：从报表与顾客统计排除 */
+  excluded_from_reports?: boolean;
 }
 
 // ── Cart types ──────────────────────────────────────────────────
 
 export interface CartLineItem {
   id: string;
-  batch_id: string;
+  batch_id: string | null;
+  variant_id: string | null;
   quantity: number;
   unit_price_cents: number;
   line_total_cents: number;
+  pricing_mode?: 'piece' | 'weight';
+  unit_price_cents_per_jin?: number | null;
+  price_basis_grams?: number;
+  estimated_weight_grams?: number | null;
+  weight_step_grams?: number | null;
+  weight_option_label?: string | null;
   product_title: string | null;
   variant_sku: string | null;
   option_values: Record<string, string> | null;
   available_qty: number;
+  /** 本行中超出可用库存的预订量预览（= max(0, quantity - available_qty)） */
+  preorder_qty_preview: number;
 }
 
 export interface CartDiscount {
@@ -263,12 +308,190 @@ export interface Cart {
   tax_cents: number;
   shipping_cents: number;
   grand_total_cents: number;
+  shipping_method_code?: string | null;
   billing_address: Address | null;
   shipping_address: Address | null;
   created_at: string;
   line_items: CartLineItem[];
   discounts: CartDiscount[];
   gift_cards: CartGiftCard[];
+  /** 会员 9 折（合资格金额的 10%），仅预览 */
+  member_discount_cents?: number;
+  /** none / member / night / voucher / applied */
+  preview_discount_kind?: string;
+  preview_discount_cents?: number;
+  preview_grand_total_cents?: number;
+}
+
+// ── 客户预订 ────────────────────────────────────────────────────
+
+/** 我的预订一行：某订单行中尚未配齐的预订量 */
+export interface CustomerPreorder {
+  order_id: string;
+  order_status: string;
+  line_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  quantity: number;
+  preorder_qty: number;
+  created_at: string;
+}
+
+/** 商家常购清单一行 */
+export interface MerchantReserveItem {
+  id: string;
+  variant_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  price_cents: number;
+  available_qty: number;
+  default_qty: number;
+}
+
+export interface MerchantReserveOrderLine {
+  variant_id: string;
+  title: string;
+  quantity: number;
+  reserved_qty: number;
+  preorder_qty: number;
+}
+
+export interface MerchantReserveOrderResult {
+  order_id: string;
+  grand_total_cents: number;
+  lines: MerchantReserveOrderLine[];
+}
+
+/** 柜台称重：照片格一行（后端已筛掉无价/无计价基准的商品） */
+export interface CounterProduct {
+  batch_id: string;
+  variant_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  unit_price_cents: number;
+  price_basis_grams: number;
+  available_qty: number;
+}
+
+/** 称重行项（hardware_event event_type='weigh'，title 仅详情接口带） */
+export interface CounterWeighLine {
+  message_id: string;
+  event_type: string;
+  status: string;
+  settlement_status: string | null;
+  weight_grams: number | null;
+  unit_price_cents: number | null;
+  price_basis_grams: number | null;
+  amount_cents: number | null;
+  source: string | null;
+  batch_id: string | null;
+  ticket_id: string | null;
+  tote_id: string | null;
+  node_id: string | null;
+  title?: string | null;
+  created_at: string | null;
+}
+
+/** 柜台单据头（行项在详情接口里，合计为已计价行项金额之和） */
+export interface CounterTicket {
+  ticket_id: string;
+  status: string;
+  tote_id: string | null;
+  customer_id: string | null;
+  created_by: string;
+  note: string;
+  total_cents: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * 柜台收尾件：现金结算记录（一单一结算，金额单位分）
+ */
+export interface CounterSettlement {
+  settlement_id: string;
+  ticket_id: string;
+  cashier_id: string;
+  method: string;
+  amount_due_cents: number;
+  amount_received_cents: number;
+  change_cents: number;
+  settled_at: string | null;
+}
+
+/** 柜台收尾件：交接班（差异正负如实记，不抹平） */
+export interface CounterShift {
+  shift_id: string;
+  cashier_id: string;
+  status: string;
+  opening_float_cents: number;
+  opened_at: string | null;
+  closed_at: string | null;
+  counted_cash_cents: number | null;
+  expected_cash_cents: number | null;
+  variance_cents: number | null;
+  handover_to: string | null;
+  note: string;
+}
+
+/** 柜台收尾件：日结报表（毛利口径见 margin_basis） */
+export interface CounterDailyReport {
+  date: string;
+  settled_tickets: number;
+  total_sales_cents: number;
+  by_method: { method: string; tickets: number; total_cents: number }[];
+  margin_revenue_cents: number;
+  margin_cost_cents: number;
+  margin_cents: number;
+  margin_costed_lines: number;
+  margin_excluded_lines: number;
+  margin_basis: string;
+  shifts_closed: number;
+  cash_variance_total_cents: number;
+}
+
+/** 库存批次（后台质检列表一行） */
+export interface InventoryBatch {
+  id: string;
+  batch_no: string;
+  product_id: string;
+  product_title: string;
+  variant_id: string;
+  sku_code: string | null;
+  location_id: string;
+  location_name: string | null;
+  stock_qty: number;
+  reserved_qty: number;
+  available_qty: number;
+  status: string;
+  inspection_status?: 'pending' | 'passed' | 'failed' | string;
+  category_slug?: string | null;
+  product_is_test?: boolean;
+  expiration_time?: string | null;
+  origin_region?: string | null;
+  storage_condition?: string | null;
+  shelf_life_days?: number | null;
+  quality_certificate_url?: string | null;
+  is_test_batch?: boolean;
+  needs_data?: boolean;
+  created_at: string;
+}
+
+/** 后台待配货预订一行 */
+export interface AdminPreorder {
+  line_id: string;
+  order_id: string;
+  customer_id: string;
+  customer_name: string;
+  product_id: string;
+  title: string;
+  quantity: number;
+  preorder_qty: number;
+  available_qty_now: number;
+  created_at: string;
 }
 
 // ── Dashboard KPI ───────────────────────────────────────────────
@@ -595,6 +818,86 @@ export interface CustomerGroup {
   member_count: number;
 }
 
+
+export interface MyReferral {
+  customer_id: string;
+  referral_code: string;
+  invited_by: string | null;
+  voucher_balance_cents: number;
+  referred_count: number;
+}
+
+export interface VoucherLedgerEntry {
+  id: string;
+  kind: string;
+  status: string;
+  order_id: string | null;
+  ref_id: string | null;
+  amount_cents: number;
+  base_cents: number | null;
+  balance_after_cents: number;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface VoucherList {
+  voucher_balance_cents: number;
+  entries: VoucherLedgerEntry[];
+}
+
+export interface PurchaseRequest {
+  id: string;
+  customer_id: string;
+  product_name: string;
+  brand: string;
+  spec_packaging: string;
+  price_min_cents: number | null;
+  price_max_cents: number | null;
+  expected_qty: number;
+  willing_preorder: boolean;
+  status: string;
+  admin_note: string;
+  failure_reason: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InviteGiftClaim {
+  id: string;
+  order_id: string;
+  gift_kind: string;
+  status: string;
+  cost_cap_cents: number;
+  created_at: string;
+}
+
+export interface InviteGiftStatus {
+  claim: InviteGiftClaim | null;
+  eligible: boolean;
+  order_id?: string | null;
+  net_paid_cents?: number;
+  threshold_cents?: number;
+  reason?: string | null;
+}
+
+export interface IngestResult {
+  status: string;
+  title: string;
+  product_id: string;
+  variant_id: string;
+  batch_id: string;
+  retail_price_cents: number;
+  cost_price_cents: number;
+  stock_qty: number;
+  media_url: string;
+  media_type: string;
+  matched: boolean;
+  match_via?: string | null;
+  batch_action?: string;
+  updated_fields?: string[];
+  hint?: string;
+}
+
 export interface CustomerAddress extends Address {
   id: string;
   customer_id: string;
@@ -609,6 +912,7 @@ export interface AppUser {
   email: string;
   name: string | null;
   status: string;
+  totp_enabled: boolean;
   created_at: string;
   updated_at: string | null;
 }
@@ -734,4 +1038,107 @@ export interface RefundCreateBody {
   reason?: RefundReason;
   reason_detail?: string | null;
   requested_amount: number;
+}
+
+// ── 线上称重结算 ─────────────────────────────────────────────────
+
+export interface MerchantWeighSettlement {
+  id: string;
+  order_id: string;
+  order_line_item_id: string;
+  weight_grams: number;
+  unit_price_cents_per_jin: number;
+  price_basis_grams: number;
+  estimated_weight_grams: number | null;
+  estimated_amount_cents: number;
+  actual_amount_cents: number;
+  diff_cents: number;
+  tolerance_percent: number;
+  within_tolerance: boolean;
+  status: string;
+  refund_id: string | null;
+  note: string;
+  created_at: string | null;
+  settled_at: string | null;
+}
+
+export interface MerchantWeighRow {
+  order_line_item_id: string;
+  order_id: string;
+  order_status: string;
+  customer_id: string | null;
+  product_title: string | null;
+  sku_code: string | null;
+  quantity: number;
+  unit_price_cents_per_jin: number | null;
+  price_basis_grams: number;
+  estimated_weight_grams: number | null;
+  estimated_amount_cents: number;
+  actual_weight_grams: number | null;
+  actual_amount_cents: number | null;
+  weight_diff_cents: number | null;
+  line_status: string;
+  settlement_id: string | null;
+  settlement_status: string | null;
+  settlement_note: string | null;
+}
+
+// ── 店员拍照（core3）────────────────────────────────────────────────
+
+export interface ProductPhoto {
+  id: string;
+  product_id: string;
+  variant_id: string | null;
+  url: string;
+  thumb_url: string | null;
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  original_filename: string;
+  source: string;
+  is_primary: boolean;
+  position: number;
+  status: 'active' | 'replaced' | 'deleted' | string;
+  previous_images: Record<string, string | null>;
+  created_by: string;
+  created_at: string;
+  updated_at: string | null;
+  deleted_at: string | null;
+}
+
+export interface PhotoReferenceItem {
+  id: string;
+  title: string;
+  slug: string;
+  category_name: string | null;
+  batch_id: string | null;
+  batch_no: string | null;
+  shelf_image_url: string | null;
+  image_url: string | null;
+  is_reference: boolean;
+}
+
+export interface PhotoReferenceResponse {
+  scope: 'all' | 'store';
+  items: PhotoReferenceItem[];
+  progress: {
+    replaced: number;
+    total: number;
+    reference_remaining: number;
+    store_replaced: number;
+    store_total: number;
+  };
+}
+
+export interface PhotoDraftResult {
+  product_id: string;
+  variant_id: string;
+  batch_id: string;
+  title: string;
+  status: string;
+  category: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  photo: ProductPhoto;
 }

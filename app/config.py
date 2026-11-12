@@ -30,6 +30,7 @@ _SECRET_FILE_MAP: dict[str, str] = {
     "HEMALL_WECHAT_PAY_API_V3_KEY_FILE": "wechat_pay_api_v3_key",
     "HEMALL_WECHAT_PAY_PRIVATE_KEY_FILE": "wechat_pay_private_key_path",
     "HEMALL_WECHAT_PAY_PLATFORM_CERT_FILE": "wechat_pay_platform_cert_path",
+    "HEMALL_WECHAT_MP_APP_SECRET_FILE": "wechat_mp_app_secret",
     "HEMALL_STRIPE_SECRET_KEY_FILE": "stripe_secret_key",
     "HEMALL_STRIPE_WEBHOOK_SECRET_FILE": "stripe_webhook_secret",
     "HEMALL_ALIPAY_PRIVATE_KEY_FILE": "alipay_private_key_path",
@@ -116,6 +117,9 @@ class Settings(BaseSettings):
     # 公开 (无鉴权) 创建 app_user (管理员) 的引导开关。默认关闭——create_user 需
     # 管理员 JWT。仅在首个管理员引导期临时置 true, 建成后立即关回 false。
     allow_public_admin_registration: bool = False
+    # 管理员强制 TOTP：production 默认开启。关闭只允许在完成风险评估后临时
+    # 使用；登录页已有 /login/totp-setup 绑定引导。
+    require_admin_totp: bool = True
 
     # ── 数据库 (obase.persistence.PgPool) ──────────────────────────────
     pg_dsn: str = "postgresql://postgres:test@localhost:5432/hemall"
@@ -156,6 +160,23 @@ class Settings(BaseSettings):
     # provider: manual | wechat | stripe。沙盒/生产无缝切换 = 改这一个变量 +
     # 对应密钥，bootstrap 按此注册；真实密钥缺失时诚实回退 manual。
     payment_gateway_provider: str = "manual"
+    # P0-09 + 2026-11-08 用户决定：酒类保留线上上架（线上范围比门店更广）。
+    # 上架不等于放宽保护：年龄确认、未成年人禁售与理性饮酒提示始终生效，
+    # 前台仍需通过 /store/alcohol/verify-age 取得签名年龄凭证。
+    alcohol_sales_enabled: bool = True
+    alcohol_min_age: int = 18
+    alcohol_age_cookie_days: int = 30
+    # 2026-11-08 用户决定：商品资料（保质期/产地/储存条件）缺失不再自动隐藏。
+    # 默认 "提示不拦截"：后台标「待补资料」并出清单，前台照常展示；只有
+    # 质检未通过批次和明确的测试商品会被隐藏。需要恢复严格门禁时把此开关
+    # 设为 true（或 HEMALL_CATALOG_STRICT_DATA_GATE=true）。
+    catalog_strict_data_gate: bool = False
+    # 称重定价：前台统一按“斤”展示，内部以克与分计算；履约称重后的
+    # 多退少补容差（占预估金额百分比）。超出容差须顾客确认。
+    weigh_price_unit: str = "jin"  # jin=500g（展示单位）
+    weigh_diff_tolerance_percent: int = 10
+    # 预授权未接入时，多出预估价的部分只记「待补收」，不伪造二次扣款。
+    weigh_extra_charge_enabled: bool = False
     # 微信支付 v3 (值可为文件路径或内联 PEM 内容；用 str 而非 Path——
     # pathlib 会把 base64 里的 // 折叠成 / 破坏密钥)
     wechat_pay_appid: str = ""
@@ -165,6 +186,14 @@ class Settings(BaseSettings):
     wechat_pay_api_v3_key: str = ""
     wechat_pay_platform_cert_path: str = ""
     wechat_pay_notify_url: str = ""
+    # 微信小程序登录 (jscode2session)：appid/secret 在小程序后台获取，
+    # secret 支持 HEMALL_WECHAT_MP_APP_SECRET_FILE。两者留空 = 微信登录
+    # 未配置，/store/customers/wechat-login 与 wechat-bind 返回 503。
+    # 注意：小程序 JSAPI 支付时，上面的 wechat_pay_appid 应填**小程序的
+    # appid**（下单 appid 必须与 payer.openid 所属应用一致），通常与
+    # wechat_mp_app_id 相同，不要与公众号/移动应用 appid 混用。
+    wechat_mp_app_id: str = ""
+    wechat_mp_app_secret: str = ""
     # 证书轮换引擎的持久化落盘路径 (JSON: serial_no/expire_time/pem)。
     # 轮换引擎每 12h 拉 /v3/certificates 热更新内存网关 + 写此文件，重启后
     # bootstrap 读文件继续用，消灭"到期运维手动更新"。
@@ -187,6 +216,11 @@ class Settings(BaseSettings):
     # 根日志级别 (INFO/WARNING/DEBUG)。引擎 tick 状态日志 (爬虫/证书轮换)
     # 依赖它不被 WARNING 默认值吞掉。
     log_level: str = "INFO"
+
+    # /metrics 防护：优先使用 token；未配置 token 时只允许回环/内网来源。
+    # 公网入口仍需 Caddy 的 private_ranges 规则作为第一道边界。
+    metrics_access_token: str = ""
+    metrics_allow_private: bool = True
 
     @property
     def effective_pg_dsn(self) -> str:
@@ -244,8 +278,186 @@ class Settings(BaseSettings):
     default_search_provider: str = "log"
     default_notification_provider: str = "log"
     default_tax_provider: str = "flat"
+    # 上线 P0：未配置真实收款通道时仍允许人工确认的线下收款模式。
+    manual_payment_enabled: bool = True
+    # 超时关单：pending/draft 超过该分钟数仍未支付则取消并释放 reservation。
+    order_payment_timeout_minutes: int = 30
+    order_timeout_engine_interval_seconds: int = 60
+
+    # 运费只由服务端计算；客户端提交的 price_cents 仅保留兼容，不参与计价。
+    shipping_standard_cents: int = 1500
+    shipping_express_cents: int = 3000
+    shipping_next_day_cents: int = 4500
+    shipping_free_threshold_cents: int = 0
+    shipping_delivery_windows: str = "10:00-12:00,14:00-18:00"
+    shipping_service_area: str = ""
+
+    # ── 上线合规与顾客通知 ─────────────────────────────────────────────
+    # 法定页面文本必须由经营主体/法务提供。默认只展示占位并标记“未正式营业”；
+    # 只有 manifest 中全部必需文档已发布，且此开关显式打开，才显示正式营业。
+    compliance_manifest_path: str = "content/compliance/manifest.json"
+    site_official_open: bool = False
+    # 短信验证码默认关闭。启用时必须由用户提供真实 provider/webhook 与模板；
+    # disabled 模式不发送、不生成、不记录验证码。
+    sms_provider: str = "disabled"
+    sms_webhook_url: str = ""
+    sms_webhook_token: str = ""
+
+    # ── 商家新订单通知 ─────────────────────────────────────────────────
+    # disabled/log 只用于本地开发，后台会明确显示“未配置真实通知”。
+    merchant_notification_provider: str = "disabled"
+    merchant_notification_webhook_url: str = ""
+    merchant_notification_webhook_token: str = ""
+    merchant_smtp_host: str = ""
+    merchant_smtp_port: int = 587
+    merchant_smtp_username: str = ""
+    merchant_smtp_password: str = ""
+    merchant_smtp_from: str = ""
+    merchant_smtp_to: str = ""
+    merchant_smtp_starttls: bool = True
+
     # FlatRateTaxProvider 必填 rate_percent (无凭据 fallback 的固定税率)
     flat_tax_rate_percent: float = 10.0
+    # VLM 视觉 provider (拍照识货/以图比对/判损): "manual" (内存桩) /
+    # "ollama" (宿主机本地 MiniCPM-V 真模型)。规范名须与 bootstrap 注册名一致。
+    default_vlm_provider: str = "ollama"
+    vlm_ollama_base_url: str = "http://172.17.0.1:11434"
+    vlm_ollama_model: str = "minicpm-v47-1b-local:latest"
+    vlm_ollama_timeout_s: float = 120.0
+
+    # ── ext 引擎开关 (oservi_lifecycle 装配) ──────────────────────────
+    # False 时对应引擎以空任务占位装配: ExtOservi 字段与 start/stop/health
+    # 接口不变, 只是不跑业务 tick。默认 True = 历史行为。
+    engine_spider_enabled: bool = True
+    engine_market_maker_enabled: bool = True
+
+    # ── 蜘蛛自动上架 + VLM 截图填价 (spider_listing 引擎) ────────────
+    # 价格不再走源站价格接口 (实测三源都无价): 蜘蛛抓商品本体 (标题/图片/
+    # 介绍) 先以 draft 上架, 再由截图服务截详情页、本地 VLM 看图读价填价。
+    engine_spider_listing_enabled: bool = True
+    # 搜索词表按分类分组 (对标小象超市目录): 每词每轮最多
+    # spider_listing_max_per_keyword 个新品, 幂等 slug 保证不重复上架,
+    # 词表越全目录越齐; 新增词直接往对应分类组里加即可。
+    spider_listing_keywords: list[str] = [
+        # 蔬菜豆品
+        "西红柿",
+        "土豆",
+        "黄瓜",
+        "白菜",
+        "菠菜",
+        "茄子",
+        "菌菇",
+        "豆腐",
+        "玉米",
+        "南瓜",
+        "胡萝卜",
+        "西兰花",
+        "生菜",
+        # 时令水果
+        "草莓",
+        "苹果",
+        "香蕉",
+        "橙子",
+        "西瓜",
+        "葡萄",
+        "芒果",
+        "梨",
+        "桃子",
+        "柠檬",
+        "猕猴桃",
+        "蓝莓",
+        "柚子",
+        "菠萝",
+        # 肉禽蛋
+        "鸡蛋",
+        "牛肉",
+        "猪肉",
+        "鸡肉",
+        "羊肉",
+        "排骨",
+        "牛排",
+        "鸭蛋",
+        "五花肉",
+        "鸡翅",
+        "里脊肉",
+        # 海鲜水产
+        "基围虾",
+        "螃蟹",
+        "带鱼",
+        "鲈鱼",
+        "三文鱼",
+        "扇贝",
+        "生蚝",
+        "鱿鱼",
+        # 乳品烘焙
+        "牛奶",
+        "酸奶",
+        "奶酪",
+        "面包",
+        "蛋糕",
+        "黄油",
+        "豆浆",
+        "吐司",
+        "鲜奶",
+        # 粮油调味
+        "大米",
+        "食用油",
+        "面粉",
+        "酱油",
+        "陈醋",
+        "挂面",
+        "燕麦",
+        "橄榄油",
+        "五常大米",
+        "花生油",
+        # 冷冻速食
+        "水饺",
+        "汤圆",
+        "冰淇淋",
+        "馄饨",
+        "手抓饼",
+        "披萨",
+        "速冻包子",
+        # 休闲零食
+        "薯片",
+        "饼干",
+        "巧克力",
+        "坚果",
+        "方便面",
+        "瓜子",
+        "果冻",
+        "海苔",
+        "辣条",
+        "肉脯",
+        # 酒水饮料
+        "可乐",
+        "果汁",
+        "矿泉水",
+        "啤酒",
+        "咖啡",
+        "苏打水",
+        "凉茶",
+        "椰子水",
+        # 日用百货
+        "纸巾",
+        "洗衣液",
+        "牙膏",
+        "洗发水",
+        "洗洁精",
+        "湿巾",
+        "垃圾袋",
+        "沐浴露",
+    ]
+    spider_listing_max_per_keyword: int = 5
+    # 填价段单轮尝试上限 (成功/失败都算一次): 历史积压多为源页无价的
+    # 结构性失败, 无上限时积压一多单轮 tick 能跑数小时; 超出的留到下一轮。
+    spider_listing_max_price_per_tick: int = 100
+    spider_listing_default_stock: int = 30
+    # 截图服务 (宿主机侧另建): GET {vlm_screenshot_url}?url=<urlencoded> 带
+    # X-Shot-Token 头 → 200 image/png。空串 = 未配置, 填价段整段跳过
+    # (上架段照常跑; 补好服务地址后下一轮 tick 自动补价)。
+    vlm_screenshot_url: str = ""
+    vlm_screenshot_token: str = ""
 
     # ── 限流 (公开端点令牌桶) ──────────────────────────────────────────
     # 前置可信反代到公网之间的层数; >0 时按 X-Forwarded-For 倒数第 N 跳取真实
@@ -419,7 +631,7 @@ class Settings(BaseSettings):
             except (ValueError, TypeError, UnicodeEncodeError):
                 problems.append("ENCRYPTION_KEY 必须是有效的 Fernet base64 key")
 
-        # 遗留支付 SDK (app/payments/{wechat,alipay}.py) 的生产分支是 8 处
+        # 遗留支付 SDK (app/payments/{wechat,alipay}.py) 的生产分支是 10 处
         # NotImplementedError: 回调不验签 → 支付状态永不回写 / 任何人都能把订单
         # 标 paid; 退款必 500。真正的收款走 HEMALL_PAYMENT_GATEWAY_PROVIDER
         # + app/ext/payment_gateways.py。生产下配了这两个遗留开关 = 选到了

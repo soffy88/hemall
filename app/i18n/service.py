@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -71,6 +72,27 @@ class TranslationManager:
 
     def __init__(self) -> None:
         self._translations: dict[str, dict[str, str]] = {}
+        # 启动即加载随代码打包的默认语言包 (locales/<lang>.json)；
+        # 加载失败只记 warning，不阻塞应用启动。
+        try:
+            self.load_default_locales()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load default locales: %s", exc)
+
+    def load_default_locales(self, locales_dir: str | Path | None = None) -> int:
+        """从 locales 目录加载全部语言的默认翻译。
+
+        文件名为 ``<lang>.json``（如 ``zh-CN.json``），内容是扁平的
+        ``{key: text}`` 字典。返回成功加载的语言数。
+        """
+        base = Path(locales_dir) if locales_dir is not None else Path(__file__).parent / "locales"
+        loaded = 0
+        for lang in Language:
+            path = base / f"{lang.value}.json"
+            if path.exists():
+                self.load_from_json(lang.value, str(path))
+                loaded += 1
+        return loaded
 
     def load_from_json(self, lang: str, filepath: str) -> None:
         """从 JSON 文件加载翻译。"""

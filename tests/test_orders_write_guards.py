@@ -930,3 +930,44 @@ async def test_get_order_stats_groups_by_status():
 
     assert stats["pending"] == 5
     assert stats["confirmed"] == 10
+
+
+# ── JSONB address decoding ───────────────────────────────────────
+
+
+async def test_get_order_decodes_jsonb_address_text():
+    """asyncpg 未注册 jsonb codec 时读回的是 JSON 文本；get_order 必须解析成 dict，
+    否则确认订单（P0-04 支付成功 -> confirmed）会 500。"""
+    conn = FakeConn()
+    conn.on(
+        r"SELECT\s+id,\s*cart_id,\s*customer_id,\s*region_code,\s*currency,\s*status,\s*version",
+        Recording(
+            {
+                "id": "o-1",
+                "cart_id": None,
+                "customer_id": None,
+                "region_code": "cn-east",
+                "currency": "CNY",
+                "status": "pending",
+                "version": 0,
+                "subtotal_cents": 0,
+                "discount_cents": 0,
+                "tax_cents": 0,
+                "shipping_cents": 0,
+                "grand_total_cents": 0,
+                "payment_provider_name": "manual",
+                "payment_intent_id": None,
+                "billing_address": '{"city": "上海"}',
+                "shipping_address": "{}",
+                "created_at": None,
+                "updated_at": None,
+            }
+        ),
+    )
+    svc = _svc(conn)
+
+    order = await svc.get_order("o-1")
+
+    assert order is not None
+    assert order.billing_address == {"city": "上海"}
+    assert order.shipping_address == {}

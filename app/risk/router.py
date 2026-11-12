@@ -95,7 +95,7 @@ async def get_review_queue(
 ) -> dict[str, Any]:
     """获取待人工审核的交易队列。"""
     # 模拟数据 - 实际应从数据库查询
-    reviews = []
+    reviews: list[dict[str, Any]] = []
     return {"data": reviews}
 
 

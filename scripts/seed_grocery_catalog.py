@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """seed_grocery_catalog.py — 对标小象超市的生鲜日用目录播种脚本 (Phase 9.5)
 
-直接连生产库 (asyncpg) 插入 9 大分类 + 45 个真实生鲜日用商品：
+直接连生产库 (asyncpg) 插入 11 大分类 + 45 个真实生鲜日用商品：
   - 真实商品名 + 规格 (对标小象超市/盒马/永辉常见在售 SKU)
   - 真实市场价 (reference_price_cents 划线价 / retail_price_cents 售价)
   - 真实中文商品说明
@@ -37,12 +37,14 @@ CATEGORIES = [
     ("蔬菜豆品", "vegetables", "🥬"),
     ("时令水果", "fruits", "🍎"),
     ("肉禽蛋", "meat-eggs", "🥩"),
+    ("海鲜水产", "seafood", "🦐"),
     ("粮油调味", "grain-oil", "🌾"),
     ("乳品烘焙", "dairy-bakery", "🥛"),
     ("冷冻速食", "frozen", "🧊"),
     ("休闲零食", "snacks", "🍫"),
     ("酒水饮料", "drinks", "🥤"),
     ("日用百货", "daily", "🧻"),
+    ("数码家电", "electronics", "🎧"),
 ]
 
 # ── 商品目录: (分类slug, 商品名, 规格, 划线价分, 售价分, 库存, 图片关键词, 说明) ──

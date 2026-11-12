@@ -29,6 +29,13 @@ CSRF_EXEMPT_PATHS = {
     "/health/live",
     "/health/ready",
     "/metrics",
+    # 服务端到服务端回调没有浏览器 Cookie/Origin；必须由各自的 HMAC 或
+    # 支付厂商签名验签负责，不能要求 CSRF 双重提交 token。
+    "/payments/alipay/notify",
+    "/payments/wechat/notify",
+    "/payments/stripe/webhook",
+    "/aftersales/refunds/gateway/notify",
+    "/growth/douyin_callback",
 }
 
 CSRF_EXEMPT_PREFIXES = (

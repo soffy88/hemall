@@ -59,8 +59,12 @@ jobs:
         run: uv run mypy app --ignore-missing-imports --no-strict-optional
 
       - name: Actionlint workflow validation
+        # NOTE: 不用 ghcr.io 的 docker 镜像（2026-10-19 起 runner 拉取被拒: denied），
+        # 改直下官方 release 二进制，效果等价。
         run: |
-          docker run --rm -v "${{ github.workspace }}:/ws" ghcr.io/rhysd/actionlint:1.7 -color /ws/.github/workflows/ci.yml
+          curl -sSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint ${{ github.workspace }}/.github/workflows/ci.yml
 
   # ── 单元/集成测试 (含 PG + Redis 服务容器) ────────────────────────────
   test:
@@ -112,6 +116,9 @@ jobs:
           TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_REDIS_URL: redis://localhost:6379/0
+          # conftest.test_redis_url 缺省指向 127.0.0.1:56379（本地专用测试 redis）；
+          # CI 只有一个 redis service，用 db1 与 HEMALL_REDIS_URL(db0) 隔离
+          TEST_REDIS_URL: redis://localhost:6379/1
         run: |
           uv run pytest tests/ \
             --cov=app \
@@ -125,6 +132,9 @@ jobs:
           TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_test
           HEMALL_REDIS_URL: redis://localhost:6379/0
+          # conftest.test_redis_url 缺省指向 127.0.0.1:56379（本地专用测试 redis）；
+          # CI 只有一个 redis service，用 db1 与 HEMALL_REDIS_URL(db0) 隔离
+          TEST_REDIS_URL: redis://localhost:6379/1
         run: |
           uv run pytest tests/ \
             --cov=app.orders.service \
@@ -143,6 +153,10 @@ jobs:
             -q
 
       - name: Upload coverage to Codecov
+        # 覆盖率上传是锦上添花：无 CODECOV_TOKEN 时 codecov 拒绝 tokenless
+        # 上传（连 create-commit 都过不了），continue-on-error 保证不拖红 CI。
+        # 如需覆盖率追踪，请在仓库 Settings > Secrets 中添加 CODECOV_TOKEN。
+        continue-on-error: true
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
@@ -206,6 +220,10 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Build Next.js app
+        # next.config.ts fail-closed（audit F-05）：构建期必须给后端地址；
+        # CI 只做构建校验，用占位地址即可（浏览器侧走同源 /api）。
+        env:
+          NEXT_PUBLIC_API_URL: https://example.invalid
         run: npm run build
 
   # ── 集成测试 (默认分支 push 才跑) ─────────────────────────────────────
@@ -249,5 +267,8 @@ jobs:
           TEST_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_integration
           HEMALL_PG_DSN: postgresql://postgres:test@localhost:5432/hemall_integration
           HEMALL_REDIS_URL: redis://localhost:6379/0
+          # conftest.test_redis_url 缺省指向 127.0.0.1:56379（本地专用测试 redis）；
+          # CI 只有一个 redis service，用 db1 与 HEMALL_REDIS_URL(db0) 隔离
+          TEST_REDIS_URL: redis://localhost:6379/1
         run: |
           uv run pytest tests/ -v

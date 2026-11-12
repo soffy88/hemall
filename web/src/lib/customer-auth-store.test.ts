@@ -120,7 +120,14 @@ describe('customer-auth-store 会话状态', () => {
     const store = await freshStore();
 
     await expect(
-      store.customerRegister({ email: 'new@hemal.local', password: 'pw', phone: '13800000000' }),
+      store.customerRegister({
+        email: 'new@hemal.local',
+        password: 'pw',
+        phone: '13800000000',
+        privacy_consent: true,
+        terms_consent: true,
+        consent_version: '2026-11-08-placeholder',
+      }),
     ).resolves.toEqual({ customerId: 'c-3', email: 'new@hemal.local' });
 
     const call = calls[calls.length - 1];
@@ -133,7 +140,13 @@ describe('customer-auth-store 会话状态', () => {
     document.cookie = 'hemall_csrf_token=tok; path=/';
     stubFetch(() => jsonResponse({ detail: '邮箱已被注册' }, 409));
     const store = await freshStore();
-    await expect(store.customerRegister({ email: 'a@b.c', password: 'pw' })).rejects.toThrow('邮箱已被注册');
+    await expect(store.customerRegister({
+      email: 'a@b.c',
+      password: 'pw',
+      privacy_consent: true,
+      terms_consent: true,
+      consent_version: '2026-11-08-placeholder',
+    })).rejects.toThrow('邮箱已被注册');
     expect(store.isCustomerAuthenticated()).toBe(false);
   });
 

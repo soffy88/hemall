@@ -10,6 +10,11 @@ export default function SettingsPage() {
   const [taxRates, setTaxRates] = useState<TaxRate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [fulfillment, setFulfillment] = useState<Awaited<ReturnType<typeof api.adminFulfillmentSettings>> | null>(null);
+  const [serviceArea, setServiceArea] = useState('');
+  const [deliveryWindows, setDeliveryWindows] = useState('');
+  const [methodPrices, setMethodPrices] = useState<Record<string, { name: string; price_cents: number; free_threshold_cents: number }>>({});
+  const [savingFulfillment, setSavingFulfillment] = useState(false);
 
   const [showRegionForm, setShowRegionForm] = useState(false);
   const [regionCode, setRegionCode] = useState('');
@@ -23,10 +28,14 @@ export default function SettingsPage() {
   const [taxRate, setTaxRate] = useState(0);
 
   function load() {
-    Promise.all([api.adminListRegions(), api.adminListTaxRates()])
-      .then(([r, t]) => {
+    Promise.all([api.adminListRegions(), api.adminListTaxRates(), api.adminFulfillmentSettings()])
+      .then(([r, t, f]) => {
         setRegions(r);
         setTaxRates(t);
+        setFulfillment(f);
+        setServiceArea(f.shipping.service_area);
+        setDeliveryWindows(f.shipping.delivery_windows.join(','));
+        setMethodPrices(f.shipping.methods);
       })
       .catch((e) => setError(errMessage(e)))
       .finally(() => setLoading(false));
@@ -113,11 +122,111 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleSaveFulfillment(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingFulfillment(true);
+    try {
+      await api.adminUpdateFulfillmentSettings({
+        service_area: serviceArea,
+        delivery_windows: deliveryWindows.split(',').map((s) => s.trim()).filter(Boolean),
+        methods: methodPrices,
+      });
+      setLoading(true);
+      load();
+    } catch (e) {
+      alert(errMessage(e));
+    } finally {
+      setSavingFulfillment(false);
+    }
+  }
+
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">区域与税率设置</h1>
       {error && <div className="mb-4 text-red-600">{error}</div>}
       {loading && <div className="text-gray-500 mb-4">加载中...</div>}
+
+      {fulfillment && !fulfillment.notification.real_delivery_enabled && (
+        <div className="mb-6 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800">
+          <div className="font-bold">⚠ 商家新订单通知未配置</div>
+          <div className="mt-1">{fulfillment.notification.message}</div>
+          <div className="mt-1 text-xs">请由运维配置企业微信机器人 / 邮件 / webhook；密钥不保存到数据库。</div>
+        </div>
+      )}
+
+      <form onSubmit={handleSaveFulfillment} className="mb-8 rounded-xl border border-gray-200 bg-white p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold">履约与配送规则</h2>
+            <p className="mt-1 text-xs text-gray-500">服务端按这里的规则计价，客户端不能提交运费价格。</p>
+          </div>
+          <span className={`rounded-full px-3 py-1 text-xs font-medium ${fulfillment?.notification.real_delivery_enabled ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+            通知：{fulfillment?.notification.configured ? '已配置' : '未配置'}
+          </span>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-gray-500">配送服务范围</span>
+            <input
+              value={serviceArea}
+              onChange={(e) => setServiceArea(e.target.value)}
+              placeholder="例：XX 小区及周边 3 公里（待运营确认）"
+              className="w-full rounded-lg border px-3 py-2"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-gray-500">配送时窗（逗号分隔）</span>
+            <input
+              value={deliveryWindows}
+              onChange={(e) => setDeliveryWindows(e.target.value)}
+              placeholder="10:00-12:00,14:00-18:00"
+              className="w-full rounded-lg border px-3 py-2"
+            />
+          </label>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          {Object.entries(methodPrices).map(([code, method]) => (
+            <div key={code} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+              <div className="mb-2 text-sm font-medium">{method.name} <span className="font-mono text-xs text-gray-400">{code}</span></div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-500">
+                  运费（分）
+                  <input
+                    type="number"
+                    min={0}
+                    value={method.price_cents}
+                    onChange={(e) => setMethodPrices((prev) => ({
+                      ...prev,
+                      [code]: { ...prev[code], price_cents: Number(e.target.value) },
+                    }))}
+                    className="mt-1 w-full rounded border px-2 py-1.5 text-sm"
+                  />
+                </label>
+                <label className="text-xs text-gray-500">
+                  免运门槛（分）
+                  <input
+                    type="number"
+                    min={0}
+                    value={method.free_threshold_cents}
+                    onChange={(e) => setMethodPrices((prev) => ({
+                      ...prev,
+                      [code]: { ...prev[code], free_threshold_cents: Number(e.target.value) },
+                    }))}
+                    className="mt-1 w-full rounded border px-2 py-1.5 text-sm"
+                  />
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+        <button
+          type="submit"
+          disabled={savingFulfillment}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+        >
+          {savingFulfillment ? '保存中...' : '保存履约规则'}
+        </button>
+      </form>
 
       {/* Regions */}
       <div className="flex items-center justify-between mb-3">

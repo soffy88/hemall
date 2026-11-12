@@ -14,6 +14,23 @@ from typing import Any
 from .ext.oskill import compute_batch_dynamic_rating
 
 
+def _product_search_sql(search: str, params: list[Any]) -> str:
+    """商品搜索：中文子串 + 别名；空格分词后要求每个词都命中。
+
+    命中范围：标题 / 描述 / search_aliases（如 上海青→青菜、大蒜→蒜头）。
+    """
+    tokens = [t for t in search.split() if t] or [search]
+    parts: list[str] = []
+    for token in tokens:
+        params.append(f"%{token}%")
+        n = len(params)
+        parts.append(
+            f"(p.title ILIKE ${n} OR p.description ILIKE ${n} "
+            f"OR EXISTS (SELECT 1 FROM unnest(p.search_aliases) a WHERE a ILIKE ${n}))"
+        )
+    return "(" + " AND ".join(parts) + ")"
+
+
 async def list_products(
     pool: Any,
     *,
@@ -31,18 +48,34 @@ async def list_products(
             params.append(status)
             where_clauses.append(f"p.status = ${len(params)}")
         if search:
-            params.append(f"%{search}%")
-            where_clauses.append(
-                f"(p.title ILIKE ${len(params)} OR p.description ILIKE ${len(params)})"
-            )
+            where_clauses.append(_product_search_sql(search, params))
 
         where = " AND ".join(where_clauses)
 
         rows = await conn.fetch(
             f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id, p.status,
+                   COALESCE(p.is_test, FALSE) AS is_test,
                    p.created_at, p.updated_at,
                    pc.name AS category_name, pc.slug AS category_slug,
+                   EXISTS (
+                       SELECT 1
+                       FROM product_variant pv_nd
+                       JOIN inventory_batch ib_nd ON ib_nd.variant_id = pv_nd.id
+                       WHERE pv_nd.product_id = p.id
+                         AND pv_nd.deleted_at IS NULL
+                         AND ib_nd.deleted_at IS NULL
+                         AND ib_nd.status = 'active'
+                         AND COALESCE(ib_nd.is_test_batch, FALSE) = FALSE
+                         AND (
+                             pc.slug IN ('daily', 'electronics')
+                             OR ib_nd.expiration_time IS NULL
+                             OR BTRIM(COALESCE(ib_nd.origin_region, '')) = ''
+                             OR BTRIM(COALESCE(ib_nd.storage_condition, '')) = ''
+                             OR ib_nd.shelf_life_days IS NULL
+                             OR ib_nd.shelf_life_days <= 0
+                         )
+                   ) AS needs_data,
                    COALESCE(options.options, '[]'::jsonb) AS options,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
                    COALESCE(variants.total_stock, 0) AS total_stock,
@@ -80,8 +113,28 @@ async def list_products(
                         'currency', ib.currency,
                         'location_id', ib.location_id,
                         'status', ib.status,
+                        'inspection_status', ib.inspection_status,
+                        'expiration_time', ib.expiration_time,
+                        'origin_region', ib.origin_region,
+                        'storage_condition', ib.storage_condition,
+                        'shelf_life_days', ib.shelf_life_days,
+                        'quality_certificate_url', ib.quality_certificate_url,
+                        'is_test_batch', ib.is_test_batch,
+                        'needs_data', CASE
+                            WHEN pc.slug IN ('daily', 'electronics') THEN FALSE
+                            WHEN ib.expiration_time IS NULL
+                              OR BTRIM(COALESCE(ib.origin_region, '')) = ''
+                              OR BTRIM(COALESCE(ib.storage_condition, '')) = ''
+                              OR ib.shelf_life_days IS NULL
+                              OR ib.shelf_life_days <= 0
+                            THEN TRUE
+                            ELSE FALSE
+                        END,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -147,7 +200,10 @@ async def get_product(pool: Any, product_id: str) -> dict | None:
                         'location_id', ib.location_id,
                         'status', ib.status,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
@@ -169,27 +225,81 @@ async def list_storefront_products(
     search: str | None = None,
     min_price: int | None = None,
     max_price: int | None = None,
+    include_alcohol: bool = False,
+    strict_data_gate: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
-    """商城公开商品列表：仅返回有库存的活跃商品。"""
+    """商城公开商品列表：返回在售商品（含 0 库存——无货也可预订）。
+
+    可见性口径（2026-11-08 用户决定）：
+    - 只自动隐藏明确的测试商品/测试批次，以及全部批次都质检未通过的商品；
+    - 缺保质期/产地/储存条件等资料 **不再隐藏**，后台用 needs_data 标记并出清单；
+    - ``strict_data_gate=True`` 时恢复旧的严格门禁（资料不全不可见），默认关闭。
+    """
+    # 可见批次：active、非测试、未过期、质检非 failed（严格模式要求 passed）。
+    batch_ok = (
+        "ib_ok.status = 'active' "
+        "AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE "
+        "AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW()) "
+        + (
+            "AND ib_ok.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib_ok.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> '' "
+            "AND ib_ok.shelf_life_days IS NOT NULL AND ib_ok.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib_ok.inspection_status <> 'failed' "
+        )
+    )
+    inner_batch_ok = (
+        "ib.status = 'active' "
+        "AND COALESCE(ib.is_test_batch, FALSE) = FALSE "
+        "AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW()) "
+        + (
+            "AND ib.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib.storage_condition, '')) <> '' "
+            "AND ib.shelf_life_days IS NOT NULL AND ib.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib.inspection_status <> 'failed' "
+        )
+    )
     async with pool.acquire() as conn:
         where_clauses = [
             "p.deleted_at IS NULL",
             "p.status = 'published'",
-            "COALESCE(variants.total_stock, 0) > 0",
+            "COALESCE(p.is_test, FALSE) = FALSE",
+            "p.title NOT ILIKE '%测试%'",
+            "p.title NOT ILIKE '%演示%'",
+            "p.title NOT ILIKE '%CMD-%'",
+            "p.slug NOT ILIKE '%CMD-%'",
+            # 至少一个可见批次；库存为 0 的批次仍允许商品以预订方式售卖。
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM product_variant pv_ok
+                JOIN inventory_batch ib_ok ON ib_ok.variant_id = pv_ok.id
+                WHERE pv_ok.product_id = p.id
+                  AND pv_ok.deleted_at IS NULL
+                  AND pv_ok.status = 'active'
+                  AND ib_ok.deleted_at IS NULL
+                  AND {batch_ok}
+            )
+            """,
         ]
+        if not include_alcohol:
+            where_clauses.append("COALESCE(pc.slug, '') <> 'drinks'")
         params: list[Any] = []
 
         if search:
-            params.append(f"%{search}%")
-            where_clauses.append(
-                f"(p.title ILIKE ${len(params)} OR p.description ILIKE ${len(params)})"
-            )
+            where_clauses.append(_product_search_sql(search, params))
 
         where = " AND ".join(where_clauses)
 
-        # 先查列表，再过滤价格
         rows = await conn.fetch(
             f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id,
@@ -205,6 +315,21 @@ async def list_storefront_products(
                     'sku_code', pv.sku_code,
                     'option_values', pv.option_values,
                     'reference_price_cents', pv.reference_price_cents,
+                    'pricing_mode', COALESCE(pv.pricing_mode, 'piece'),
+                    'unit_price_cents', pv.unit_price_cents,
+                    'price_basis_grams', COALESCE(pv.price_basis_grams, 500),
+                    'weight_options', COALESCE(pv.weight_options, '[]'::jsonb),
+                    'image_url', (
+                        SELECT COALESCE(NULLIF(ib_img.shelf_image_url, ''),
+                                        ib_img.media_assets->>0)
+                        FROM inventory_batch ib_img
+                        WHERE ib_img.variant_id = pv.id AND ib_img.deleted_at IS NULL
+                          AND ib_img.status = 'active'
+                          AND ib_img.inspection_status <> 'failed'
+                        ORDER BY GREATEST(ib_img.stock_qty - ib_img.reserved_qty, 0) DESC,
+                                 ib_img.created_at ASC
+                        LIMIT 1
+                    ),
                     'batches', COALESCE(batches.batch_list, '[]'::jsonb),
                     'total_stock', COALESCE(batches.total_stock, 0),
                     'min_price_cents', COALESCE(batches.min_price, pv.reference_price_cents)
@@ -220,15 +345,28 @@ async def list_storefront_products(
                         'retail_price_cents', ib.retail_price_cents,
                         'currency', ib.currency,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'expiration_time', ib.expiration_time,
+                        'origin_region', ib.origin_region,
+                        'storage_condition', ib.storage_condition,
+                        'shelf_life_days', ib.shelf_life_days,
+                        'quality_certificate_url', ib.quality_certificate_url,
+                        'inspection_status', ib.inspection_status,
+                        'inspection_note', ib.inspection_note,
+                        'created_at', ib.created_at,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
-                      AND ib.status = 'active' AND (ib.stock_qty - ib.reserved_qty) > 0
+                      AND {inner_batch_ok}
+                      AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
+                  AND pv.status = 'active'
             ) variants ON true
             WHERE {where}
             ORDER BY p.created_at DESC
@@ -253,11 +391,47 @@ async def list_storefront_products(
         return results
 
 
-async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
-    """商城商品详情：仅返回有库存的活跃商品。"""
+async def get_storefront_product(
+    pool: Any,
+    product_id: str,
+    *,
+    include_alcohol: bool = False,
+    strict_data_gate: bool = False,
+) -> dict | None:
+    """商城商品详情：可见性与列表同一口径（见 list_storefront_products）。"""
+    batch_ok = (
+        "ib_ok.status = 'active' "
+        "AND COALESCE(ib_ok.is_test_batch, FALSE) = FALSE "
+        "AND (ib_ok.expiration_time IS NULL OR ib_ok.expiration_time > NOW()) "
+        + (
+            "AND ib_ok.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib_ok.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib_ok.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib_ok.storage_condition, '')) <> '' "
+            "AND ib_ok.shelf_life_days IS NOT NULL AND ib_ok.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib_ok.inspection_status <> 'failed' "
+        )
+    )
+    inner_batch_ok = (
+        "ib.status = 'active' "
+        "AND COALESCE(ib.is_test_batch, FALSE) = FALSE "
+        "AND (ib.expiration_time IS NULL OR ib.expiration_time > NOW()) "
+        + (
+            "AND ib.inspection_status = 'passed' "
+            "AND (pc.slug IN ('daily', 'electronics') OR ("
+            "ib.expiration_time IS NOT NULL "
+            "AND BTRIM(COALESCE(ib.origin_region, '')) <> '' "
+            "AND BTRIM(COALESCE(ib.storage_condition, '')) <> '' "
+            "AND ib.shelf_life_days IS NOT NULL AND ib.shelf_life_days > 0)) "
+            if strict_data_gate
+            else "AND ib.inspection_status <> 'failed' "
+        )
+    )
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT p.id, p.title, p.slug, p.description, p.category_id,
                    pc.name AS category_name, pc.slug AS category_slug,
                    COALESCE(variants.variants, '[]'::jsonb) AS variants,
@@ -271,6 +445,21 @@ async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
                     'sku_code', pv.sku_code,
                     'option_values', pv.option_values,
                     'reference_price_cents', pv.reference_price_cents,
+                    'pricing_mode', COALESCE(pv.pricing_mode, 'piece'),
+                    'unit_price_cents', pv.unit_price_cents,
+                    'price_basis_grams', COALESCE(pv.price_basis_grams, 500),
+                    'weight_options', COALESCE(pv.weight_options, '[]'::jsonb),
+                    'image_url', (
+                        SELECT COALESCE(NULLIF(ib_img.shelf_image_url, ''),
+                                        ib_img.media_assets->>0)
+                        FROM inventory_batch ib_img
+                        WHERE ib_img.variant_id = pv.id AND ib_img.deleted_at IS NULL
+                          AND ib_img.status = 'active'
+                          AND ib_img.inspection_status <> 'failed'
+                        ORDER BY GREATEST(ib_img.stock_qty - ib_img.reserved_qty, 0) DESC,
+                                 ib_img.created_at ASC
+                        LIMIT 1
+                    ),
                     'batches', COALESCE(batches.batch_list, '[]'::jsonb),
                     'total_stock', COALESCE(batches.total_stock, 0),
                     'min_price_cents', COALESCE(batches.min_price, pv.reference_price_cents)
@@ -286,26 +475,53 @@ async def get_storefront_product(pool: Any, product_id: str) -> dict | None:
                         'retail_price_cents', ib.retail_price_cents,
                         'currency', ib.currency,
                         'shelf_image_url', ib.shelf_image_url,
-                        'media_assets', ib.media_assets
+                        'media_assets', ib.media_assets,
+                        'expiration_time', ib.expiration_time,
+                        'origin_region', ib.origin_region,
+                        'storage_condition', ib.storage_condition,
+                        'shelf_life_days', ib.shelf_life_days,
+                        'quality_certificate_url', ib.quality_certificate_url,
+                        'inspection_status', ib.inspection_status,
+                        'inspection_note', ib.inspection_note,
+                        'created_at', ib.created_at,
+                        'list_price_cents', ib.list_price_cents,
+                        'discount_label', ib.discount_label,
+                        'discount_updated_at', ib.discount_updated_at
                     )) AS batch_list,
                     SUM(ib.stock_qty - ib.reserved_qty)::int AS total_stock,
                     MIN(ib.retail_price_cents)::int AS min_price
                     FROM inventory_batch ib
                     WHERE ib.variant_id = pv.id AND ib.deleted_at IS NULL
-                      AND ib.status = 'active' AND (ib.stock_qty - ib.reserved_qty) > 0
+                      AND {inner_batch_ok}
+                      AND (ib.stock_qty - ib.reserved_qty) > 0
                 ) batches ON true
                 WHERE pv.product_id = p.id AND pv.deleted_at IS NULL
+                  AND pv.status = 'active'
             ) variants ON true
             WHERE p.id = $1 AND p.deleted_at IS NULL AND p.status = 'published'
+              AND COALESCE(p.is_test, FALSE) = FALSE
+              AND p.title NOT ILIKE '%测试%'
+              AND p.title NOT ILIKE '%演示%'
+              AND p.title NOT ILIKE '%CMD-%'
+              AND p.slug NOT ILIKE '%CMD-%'
+              AND EXISTS (
+                  SELECT 1
+                  FROM product_variant pv_ok
+                  JOIN inventory_batch ib_ok ON ib_ok.variant_id = pv_ok.id
+                  WHERE pv_ok.product_id = p.id
+                    AND pv_ok.deleted_at IS NULL
+                    AND pv_ok.status = 'active'
+                    AND ib_ok.deleted_at IS NULL
+                    AND {batch_ok}
+              )
+              AND ($2 OR COALESCE(pc.slug, '') <> 'drinks')
             """,
             product_id,
+            include_alcohol,
         )
         if row is None:
             return None
-        result = _row_to_dict(row)
-        if result.get("total_stock", 0) <= 0:
-            return None
-        return result
+        return _row_to_dict(row)
 
 
 async def list_orders(
@@ -332,6 +548,8 @@ async def list_orders(
                    o.status, o.subtotal_cents, o.discount_cents, o.tax_cents,
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.billing_address, o.shipping_address,
+                   o.shipping_method_code, o.weigh_status,
+                   o.pickup_arrived_at,
                    o.created_at, o.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
             FROM customer_order o
@@ -341,6 +559,14 @@ async def list_orders(
                     'quantity', oli.quantity,
                     'unit_price_cents', oli.unit_price_cents,
                     'line_total_cents', oli.line_total_cents,
+                    'pricing_mode', COALESCE(oli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', oli.unit_price_cents_per_jin,
+                    'estimated_weight_grams', oli.estimated_weight_grams,
+                    'actual_weight_grams', oli.actual_weight_grams,
+                    'estimated_amount_cents', oli.estimated_amount_cents,
+                    'actual_amount_cents', oli.actual_amount_cents,
+                    'weight_diff_cents', oli.weight_diff_cents,
+                    'settlement_status', COALESCE(oli.settlement_status, 'not_required'),
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values
@@ -373,6 +599,7 @@ async def get_order(pool: Any, order_id: str) -> dict | None:
                    o.payment_provider_name, o.payment_intent_id,
                    o.payment_verified_at, p.status AS payment_status,
                    o.billing_address, o.shipping_address,
+                   o.shipping_method_code, o.weigh_status,
                    o.created_at, o.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
             FROM customer_order o
@@ -383,6 +610,14 @@ async def get_order(pool: Any, order_id: str) -> dict | None:
                     'quantity', oli.quantity,
                     'unit_price_cents', oli.unit_price_cents,
                     'line_total_cents', oli.line_total_cents,
+                    'pricing_mode', COALESCE(oli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', oli.unit_price_cents_per_jin,
+                    'estimated_weight_grams', oli.estimated_weight_grams,
+                    'actual_weight_grams', oli.actual_weight_grams,
+                    'estimated_amount_cents', oli.estimated_amount_cents,
+                    'actual_amount_cents', oli.actual_amount_cents,
+                    'weight_diff_cents', oli.weight_diff_cents,
+                    'settlement_status', COALESCE(oli.settlement_status, 'not_required'),
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values
@@ -438,7 +673,9 @@ async def list_customers(
         rows = await conn.fetch(
             """
             SELECT c.id, c.email, c.phone, c.name, c.customer_group_id,
-                   c.status, c.created_at, c.updated_at,
+                   c.is_merchant, c.status, c.created_at, c.updated_at,
+                   c.excluded_from_reports,
+                   (c.wechat_openid IS NOT NULL) AS wechat_bound,
                    COUNT(co.id)::int AS order_count,
                    COALESCE(SUM(co.grand_total_cents), 0)::int AS total_spent_cents
             FROM customer c
@@ -460,7 +697,8 @@ async def get_customer(pool: Any, customer_id: str) -> dict | None:
         row = await conn.fetchrow(
             """
             SELECT c.id, c.email, c.phone, c.name, c.customer_group_id,
-                   c.status, c.created_at, c.updated_at,
+                   c.is_merchant, c.status, c.created_at, c.updated_at,
+                   (c.wechat_openid IS NOT NULL) AS wechat_bound,
                    COUNT(co.id)::int AS order_count,
                    COALESCE(SUM(co.grand_total_cents), 0)::int AS total_spent_cents
             FROM customer c
@@ -482,6 +720,8 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                    o.status, o.subtotal_cents, o.discount_cents, o.tax_cents,
                    o.shipping_cents, o.grand_total_cents,
                    o.payment_provider_name, o.billing_address, o.shipping_address,
+                   o.shipping_method_code, o.weigh_status,
+                   o.pickup_arrived_at,
                    o.created_at, o.updated_at,
                    o.promised_delivery_at, o.sla_compensated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items
@@ -490,16 +730,26 @@ async def list_customer_orders(pool: Any, customer_id: str) -> list[dict]:
                 SELECT jsonb_agg(jsonb_build_object(
                     'id', oli.id,
                     'batch_id', oli.batch_id,
+                    'variant_id', pv.id,
                     'quantity', oli.quantity,
+                    'preorder_qty', oli.preorder_qty,
                     'unit_price_cents', oli.unit_price_cents,
                     'line_total_cents', oli.line_total_cents,
+                    'pricing_mode', COALESCE(oli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', oli.unit_price_cents_per_jin,
+                    'estimated_weight_grams', oli.estimated_weight_grams,
+                    'actual_weight_grams', oli.actual_weight_grams,
+                    'estimated_amount_cents', oli.estimated_amount_cents,
+                    'actual_amount_cents', oli.actual_amount_cents,
+                    'weight_diff_cents', oli.weight_diff_cents,
+                    'settlement_status', COALESCE(oli.settlement_status, 'not_required'),
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values
                 )) AS line_items
                 FROM order_line_item oli
                 LEFT JOIN inventory_batch ib ON oli.batch_id = ib.id
-                LEFT JOIN product_variant pv ON ib.variant_id = pv.id
+                LEFT JOIN product_variant pv ON pv.id = COALESCE(oli.variant_id, ib.variant_id)
                 LEFT JOIN product prod ON pv.product_id = prod.id
                 WHERE oli.order_id = o.id
             ) items ON true
@@ -542,7 +792,7 @@ async def get_cart(pool: Any, cart_id: str) -> dict | None:
             SELECT c.id, c.customer_id, c.region_code, c.currency, c.status,
                    c.subtotal_cents, c.discount_cents, c.tax_cents,
                    c.shipping_cents, c.grand_total_cents,
-                   c.billing_address, c.shipping_address,
+                   c.billing_address, c.shipping_address, c.shipping_method_code,
                    c.created_at, c.updated_at,
                    COALESCE(items.line_items, '[]'::jsonb) AS line_items,
                    COALESCE(discounts.discounts, '[]'::jsonb) AS discounts,
@@ -552,17 +802,30 @@ async def get_cart(pool: Any, cart_id: str) -> dict | None:
                 SELECT jsonb_agg(jsonb_build_object(
                     'id', cli.id,
                     'batch_id', cli.batch_id,
+                    'variant_id', pv.id,
                     'quantity', cli.quantity,
                     'unit_price_cents', cli.unit_price_cents,
                     'line_total_cents', cli.line_total_cents,
+                    'pricing_mode', COALESCE(cli.pricing_mode, 'piece'),
+                    'unit_price_cents_per_jin', cli.unit_price_cents_per_jin,
+                    'price_basis_grams', COALESCE(cli.price_basis_grams, 500),
+                    'estimated_weight_grams', cli.estimated_weight_grams,
+                    'weight_step_grams', cli.weight_step_grams,
+                    'weight_option_label', cli.weight_option_label,
                     'product_title', prod.title,
                     'variant_sku', pv.sku_code,
                     'option_values', pv.option_values,
-                    'available_qty', ib.stock_qty - ib.reserved_qty + cli.quantity
+                    'available_qty', CASE WHEN ib.id IS NOT NULL AND ib.status = 'active'
+                        AND ib.inspection_status = 'passed'
+                        THEN GREATEST(ib.stock_qty - ib.reserved_qty, 0) ELSE 0 END,
+                    'preorder_qty_preview', GREATEST(cli.quantity - (CASE WHEN ib.id IS NOT NULL
+                        AND ib.status = 'active' AND ib.inspection_status = 'passed'
+                        THEN GREATEST(ib.stock_qty - ib.reserved_qty, 0)
+                             + COALESCE(cli.reserved_qty, 0) ELSE 0 END), 0)
                 )) AS line_items
                 FROM cart_line_item cli
                 LEFT JOIN inventory_batch ib ON cli.batch_id = ib.id
-                LEFT JOIN product_variant pv ON ib.variant_id = pv.id
+                LEFT JOIN product_variant pv ON pv.id = COALESCE(cli.variant_id, ib.variant_id)
                 LEFT JOIN product prod ON pv.product_id = prod.id
                 WHERE cli.cart_id = c.id AND cli.deleted_at IS NULL
             ) items ON true
@@ -597,12 +860,16 @@ async def get_dashboard_kpis(pool: Any) -> dict:
         revenue = await conn.fetchrow(
             """
             SELECT COUNT(*)::int AS total_orders,
-                   COALESCE(SUM(grand_total_cents), 0)::int AS total_revenue_cents,
-                   COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)::int
+                   COALESCE(SUM(o.grand_total_cents), 0)::int AS total_revenue_cents,
+                   COALESCE(SUM(CASE WHEN o.status = 'pending' THEN 1 ELSE 0 END), 0)::int
                        AS pending_orders,
-                   COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days'
-                      THEN grand_total_cents ELSE 0 END), 0)::int AS revenue_30d_cents
-            FROM customer_order
+                   COALESCE(SUM(CASE WHEN o.created_at >= NOW() - INTERVAL '30 days'
+                      THEN o.grand_total_cents ELSE 0 END), 0)::int AS revenue_30d_cents
+            FROM customer_order o
+            WHERE NOT EXISTS (
+                SELECT 1 FROM customer c
+                WHERE c.id = o.customer_id AND c.excluded_from_reports
+            )
             """
         )
         products = await conn.fetchrow(
@@ -613,7 +880,8 @@ async def get_dashboard_kpis(pool: Any) -> dict:
             """
         )
         customers = await conn.fetchrow(
-            "SELECT COUNT(*)::int AS total_customers FROM customer WHERE deleted_at IS NULL"
+            "SELECT COUNT(*)::int AS total_customers FROM customer "
+            "WHERE deleted_at IS NULL AND excluded_from_reports = FALSE"
         )
         return {
             "total_orders": revenue["total_orders"],
@@ -882,7 +1150,7 @@ async def list_app_users(pool: Any) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, email, name, status, created_at, updated_at
+            SELECT id, email, name, status, totp_enabled, created_at, updated_at
             FROM "app_user" WHERE deleted_at IS NULL ORDER BY created_at DESC
             """
         )
@@ -1149,7 +1417,106 @@ def _row_to_dict(row: Any) -> dict:
             "commission_logic",
         ):
             try:
-                d[k] = json.loads(v)
+                parsed = json.loads(v)
+                # 历史双编码：jsonb 列里存的是 JSON 字符串时再解一层。
+                if k in ("billing_address", "shipping_address") and isinstance(parsed, str):
+                    parsed = json.loads(parsed)
+                d[k] = parsed
             except (json.JSONDecodeError, TypeError):
                 pass
     return d
+
+
+def _resolve_image_url(option_values: Any, media_assets: Any, shelf_image_url: Any) -> str | None:
+    """商品图解析（预订清单/预订列表共用）。
+
+    顺序: 变体 option_values.image_url → 批次 media_assets[0] → 批次货架图。
+    option_values / media_assets 在 asyncpg 下可能是 dict/list 或 JSON 字符串。
+    """
+    for raw_name, raw in (("option_values", option_values), ("media_assets", media_assets)):
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if raw_name == "option_values":
+                option_values = parsed
+            else:
+                media_assets = parsed
+    if isinstance(option_values, dict):
+        url = option_values.get("image_url")
+        if url:
+            return str(url)
+    if isinstance(media_assets, list) and media_assets:
+        first = media_assets[0]
+        if isinstance(first, str) and first:
+            return first
+        if isinstance(first, dict):
+            url = first.get("url") or first.get("src")
+            if url:
+                return str(url)
+    if shelf_image_url:
+        return str(shelf_image_url)
+    return None
+
+
+async def list_customer_preorders(pool: Any, customer_id: str) -> list[dict]:
+    """顾客自己的预订行（preorder_qty > 0）——下单时未配到货、待配货的部分。"""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT o.id AS order_id, o.status AS order_status, o.created_at,
+                   oli.id AS line_id, pv.product_id, p.title,
+                   pv.id AS variant_id, oli.quantity, oli.preorder_qty,
+                   pv.option_values, ib.media_assets, ib.shelf_image_url
+            FROM order_line_item oli
+            JOIN customer_order o ON o.id = oli.order_id
+            LEFT JOIN inventory_batch ib ON ib.id = oli.batch_id
+            LEFT JOIN product_variant pv ON pv.id = COALESCE(oli.variant_id, ib.variant_id)
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE o.customer_id = $1 AND oli.preorder_qty > 0
+            ORDER BY o.created_at DESC, oli.created_at
+            """,
+            customer_id,
+        )
+        results = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d["image_url"] = _resolve_image_url(
+                d.pop("option_values", None),
+                d.pop("media_assets", None),
+                d.pop("shelf_image_url", None),
+            )
+            results.append(d)
+        return results
+
+
+async def list_admin_preorders(pool: Any, *, limit: int = 200) -> list[dict]:
+    """后台配货队列：全部 preorder_qty > 0 的订单行，最早优先。"""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT oli.id AS line_id, oli.order_id, o.customer_id,
+                   c.name AS customer_name, pv.product_id, p.title,
+                   oli.quantity, oli.preorder_qty, oli.created_at,
+                   COALESCE(avail.available_qty, 0)::int AS available_qty_now
+            FROM order_line_item oli
+            JOIN customer_order o ON o.id = oli.order_id
+            LEFT JOIN customer c ON c.id = o.customer_id
+            LEFT JOIN inventory_batch ib ON ib.id = oli.batch_id
+            LEFT JOIN product_variant pv ON pv.id = COALESCE(oli.variant_id, ib.variant_id)
+            LEFT JOIN product p ON p.id = pv.product_id
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(GREATEST(ib2.stock_qty - ib2.reserved_qty, 0)), 0)
+                    AS available_qty
+                FROM inventory_batch ib2
+                WHERE ib2.variant_id = pv.id AND ib2.deleted_at IS NULL
+                  AND ib2.status = 'active' AND ib2.inspection_status = 'passed'
+            ) avail ON true
+            WHERE oli.preorder_qty > 0
+            ORDER BY oli.created_at ASC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(r) for r in rows]

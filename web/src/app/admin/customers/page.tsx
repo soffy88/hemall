@@ -95,6 +95,16 @@ export default function CustomersPage() {
     }
   }
 
+  async function handleToggleMerchant(c: Customer) {
+    try {
+      await api.adminSetCustomerMerchant(c.id, !c.is_merchant);
+      setLoading(true);
+      load();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
   async function handleAssignGroup(customerId: string, groupId: string) {
     if (!groupId) return;
     try {
@@ -188,6 +198,7 @@ export default function CustomersPage() {
             <select value={custStatus} onChange={(e) => setCustStatus(e.target.value)} className="px-3 py-2 border rounded-lg text-sm">
               <option value="active">active</option>
               <option value="inactive">inactive</option>
+              <option value="disabled">disabled（停用）</option>
             </select>
           )}
           <div className="flex gap-2">
@@ -237,6 +248,7 @@ export default function CustomersPage() {
                 <th className="px-4 py-3 font-medium text-gray-600">电话</th>
                 <th className="px-4 py-3 font-medium text-gray-600">分组</th>
                 <th className="px-4 py-3 font-medium text-gray-600">状态</th>
+                <th className="px-4 py-3 font-medium text-gray-600">商家</th>
                 <th className="px-4 py-3 font-medium text-gray-600">订单数</th>
                 <th className="px-4 py-3 font-medium text-gray-600">累计消费</th>
                 <th className="px-4 py-3 font-medium text-gray-600">操作</th>
@@ -260,7 +272,24 @@ export default function CustomersPage() {
                       </select>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 rounded text-xs ${c.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{c.status}</span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={`px-2 py-0.5 rounded text-xs ${c.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{c.status}</span>
+                        {c.excluded_from_reports && (
+                          <span className="px-2 py-0.5 rounded text-xs bg-fuchsia-100 text-fuchsia-700" title="不计入报表与顾客统计">
+                            测试账号
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {c.is_merchant && (
+                          <span className="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700">商家</span>
+                        )}
+                        <button onClick={() => handleToggleMerchant(c)} className="text-xs text-blue-600 hover:underline">
+                          {c.is_merchant ? '取消商家' : '设为商家'}
+                        </button>
+                      </div>
                     </td>
                     <td className="px-4 py-3">{c.order_count}</td>
                     <td className="px-4 py-3">{fmt(c.total_spent_cents)}</td>
@@ -275,7 +304,7 @@ export default function CustomersPage() {
                   </tr>
                   {expandedId === c.id && (
                     <tr>
-                      <td colSpan={8} className="px-4 py-3 bg-gray-50">
+                      <td colSpan={9} className="px-4 py-3 bg-gray-50">
                         <div className="text-xs space-y-2">
                           {addresses.map((a) => (
                             <div key={a.id} className="flex items-center justify-between bg-white rounded px-3 py-2 border border-gray-100">
@@ -316,7 +345,7 @@ export default function CustomersPage() {
                 </Fragment>
               ))}
               {customers.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">暂无客户</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无客户</td></tr>
               )}
             </tbody>
           </table>

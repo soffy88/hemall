@@ -32,6 +32,7 @@ from obase.crypto.util import CryptoUtil
 from obase.persistence.pool import PgPool
 from pydantic import BaseModel, Field, model_validator
 
+from .compliance import record_consents, validate_consent
 from .config import Settings
 from .deps import get_pool, get_settings
 from .security.rate_limit import limiter
@@ -539,7 +540,7 @@ async def login(
 
     # 生产环境: admin 和 privileged_staff_ids 必须绑定 TOTP 才能进后台。
     # 不签发完整会话, 只发 5 分钟绑定令牌——没有完整会话 = 被拒绝进后台。
-    if is_production and is_privileged and not totp_enabled:
+    if is_production and settings.require_admin_totp and is_privileged and not totp_enabled:
         return LoginTotpSetupRequiredResponse(
             user_id=user_id,
             email=row["email"],
@@ -806,7 +807,7 @@ async def refresh(
     request: Request,
     response: Response,
     settings: Settings = Depends(get_settings),
-) -> RefreshResponse:
+) -> RefreshResponse | JSONResponse:
     """刷新 access token：用 refresh token cookie 签发新的 access token + csrf token。
 
     会话白名单为 ``{staff, customer}``（两种已注册的身份令牌类型），按原 typ
@@ -921,6 +922,10 @@ class CustomerRegisterInput(BaseModel):
     password: str = Field(..., description="明文密码")
     phone: str | None = Field(None, description="手机号")
     name: str | None = Field(None, description="姓名")
+    referral_code: str = Field("", description="推荐人推荐码（选填，绑定后不可改）")
+    privacy_consent: bool = Field(False, description="已阅读并同意隐私政策")
+    terms_consent: bool = Field(False, description="已阅读并同意用户协议")
+    consent_version: str = Field("", description="前端看到的合规文档版本")
 
 
 class CustomerTokenResponse(BaseModel):
@@ -1055,6 +1060,12 @@ async def customer_register(
     settings: Settings = Depends(get_settings),
 ) -> CustomerTokenResponse:
     """顾客注册：创建 customer 记录并直接登录。"""
+    consent_version = validate_consent(
+        settings,
+        privacy_consent=body.privacy_consent,
+        terms_consent=body.terms_consent,
+        consent_version=body.consent_version,
+    )
     # 检查邮箱是否已存在
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
@@ -1064,19 +1075,43 @@ async def customer_register(
     if existing:
         raise HTTPException(status_code=409, detail="email already registered")
 
-    # 创建 customer
+    # 仓主试点：推荐码先解析（无效直接 400，不产生孤儿账号），与 storefront 注册一致。
+    from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
+
+    referrer_id: str | None = None
+    if (body.referral_code or "").strip():
+        async with pool.acquire() as conn:
+            try:
+                referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # 创建 customer（建号 + 推荐绑定 + 本人推荐码同一事务）
     password_hash = CryptoUtil.hash_password(password=body.password)
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            'INSERT INTO "customer" (email, password_hash, phone, name, status) '
-            "VALUES ($1, $2, $3, $4, 'active') RETURNING id, email",
-            body.email,
-            password_hash,
-            body.phone,
-            body.name,
-        )
-
-    customer_id = str(row["id"])
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                'INSERT INTO "customer" (id, email, password_hash, phone, name, status) '
+                "VALUES (gen_random_uuid(), $1, $2, $3, $4, 'active') RETURNING id, email",
+                body.email,
+                password_hash,
+                body.phone,
+                body.name,
+            )
+            customer_id = str(row["id"])
+            if referrer_id is not None:
+                try:
+                    await bind_referral(conn, customer_id=customer_id, referrer_id=referrer_id)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            await ensure_referral_code(conn, customer_id)
+            await record_consents(
+                conn,
+                subject_type="customer",
+                subject_id=customer_id,
+                version=consent_version,
+                request=request,
+            )
 
     access_token = sign_token(
         {"customer_id": customer_id, "email": row["email"]},

@@ -238,6 +238,8 @@ def _prod_app() -> FastAPI:
         environment="production",
         privileged_staff_ids="u1",
         payment_gateway_provider="stripe",
+        # 与仓库默认保持一致: 避免本机 .env 的 HEMALL_CORS_ORIGINS 污染测试
+        cors_origins=["http://localhost:3000"],
     )
     app = FastAPI()
     app.add_middleware(CSRFMiddleware, settings=settings)

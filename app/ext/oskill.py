@@ -500,6 +500,21 @@ _MARKET_MAKER_MAX_MARKUP = 0.2
 _MARKET_MAKER_MAX_MARKDOWN = -0.3
 
 
+def build_default_vwap_curve(stock_qty: int) -> dict[str, Any]:
+    """新批次的默认做市消化曲线: 72 小时线性消化 stock_qty。
+
+    格式与 calculate_vwap_deviation 的契约一致 ({"expected_cumulative":
+    [按小时累计销量], "stddev": 正数})。拍照上架 (agent_gateway) 与蜘蛛
+    自动上架 (oservi spider_listing) 共用同一条默认曲线, 新批次从出生
+    就被 market_maker 引擎联动调价。
+    """
+    qty = max(int(stock_qty), 0)
+    return {
+        "expected_cumulative": [round(qty * (i + 1) / 72) for i in range(72)],
+        "stddev": max(2.0, qty * 0.15),
+    }
+
+
 def calculate_vwap_deviation(
     current_sales: int, *, target_curve: dict[str, Any], elapsed_hours: int
 ) -> float:
@@ -537,7 +552,11 @@ def calculate_vwap_deviation(
 
 
 def compute_market_maker_price(
-    base_price: int, *, vwap_deviation: float, theta_decay: float
+    base_price: int,
+    *,
+    vwap_deviation: float,
+    theta_decay: float,
+    floor_cents: int = 0,
 ) -> int:
     """结合销量偏离度与时间衰减 (Theta)，算出当前的"最佳做市零售价"。
 
@@ -550,9 +569,12 @@ def compute_market_maker_price(
         base_price: 未做市调整前的基准零售价 (分)，必须为正。
         vwap_deviation: calculate_vwap_deviation 算出的偏离度 (标准差倍数)。
         theta_decay: 时间衰减系数 [0.0, 1.0]，0 表示无衰减。
+        floor_cents: 做市价下限 (分)，默认 0；调用方传批次成本价时，
+            做市价永不低于成本 (2026-10-28 回归：此前下限为 0，零销量
+            蜘蛛批次被一路降到 1 分)。
 
     Returns:
-        做市后的零售价 (分，整数)，不低于 0。
+        做市后的零售价 (分，整数)，不低于 floor_cents。
 
     Raises:
         ValueError: base_price 非正，theta_decay 不在 [0, 1]。
@@ -561,12 +583,14 @@ def compute_market_maker_price(
         raise ValueError("compute_market_maker_price: base_price must be positive")
     if not 0.0 <= theta_decay <= 1.0:
         raise ValueError("compute_market_maker_price: theta_decay must be within [0, 1]")
+    if floor_cents < 0:
+        raise ValueError("compute_market_maker_price: floor_cents must be non-negative")
 
     deviation_adjustment = max(
         min(vwap_deviation * 0.05, _MARKET_MAKER_MAX_MARKUP), _MARKET_MAKER_MAX_MARKDOWN
     )
     price = base_price * (1 + deviation_adjustment) * (1 - theta_decay)
-    return max(round(price), 0)
+    return max(round(price), floor_cents)
 
 
 #: calculate_membership_dividend 每邀请 1 个活跃邻居对应的减免/分红比例。
@@ -1051,7 +1075,10 @@ def compute_batch_affinity_scores(
             continue
         total = 0
         for u in user_set:
-            key = tuple(sorted((u, cand)))
+            # tuple(sorted(...)) 推导为 tuple[str, ...]，与
+            # dict[tuple[str, str], int] 的键类型不匹配；两元解包写法等价且类型精确。
+            first, second = sorted((u, cand))
+            key = (first, second)
             total += cooccurrence.get(key, 0)
         if total > 0:
             scores[cand] = total / len(user_set)

@@ -9,6 +9,7 @@ omodul_endpoint 工厂; 本文件只做"登记 + 个别端点的旁路接线"。
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,9 +43,20 @@ from .ext.oskill import (
     rerank_feed_by_affinity,
 )
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
+from .product_photo import router as product_photo_router
+from .core4_delivery import admin_router as delivery_admin_router
+from .core4_delivery import staff_router as delivery_staff_router
+from .core4_delivery import store_router as delivery_store_router
+from .core4_expiry import router as expiry_router
+from .core4_replenish import router as replenish_router
+from .core4_personalization import router as personalization_router
+from .core4_traceability import router as traceability_router
+from .core4_monitoring import router as monitoring_router
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
+from .shipping import SETTING_KEY as SHIPPING_SETTING_KEY
+from .shipping import load_shipping_rules
 from .storefront import _owns_order
 from .storefront import router as storefront_router
 
@@ -229,6 +241,59 @@ async def admin_list_customers(
     return await queries.list_customers(_pool(request), limit=limit, offset=offset)
 
 
+class SetMerchantRequest(BaseModel):
+    is_merchant: bool
+
+
+@admin_read_router.patch("/customers/{customer_id}/merchant")
+async def admin_set_customer_merchant(
+    customer_id: str,
+    body: SetMerchantRequest,
+    request: Request,
+    _=Depends(_require_admin),
+):
+    """开通/关闭客户的商家身份（商家预订清单与一键预订的门禁标记）。"""
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE "customer" SET is_merchant = $1, updated_at = NOW()
+            WHERE id = $2 AND deleted_at IS NULL
+            RETURNING id, is_merchant
+            """,
+            body.is_merchant,
+            customer_id,
+        )
+    if row is None:
+        raise HTTPException(404, "customer not found")
+    return {"id": str(row["id"]), "is_merchant": bool(row["is_merchant"])}
+
+
+@admin_read_router.get("/preorders")
+async def admin_list_preorders(
+    request: Request,
+    _=Depends(_require_admin),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """配货队列：preorder_qty > 0 的订单行，最早优先。"""
+    return await queries.list_admin_preorders(_pool(request), limit=limit)
+
+
+@admin_read_router.post("/preorders/{line_id}/allocate")
+async def admin_allocate_preorder(
+    line_id: str,
+    request: Request,
+    _=Depends(_require_admin),
+):
+    """给一行预订配货：从现有可用库存锁定，扣减 preorder_qty。"""
+    from .storefront import allocate_preorder_line
+
+    result = await allocate_preorder_line(_pool(request), line_id)
+    if result is None:
+        raise HTTPException(404, "order line not found")
+    return result
+
+
 @admin_read_router.get("/dashboard/kpis")
 async def admin_dashboard_kpis(request: Request, _=Depends(_require_admin)):
     return await queries.get_dashboard_kpis(_pool(request))
@@ -288,6 +353,63 @@ async def admin_list_sales_channels(request: Request, _=Depends(_require_admin))
 @admin_read_router.get("/regions")
 async def admin_list_regions(request: Request, _=Depends(_require_admin)):
     return await queries.list_regions_admin(_pool(request))
+
+
+class FulfillmentSettingsRequest(BaseModel):
+    service_area: str = ""
+    delivery_windows: list[str] = []
+    methods: dict[str, dict[str, Any]] = {}
+
+
+@admin_read_router.get("/operations/fulfillment")
+async def admin_get_fulfillment_settings(
+    request: Request,
+    _=Depends(_require_admin),
+):
+    from app.notifications import delivery_summary
+
+    settings = request.app.state.config
+    rules = await load_shipping_rules(_pool(request), settings)
+    return {
+        "shipping": rules,
+        "notification": await delivery_summary(_pool(request), settings),
+        "notification_provider_source": "环境变量（密钥不存数据库）",
+    }
+
+
+@admin_read_router.put("/operations/fulfillment")
+async def admin_update_fulfillment_settings(
+    body: FulfillmentSettingsRequest,
+    request: Request,
+    principal: dict[str, Any] = Depends(require_staff_role("admin", "support")),
+):
+    from app.shipping import _coerce_rules, default_shipping_rules
+
+    settings = request.app.state.config
+    fallback = default_shipping_rules(settings)
+    cleaned = _coerce_rules(
+        {
+            "service_area": body.service_area,
+            "delivery_windows": body.delivery_windows,
+            "methods": body.methods,
+        },
+        fallback,
+    )
+    async with _pool(request).acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO runtime_setting (key, value, updated_by, updated_at)
+            VALUES ($1, $2::jsonb, $3, NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            """,
+            SHIPPING_SETTING_KEY,
+            json.dumps(cleaned, ensure_ascii=False),
+            str(principal["user_id"]),
+        )
+    return {"ok": True, "shipping": cleaned}
 
 
 @admin_read_router.get("/tax-rates")
@@ -992,12 +1114,18 @@ async def agent_ingest(
     retail_price_cents: int | None = Form(None),
     stock_qty: int = Form(30),
     category_slug: str = Form("daily"),
+    target_product_id: str = Form(""),
+    target_sku: str = Form(""),
     principal: dict[str, Any] = Depends(get_current_user),
 ):
     """视频/图片传货: 手机实拍 → 自动上架。
 
-    multipart/form-data: file=视频文件, 可选 location_id/retail_price_cents/
-    stock_qty/category_slug。文件名清洗成商品名，媒体文件即商品图/视频。
+    multipart/form-data: file=图片/视频文件, 可选 location_id/
+    retail_price_cents/stock_qty/category_slug/target_product_id/target_sku。
+    指定 target_product_id/target_sku 时只替换该商品主图, 不新建商品。
+    未指定时图片先经 VLM 识货 (识别名/品类; 命中已有商品则以图更新、只补
+    新批次), 识别不可用且文件名为手机相机名 (IMG_/DSC_) 时只建草稿。
+    图片统一压缩到长边 1200、去 EXIF/GPS、heic 转 jpeg、单张 ≤10MB。
     """
 
     return await ingest_media(
@@ -1009,6 +1137,9 @@ async def agent_ingest(
         retail_price_cents=retail_price_cents,
         stock_qty=stock_qty,
         category_slug=category_slug,
+        target_product_id=target_product_id,
+        target_sku=target_sku,
+        can_edit_any=True,
     )
 
 
@@ -1106,6 +1237,15 @@ def build_router() -> APIRouter:
     router.include_router(auth_router)
     router.include_router(storefront_router)
     router.include_router(admin_read_router)
+    router.include_router(product_photo_router)
+    router.include_router(delivery_store_router)
+    router.include_router(delivery_admin_router)
+    router.include_router(delivery_staff_router)
+    router.include_router(expiry_router)
+    router.include_router(replenish_router)
+    router.include_router(personalization_router)
+    router.include_router(traceability_router)
+    router.include_router(monitoring_router)
     router.include_router(ext_bespoke_router)
     router.include_router(hardware_webhook_router)
 

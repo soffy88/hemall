@@ -9,12 +9,18 @@ import { useToast } from '@/components/Toast';
 import type {
   Customer,
   CustomerAddress,
+  CustomerPreorder,
+  IngestResult,
+  InviteGiftStatus,
+  MyReferral,
   Order,
+  PurchaseRequest,
   RmaClaim,
   RefundReason,
   RefundRequest,
   RefundType,
   SubmitClaimResult,
+  VoucherList,
 } from '@/types/api';
 import { errMessage } from '@/lib/errors';
 
@@ -24,6 +30,15 @@ const REFUND_REASON_LABEL: Record<RefundReason, string> = {
   not_as_described: '与描述不符',
   shipping_delay: '物流太慢',
   other: '其他',
+};
+
+const PR_STATUS_LABEL: Record<string, string> = {
+  collected: '已收集',
+  price_confirmed: '已确认价格数量',
+  purchasing: '采购中',
+  arrived: '已到货',
+  delivered: '已交付',
+  failed: '采购失败',
 };
 
 const REFUND_STATUS_LABEL: Record<RefundRequest['status'], string> = {
@@ -63,10 +78,41 @@ export default function AccountPage() {
   const [profile, setProfile] = useState<Customer | null>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  type CustomerSettlement = {
+    id: string; order_id: string; order_line_item_id: string;
+    weight_grams: number; estimated_weight_grams: number | null;
+    estimated_amount_cents: number; actual_amount_cents: number;
+    diff_cents: number; status: string; product_title?: string;
+  };
+  const [weighByOrder, setWeighByOrder] = useState<Record<string, CustomerSettlement[]>>({});
+  const [preorders, setPreorders] = useState<CustomerPreorder[]>([]);
   const [claims, setClaims] = useState<RmaClaim[]>([]);
   const [refunds, setRefunds] = useState<RefundRequest[]>([]);
+  // 仓主试点：推荐 / 券 / 点货 / 邀请礼 / 传货
+  const [referral, setReferral] = useState<MyReferral | null>(null);
+  const [vouchers, setVouchers] = useState<VoucherList | null>(null);
+  const [purchaseRequests, setPurchaseRequests] = useState<PurchaseRequest[]>([]);
+  const [giftStatus, setGiftStatus] = useState<InviteGiftStatus | null>(null);
+  const [cangzhuError, setCangzhuError] = useState('');
+  const [prProductName, setPrProductName] = useState('');
+  const [prBrand, setPrBrand] = useState('');
+  const [prSpec, setPrSpec] = useState('');
+  const [prPriceMin, setPrPriceMin] = useState('');
+  const [prPriceMax, setPrPriceMax] = useState('');
+  const [prQty, setPrQty] = useState('1');
+  const [prPreorder, setPrPreorder] = useState(false);
+  const [submittingPr, setSubmittingPr] = useState(false);
+  const [giftKind, setGiftKind] = useState<'egg' | 'vegetable'>('egg');
+  const [claimingGift, setClaimingGift] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadPrice, setUploadPrice] = useState('');
+  const [uploadStock, setUploadStock] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<IngestResult | null>(null);
+  const [canIngest, setCanIngest] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   // 申请售后（退款状态机入口）——一次只展开一个订单行的表单。
   const [refundingLineItemId, setRefundingLineItemId] = useState<string | null>(null);
@@ -103,20 +149,35 @@ export default function AccountPage() {
     }
     setLoading(true);
     try {
-      const [p, a, o, c, r] = await Promise.all([
+      const [p, a, o, po, c, r] = await Promise.all([
         api.customerMe(),
         api.customerMyAddresses(),
         api.customerMyOrders(),
+        api.customerMyPreorders(),
         api.customerMyClaims(),
         api.customerMyRefunds(),
       ]);
+      api.myCapabilities().then((cap) => setCanIngest(!!cap.can_ingest)).catch(() => setCanIngest(false));
       setProfile(p);
       setName(p.name || '');
       setPhone(p.phone || '');
       setAddresses(a);
       setOrders(o);
+      setPreorders(po);
       setClaims(c);
       setRefunds(r);
+      const weighEntries = await Promise.all(
+        o.filter((order) => (order.line_items || []).some((li) => li.pricing_mode === 'weight'))
+          .map(async (order) => {
+            try {
+              const data = await api.customerWeighSettlements(order.id);
+              return [order.id, data.items] as const;
+            } catch {
+              return [order.id, []] as const;
+            }
+          }),
+      );
+      setWeighByOrder(Object.fromEntries(weighEntries));
     } catch (e) {
       setError(errMessage(e));
     } finally {
@@ -125,6 +186,98 @@ export default function AccountPage() {
   }
 
   useEffect(() => { load(); }, []);
+
+  async function loadCangzhu() {
+    try {
+      const [r, v, pr, g] = await Promise.all([
+        api.getMyReferral(),
+        api.listMyVouchers(),
+        api.listMyPurchaseRequests(),
+        api.getInviteGiftStatus(),
+      ]);
+      setReferral(r);
+      setVouchers(v);
+      setPurchaseRequests(pr);
+      setGiftStatus(g);
+    } catch (e) {
+      setCangzhuError(errMessage(e));
+    }
+  }
+
+  useEffect(() => { loadCangzhu(); }, []);
+
+  function shareLink() {
+    if (!referral) return '';
+    return `${window.location.origin}/shop/register?ref=${referral.referral_code}`;
+  }
+
+  async function handleSubmitPurchaseRequest(e: React.FormEvent) {
+    e.preventDefault();
+    if (!prProductName.trim()) {
+      showToast('请填写商品名', 'error');
+      return;
+    }
+    setSubmittingPr(true);
+    try {
+      await api.createPurchaseRequest({
+        product_name: prProductName.trim(),
+        brand: prBrand.trim(),
+        spec_packaging: prSpec.trim(),
+        price_min_cents: prPriceMin ? Math.round(parseFloat(prPriceMin) * 100) : undefined,
+        price_max_cents: prPriceMax ? Math.round(parseFloat(prPriceMax) * 100) : undefined,
+        expected_qty: Math.max(1, parseInt(prQty, 10) || 1),
+        willing_preorder: prPreorder,
+      });
+      setPrProductName('');
+      setPrBrand('');
+      setPrSpec('');
+      setPrPriceMin('');
+      setPrPriceMax('');
+      setPrQty('1');
+      setPrPreorder(false);
+      await loadCangzhu();
+      showToast('点货已提交，仓管家确认后会采购', 'info');
+    } catch (err) {
+      showToast(errMessage(err), 'error');
+    } finally {
+      setSubmittingPr(false);
+    }
+  }
+
+  async function handleClaimGift() {
+    setClaimingGift(true);
+    try {
+      await api.claimInviteGift(giftKind);
+      await loadCangzhu();
+      showToast('邀请礼已登记，请到店领取', 'info');
+    } catch (err) {
+      showToast(errMessage(err), 'error');
+    } finally {
+      setClaimingGift(false);
+    }
+  }
+
+  async function handleUploadProduct(e: React.FormEvent) {
+    e.preventDefault();
+    if (!uploadFile) {
+      showToast('请先选择照片或短视频', 'error');
+      return;
+    }
+    const form = new FormData();
+    form.append('file', uploadFile);
+    if (uploadPrice) form.append('retail_price_cents', String(Math.round(parseFloat(uploadPrice) * 100)));
+    if (uploadStock) form.append('stock_qty', uploadStock);
+    setUploading(true);
+    try {
+      const result = await api.uploadMyProduct(form);
+      setUploadResult(result);
+      showToast(result.status === 'updated' ? '已匹配既有商品并更新' : '已新建商品上架', 'info');
+    } catch (err) {
+      showToast(errMessage(err), 'error');
+    } finally {
+      setUploading(false);
+    }
+  }
 
   async function handleLogout() {
     await customerLogout();
@@ -156,6 +309,41 @@ export default function AccountPage() {
       setAddrRecipient(''); setAddrPhone(''); setAddrLine1(''); setAddrCity(''); setAddrRegion(''); setAddrPostal('');
       setShowAddrForm(false);
       load();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
+  async function handleCancelOrder(orderId: string) {
+    if (!confirm('确认取消这个未支付订单？')) return;
+    setCancellingId(orderId);
+    try {
+      await api.customerCancelOrder(orderId);
+      showToast('订单已取消');
+      await load();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    } finally {
+      setCancellingId(null);
+    }
+  }
+
+  async function handlePickupArrived(orderId: string) {
+    try {
+      await api.customerPickupArrived(orderId);
+      showToast('已提醒门店：您已到店', 'info');
+      const o = await api.customerMyOrders();
+      setOrders(o);
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
+  async function handleWeighDecision(orderId: string, settlementId: string, accept: boolean) {
+    try {
+      await api.customerConfirmWeigh(orderId, settlementId, accept);
+      showToast(accept ? '已确认差额' : '已拒绝补差，按预估重量出货');
+      await load();
     } catch (e) {
       showToast(errMessage(e), 'error');
     }
@@ -281,6 +469,76 @@ export default function AccountPage() {
         )}
       </div>
 
+      {/* 仓主中心：推荐 / 券 / 点货 / 邀请礼 / 传货 */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+        <h2 className="font-semibold">仓主中心</h2>
+        {cangzhuError && <p className="text-sm text-red-600">{cangzhuError}</p>}
+        <div className="text-sm space-y-1 text-gray-700">
+          <div>我的推荐码：<span className="font-mono font-semibold">{referral?.referral_code || '—'}</span></div>
+          <div>分享链接：<span className="break-all text-emerald-700">{referral ? shareLink() : '—'}</span></div>
+          <div>已推荐仓主：{referral?.referred_count ?? '—'} 人</div>
+          <div>购物券余额：{vouchers ? formatMoney(vouchers.voucher_balance_cents, 'CNY') : '—'}</div>
+          <p className="text-xs text-gray-500">推荐人绑定后不可更改；被推荐人订单完成后，推荐人按合资格金额 10% 累积购物券（永不过期、不可提现）。券与会员 9 折每单取最优一种。</p>
+        </div>
+        <div className="border-t pt-4 space-y-2">
+          <h3 className="font-medium text-sm">邀请礼</h3>
+          {giftStatus?.claim ? (
+            <p className="text-sm text-gray-700">已领取：{giftStatus.claim.gift_kind === 'egg' ? '鸡蛋' : '时令蔬菜'}（{giftStatus.claim.status}）</p>
+          ) : giftStatus?.eligible ? (
+            <div className="flex items-center gap-2 text-sm">
+              <select value={giftKind} onChange={(e) => setGiftKind(e.target.value as 'egg' | 'vegetable')} className="px-2 py-1 border border-gray-300 rounded-lg text-sm">
+                <option value="egg">鸡蛋一份</option>
+                <option value="vegetable">时令蔬菜一份</option>
+              </select>
+              <button onClick={handleClaimGift} disabled={claimingGift} className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50">{claimingGift ? '登记中...' : '领取'}</button>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">首单实付满 {giftStatus ? formatMoney(giftStatus.threshold_cents ?? 5000, 'CNY') : '—'} 可领取鸡蛋或时令蔬菜一份（当前首单实付 {giftStatus ? formatMoney(giftStatus.net_paid_cents ?? 0, 'CNY') : '—'}）。</p>
+          )}
+        </div>
+        <div className="border-t pt-4 space-y-3">
+          <h3 className="font-medium text-sm">仓主点货</h3>
+          <form onSubmit={handleSubmitPurchaseRequest} className="space-y-2">
+            <input value={prProductName} onChange={(e) => setPrProductName(e.target.value)} placeholder="商品名（必填）" required className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+            <div className="grid grid-cols-2 gap-2">
+              <input value={prBrand} onChange={(e) => setPrBrand(e.target.value)} placeholder="品牌" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <input value={prSpec} onChange={(e) => setPrSpec(e.target.value)} placeholder="规格包装" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <input value={prPriceMin} onChange={(e) => setPrPriceMin(e.target.value)} placeholder="期望最低价（元）" inputMode="decimal" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <input value={prPriceMax} onChange={(e) => setPrPriceMax(e.target.value)} placeholder="期望最高价（元）" inputMode="decimal" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <input value={prQty} onChange={(e) => setPrQty(e.target.value)} placeholder="预计数量" inputMode="numeric" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <label className="flex items-center gap-1 text-sm text-gray-700"><input type="checkbox" checked={prPreorder} onChange={(e) => setPrPreorder(e.target.checked)} /> 愿意预订</label>
+            </div>
+            <button type="submit" disabled={submittingPr} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50">{submittingPr ? '提交中...' : '提交点货'}</button>
+          </form>
+          <div className="space-y-1">
+            {purchaseRequests.map((pr) => (
+              <div key={pr.id} className="text-sm bg-gray-50 rounded-lg px-3 py-2 flex justify-between">
+                <span>{pr.product_name} {pr.brand} {pr.spec_packaging} ×{pr.expected_qty}</span>
+                <span className="text-gray-500">{PR_STATUS_LABEL[pr.status] || pr.status}</span>
+              </div>
+            ))}
+            {purchaseRequests.length === 0 && <div className="text-sm text-gray-400">暂无点货记录。</div>}
+          </div>
+        </div>
+        {canIngest && (
+        <div className="border-t pt-4 space-y-2">
+          <h3 className="font-medium text-sm">拍照/短视频传货上架</h3>
+          <p className="text-xs text-gray-500">上传商品照片或短视频：与既有商品同名时自动更新图/价格/库存，不建重复品；否则新建上架。价格、库存不填则新建时用默认价 ¥12.99 / 30 件，更新时保持原值。</p>
+          <form onSubmit={handleUploadProduct} className="space-y-2">
+            <input type="file" accept="image/*,video/*" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} className="text-sm" />
+            <div className="grid grid-cols-2 gap-2">
+              <input value={uploadPrice} onChange={(e) => setUploadPrice(e.target.value)} placeholder="售价（元，选填）" inputMode="decimal" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              <input value={uploadStock} onChange={(e) => setUploadStock(e.target.value)} placeholder="库存（件，选填）" inputMode="numeric" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+            </div>
+            <button type="submit" disabled={uploading} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50">{uploading ? '上传中...' : '上传并上架'}</button>
+          </form>
+          {uploadResult && (
+            <p className="text-sm text-gray-700">结果：{uploadResult.status === 'updated' ? '已更新' : '已新建'}「{uploadResult.title}」，售价 {formatMoney(uploadResult.retail_price_cents, 'CNY')}，库存 {uploadResult.stock_qty} 件。</p>
+          )}
+        </div>
+        )}
+      </div>
+
       {/* Addresses */}
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <div className="flex items-center justify-between mb-3">
@@ -330,7 +588,52 @@ export default function AccountPage() {
                 <span className="text-xs px-2 py-0.5 rounded bg-gray-100">{o.status}</span>
                 <span className="font-medium">{formatMoney(o.grand_total_cents, o.currency)}</span>
               </div>
-              <div className="text-xs text-gray-400 mt-1 mb-2">{new Date(o.created_at).toLocaleString('zh-CN')}</div>
+              <div className="flex items-center justify-between mt-1 mb-2">
+                <span className="text-xs text-gray-400">{new Date(o.created_at).toLocaleString('zh-CN')}</span>
+                <span className="flex items-center gap-3">
+                  {o.shipping_method_code === 'pickup' &&
+                    ['paid', 'confirmed', 'processing', 'packed', 'shipped', 'delivered'].includes(o.status) &&
+                    !o.pickup_arrived_at && (
+                      <button
+                        onClick={() => handlePickupArrived(o.id)}
+                        className="text-xs text-emerald-700 hover:underline"
+                      >
+                        我已到店
+                      </button>
+                    )}
+                  {o.shipping_method_code === 'pickup' && o.pickup_arrived_at && (
+                    <span className="text-xs text-emerald-600">已提醒到店</span>
+                  )}
+                  {['pending', 'draft'].includes(o.status) && (
+                    <button
+                      onClick={() => handleCancelOrder(o.id)}
+                      disabled={cancellingId === o.id}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      {cancellingId === o.id ? '取消中...' : '取消订单'}
+                    </button>
+                  )}
+                </span>
+              </div>
+              {(weighByOrder[o.id] || []).some((w) => w.status === 'needs_customer_confirmation') && (
+                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 space-y-1">
+                  <div className="font-medium">待顾客确认补差</div>
+                  {(weighByOrder[o.id] || []).filter((w) => w.status === 'needs_customer_confirmation').map((w) => (
+                    <div key={w.id} className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        {w.product_title || '称重商品'}：预估 {w.estimated_weight_grams ?? 0} 克 / ¥
+                        {(w.estimated_amount_cents / 100).toFixed(2)}，实称 {w.weight_grams} 克 / ¥
+                        {(w.actual_amount_cents / 100).toFixed(2)}，
+                        {w.diff_cents > 0 ? `需补收 ¥${(w.diff_cents / 100).toFixed(2)}` : `需退款 ¥${(-w.diff_cents / 100).toFixed(2)}`}
+                      </span>
+                      <span className="flex gap-2">
+                        <button onClick={() => handleWeighDecision(o.id, w.id, true)} className="px-2 py-0.5 bg-emerald-600 text-white rounded">确认</button>
+                        <button onClick={() => handleWeighDecision(o.id, w.id, false)} className="px-2 py-0.5 bg-white border border-amber-300 rounded">拒绝（按预估出货）</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* 履约 SLA：时效承诺 + 超时赔付 (P1 冲刺) */}
               {o.promised_delivery_at && (
@@ -355,6 +658,25 @@ export default function AccountPage() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-gray-600">
                           {li.product_title || li.variant_sku || '商品'} × {li.quantity}
+                          {li.pricing_mode === 'weight' && (
+                            <span className="ml-2 text-emerald-700">
+                              ¥{((li.unit_price_cents_per_jin ?? 0) / 100).toFixed(2)}/斤
+                              {li.actual_weight_grams != null
+                                ? ` · 实称 ${li.actual_weight_grams} 克`
+                                : ` · 预估 ${li.estimated_weight_grams ?? 0} 克`}
+                              {li.weight_diff_cents != null && li.weight_diff_cents !== 0 && (
+                                <span className={li.weight_diff_cents > 0 ? 'text-amber-700' : 'text-emerald-700'}>
+                                  {li.weight_diff_cents > 0 ? ' · 待补收' : ' · 已退/待退'} ¥
+                                  {(Math.abs(li.weight_diff_cents) / 100).toFixed(2)}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                          {(li.preorder_qty ?? 0) > 0 && (
+                            <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                              预订 ×{li.preorder_qty} 待配货
+                            </span>
+                          )}
                         </span>
                         <span className="flex gap-2 shrink-0">
                           {li.batch_id && !result && (
@@ -491,6 +813,40 @@ export default function AccountPage() {
             </div>
           ))}
           {orders.length === 0 && <div className="text-sm text-gray-400">暂无订单</div>}
+        </div>
+      </div>
+
+      {/* 我的预订：缺货预订的待配货进度 */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="font-semibold mb-3">我的预订</h2>
+        <div className="space-y-2">
+          {preorders.map((po) => (
+            <div key={po.line_id} className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2 text-sm">
+              {po.image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={po.image_url} alt={po.title} className="w-11 h-11 rounded-lg object-cover bg-white shrink-0" />
+              ) : (
+                <div className="w-11 h-11 rounded-lg flex items-center justify-center shrink-0 bg-gray-100">
+                  <span className="text-xl">📦</span>
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="truncate text-gray-800">{po.title}</div>
+                <div className="text-xs text-gray-400 mt-0.5">
+                  {new Date(po.created_at).toLocaleString('zh-CN')} · 订单状态 {po.order_status}
+                </div>
+              </div>
+              <span className="text-gray-500 shrink-0">× {po.quantity}</span>
+              {po.preorder_qty > 0 ? (
+                <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">
+                  待配货 ×{po.preorder_qty}
+                </span>
+              ) : (
+                <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">已配货</span>
+              )}
+            </div>
+          ))}
+          {preorders.length === 0 && <div className="text-sm text-gray-400">暂无预订，缺货商品也可直接下单预订。</div>}
         </div>
       </div>
 

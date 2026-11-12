@@ -122,6 +122,25 @@ async def _save_refund_request(pool: PgPool, refund: RefundRequest) -> None:
         )
 
 
+async def _reverse_voucher_for_refund(pool: PgPool, refund: RefundRequest) -> None:
+    """仓主试点：退款成功后按比例冲回已发推荐奖励。
+
+    失败只记日志，不动退款结果；冲回本身幂等（reversal:{refund_id}）。
+    """
+
+    try:
+        from app.cangzhu import reverse_for_refund
+
+        await reverse_for_refund(
+            pool,
+            refund_id=refund.id,
+            order_id=refund.order_id,
+            refund_cents=int(refund.actual_refunded_amount or 0),
+        )
+    except Exception:
+        logger.exception("cangzhu voucher reversal failed for refund %s", refund.id)
+
+
 async def _append_audit_log(pool: PgPool, log: RefundAuditLog) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
@@ -238,6 +257,11 @@ async def create_refund_request(
     """
     if requested_amount <= 0:
         raise RefundAmountExceedsError("requested amount must be positive")
+    if type == RefundType.RETURN_REFUND and not order_line_id:
+        raise RefundNotEligibleError(
+            "return_refund requires order_line_id so inventory can be restored "
+            "to the original batch"
+        )
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -312,13 +336,16 @@ async def create_refund_request(
                     f"reserved={order_reserved})"
                 )
 
-            # 检查是否有进行中的售后 (同订单/同行)
+            # 检查是否有尚未审核的同类售后申请 (同订单/同行)。
+            # 只拦 submitted/approved：这两态是“顾客已提交、管理员尚未处理”的重复请求。
+            # refunding 可能是 manual 退款等待线下确认，它已经计入上面的累计额度，
+            # 不应再阻止用户对同一订单发起其余部分退款。
             existing = await conn.fetchrow(
                 """
                 SELECT id FROM refund_request
                 WHERE order_id = $1
                   AND (order_line_id IS NULL OR order_line_id = $2)
-                  AND status IN ('submitted','approved','refunding')
+                  AND status IN ('submitted','approved')
                 """,
                 order_id,
                 order_line_id,
@@ -583,6 +610,25 @@ async def execute_refund(pool: PgPool, refund_id: str) -> RefundRequest:
 
     # 事务外调网关 (网络 IO 不占着行锁); 失败在下方落 failed
     try:
+        if refund.provider == "manual":
+            # 人工收款没有可调用的退款 API。绝不能把内存桩的 success 当成
+            # 已退款；保持 refunding，等待管理员线下转账后显式确认。
+            refund.metadata["manual_confirmation_required"] = True
+            refund.metadata["manual_confirmation_status"] = "pending"
+            refund.updated_at = datetime.now(UTC)
+            await _save_refund_request(pool, refund)
+            await _append_audit_log(
+                pool,
+                RefundAuditLog(
+                    refund_id=refund.id,
+                    from_status=RefundStatus.REFUNDING,
+                    to_status=RefundStatus.REFUNDING,
+                    operator_type="system",
+                    reason="Manual refund requires offline transfer and admin confirmation",
+                ),
+            )
+            return refund
+
         settings = Settings()
         _, gateway = build_payment_gateway(settings)
 
@@ -624,6 +670,9 @@ async def execute_refund(pool: PgPool, refund_id: str) -> RefundRequest:
                 reason=f"Gateway refund result: {refund.status.value}",
             ),
         )
+
+    if refund.status == RefundStatus.SUCCEEDED:
+        await _reverse_voucher_for_refund(pool, refund)
 
     return refund
 
@@ -681,12 +730,13 @@ async def mark_refund_returned(
     pool: PgPool,
     refund_id: str,
     tracking_no: str,
-    batch_id: str,
     operator_id: str,
+    quantity: int | None = None,
 ) -> RefundRequest:
     """确认收到退货 (管理员端调用)。
 
-    只有这一刻才回补库存 (货真到了仓); 幂等 —— 同一批批次只回补一次,
+    批次从原订单行自动解析，管理员不再手填 batch_id。只有这一刻才回补库存
+    (货真到了仓); 幂等 —— 同一退款单只回补一次,
     重复收货/回调重放都不会双倍回补 (metadata.restocked 标记 + 审计日志)。
     """
     refund = await _get_refund_request(pool, refund_id)
@@ -698,16 +748,21 @@ async def mark_refund_returned(
 
     if refund.status not in (RefundStatus.APPROVED, RefundStatus.REFUNDING, RefundStatus.SUCCEEDED):
         raise RefundError(f"invalid status for return confirmation: {refund.status.value}")
+    if not refund.order_line_id:
+        raise RefundError("return refund is not linked to an order line")
+    if quantity is not None and quantity <= 0:
+        raise RefundError("return quantity must be positive")
 
     from_status = refund.status
     refund.return_tracking_no = tracking_no
-    refund.return_batch_id = batch_id
     refund.updated_at = datetime.now(UTC)
 
     # 回补库存 (幂等): 未回补过才补
     restocked = False
     if not refund.metadata.get("restocked"):
-        await _restock_inventory(pool, refund, batch_id)
+        batch_id, restocked_qty = await _restock_inventory(pool, refund, quantity=quantity)
+        refund.return_batch_id = batch_id
+        refund.metadata["restocked_qty"] = restocked_qty
         refund.metadata["restocked"] = True
         restocked = True
 
@@ -721,32 +776,143 @@ async def mark_refund_returned(
             operator_id=operator_id,
             operator_type="admin",
             reason=(
-                f"Return received, tracking: {tracking_no}, restocked to batch: {batch_id}"
+                f"Return received, tracking: {tracking_no}, "
+                f"restocked {refund.metadata.get('restocked_qty')} to batch: "
+                f"{refund.return_batch_id}"
                 if restocked
                 else f"Return received again (already restocked), tracking: {tracking_no}"
             ),
-            metadata={"batch_id": batch_id, "restocked": restocked},
+            metadata={
+                "batch_id": refund.return_batch_id,
+                "restocked_qty": refund.metadata.get("restocked_qty", 0),
+                "restocked": restocked,
+            },
         ),
     )
 
     return refund
 
 
-async def _restock_inventory(pool: PgPool, refund: RefundRequest, batch_id: str) -> None:
-    """回补库存 (退货退款确认收货时调用, 由 mark_refund_returned 保证幂等)。"""
-    if not batch_id:
-        return
+async def _restock_inventory(
+    pool: PgPool,
+    refund: RefundRequest,
+    *,
+    quantity: int | None = None,
+) -> tuple[str, int]:
+    """按退款单关联订单行的真实 batch 和数量回补库存。"""
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE inventory_batch
-            SET stock_qty = stock_qty + 1,
-                updated_at = NOW()
-            WHERE id = $1
-            """,
-            batch_id,
-        )
-    logger.info("inventory restocked for refund %s: batch %s", refund.id, batch_id)
+        async with conn.transaction():
+            line = await conn.fetchrow(
+                """
+                SELECT oli.id, oli.batch_id, oli.quantity, oli.fulfilled_qty,
+                       ib.variant_id, ib.location_id, pv.product_id
+                FROM order_line_item oli
+                JOIN inventory_batch ib ON ib.id = oli.batch_id
+                JOIN product_variant pv ON pv.id = ib.variant_id
+                WHERE oli.id = $1 AND oli.order_id = $2
+                """,
+                refund.order_line_id,
+                refund.order_id,
+            )
+            if line is None or line["batch_id"] is None:
+                raise RefundError("original order line or inventory batch not found")
+
+            line_qty = int(line["quantity"] or 0)
+            restock_qty = int(quantity) if quantity is not None else line_qty
+            if restock_qty <= 0 or restock_qty > line_qty:
+                raise RefundError(
+                    f"return quantity {restock_qty} must be between 1 and "
+                    f"original quantity {line_qty}"
+                )
+
+            # stock_movement 的幂等键是第二道防线：即使退款单 metadata 写入
+            # 前进程崩溃，重试也不会再次加库存。
+            movement_id = await conn.fetchval(
+                """
+                INSERT INTO stock_movement (
+                    product_id, variant_id, location_id, batch_id,
+                    movement_type, quantity, reference_type, reference_id,
+                    reason, operator_id, idempotency_key
+                ) VALUES ($1,$2,$3,$4,'return',$5,'refund',$6,$7,$8,$9)
+                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+                DO NOTHING
+                RETURNING id
+                """,
+                str(line["product_id"]),
+                str(line["variant_id"]),
+                line["location_id"],
+                line["batch_id"],
+                restock_qty,
+                refund.id,
+                f"return received for refund {refund.id}",
+                refund.reviewer_id,
+                f"refund:{refund.id}:restock",
+            )
+            if movement_id is None:
+                return str(line["batch_id"]), 0
+
+            updated = await conn.fetchrow(
+                """
+                UPDATE inventory_batch
+                SET stock_qty = stock_qty + $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING id
+                """,
+                line["batch_id"],
+                restock_qty,
+            )
+            if updated is None:
+                raise RefundError("inventory batch not found")
+    logger.info(
+        "inventory restocked for refund %s: batch %s qty=%s",
+        refund.id,
+        line["batch_id"],
+        restock_qty,
+    )
+    return str(line["batch_id"]), restock_qty
+
+
+async def confirm_manual_refund(
+    pool: PgPool,
+    refund_id: str,
+    operator_id: str,
+) -> RefundRequest:
+    """管理员确认线下退款已实际完成；只有这一刻 manual 退款才变 succeeded。"""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            refund = await _load_refund_locked(conn, refund_id)
+            if refund.provider != "manual":
+                raise RefundError("not a manual refund")
+            if refund.status != RefundStatus.REFUNDING:
+                raise RefundError(f"manual refund is not pending: {refund.status.value}")
+            if not refund.metadata.get("manual_confirmation_required"):
+                raise RefundError("refund is not awaiting manual confirmation")
+            if not refund.approved_amount:
+                raise RefundError("approved amount not set")
+
+            old_status = refund.status
+            refund.transition_to(RefundStatus.SUCCEEDED)
+            refund.actual_refunded_amount = refund.approved_amount
+            refund.metadata["manual_confirmation_status"] = "confirmed"
+            refund.metadata["manual_confirmed_by"] = operator_id
+            refund.metadata["manual_confirmed_at"] = datetime.now(UTC).isoformat()
+            refund.updated_at = datetime.now(UTC)
+            await _update_refund_locked(conn, refund)
+
+    await _append_audit_log(
+        pool,
+        RefundAuditLog(
+            refund_id=refund.id,
+            from_status=old_status,
+            to_status=RefundStatus.SUCCEEDED,
+            operator_id=operator_id,
+            operator_type="admin",
+            reason="Manual offline refund confirmed by admin",
+        ),
+    )
+    await _reverse_voucher_for_refund(pool, refund)
+    return refund
 
 
 async def list_refund_requests(
@@ -912,6 +1078,9 @@ async def process_refund_callback(
             metadata={"provider": provider, "callback_status": callback_status},
         ),
     )
+
+    if target == RefundStatus.SUCCEEDED:
+        await _reverse_voucher_for_refund(pool, refund)
 
     # 退货退款: 回调成功后若已登记收货批次且未回补, 由 mark_refund_returned 负责
     return {"status": "processed", "refund_id": refund.id, "to": target.value}

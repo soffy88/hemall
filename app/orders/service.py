@@ -8,6 +8,8 @@ from typing import Any
 
 from obase.persistence.pool import PgPool
 
+from app.cangzhu import finalize_redemption, release_redemption, settle_accrual
+
 from .models import (
     ConcurrentOrderTransitionError,
     OrderSnapshot,
@@ -55,6 +57,20 @@ class OrderService:
         if row is None:
             return None
 
+        # asyncpg 默认把 jsonb 读成 JSON 文本（未注册 codec 的连接池），
+        # OrderSnapshot 需要 dict；这里统一反序列化，避免确认订单时 500。
+        # 兼容历史双编码行：jsonb 里存的是 JSON 字符串时再解一层。
+        billing_address = row["billing_address"]
+        for _ in range(2):
+            if not isinstance(billing_address, str):
+                break
+            billing_address = json.loads(billing_address) if billing_address else None
+        shipping_address = row["shipping_address"]
+        for _ in range(2):
+            if not isinstance(shipping_address, str):
+                break
+            shipping_address = json.loads(shipping_address) if shipping_address else None
+
         return OrderSnapshot(
             id=str(row["id"]),
             version=int(row.get("version", 0) or 0),
@@ -69,8 +85,8 @@ class OrderService:
             grand_total_cents=row["grand_total_cents"],
             payment_provider_name=row["payment_provider_name"],
             payment_intent_id=row["payment_intent_id"],
-            billing_address=row["billing_address"],
-            shipping_address=row["shipping_address"],
+            billing_address=billing_address,
+            shipping_address=shipping_address,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -291,6 +307,7 @@ class OrderService:
             old_status.value,
             new_status.value,
         )
+        await self._run_voucher_hook(order_id, new_status)
         result = await self.get_order(order_id)
         if result is None:  # pragma: no cover - row was just updated in the transaction
             raise OrderNotFoundError(order_id)
@@ -376,6 +393,19 @@ class OrderService:
             reason="order completed",
             operator_id=operator_id,
         )
+
+    async def _run_voucher_hook(self, order_id: str, new_status: OrderStatus) -> None:
+        """仓主试点账本钩子（提交后、幂等）：确认→核销持有券，取消→返还，
+        完成→结算推荐奖励。钩子失败只记日志，绝不破坏订单状态机。"""
+        try:
+            if new_status == OrderStatus.CONFIRMED:
+                await finalize_redemption(self._pool, order_id)
+            elif new_status == OrderStatus.CANCELLED:
+                await release_redemption(self._pool, order_id)
+            elif new_status == OrderStatus.COMPLETED:
+                await settle_accrual(self._pool, order_id)
+        except Exception:
+            logger.exception("cangzhu voucher hook failed for order %s", order_id)
 
     # ── 精确库存联动 (与订单 transition 共用同一事务) ───────────────
 
