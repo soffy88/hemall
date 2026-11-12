@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from .deps import get_current_customer
+from .deps import get_current_customer, get_current_user
 from .store_ops import _csv_response
 
 router = APIRouter(prefix="/store/personalization", tags=["personalization"])
@@ -299,7 +299,8 @@ async def _compute_frequent_purchases(pool: Any, customer_id: str, settings: dic
               AND o.status IN ('completed', 'delivered', 'shipped', 'confirmed', 'paid')
               AND o.created_at >= NOW() - INTERVAL '{lookback_days} days'
               AND oli.preorder_qty = 0
-              AND oli.deleted_at IS NULL
+              AND pv.deleted_at IS NULL
+              AND p.deleted_at IS NULL
             GROUP BY pv.id, pv.sku_code, p.title
             HAVING COUNT(DISTINCT o.id) >= $2
             ORDER BY purchase_count DESC, last_purchase_at DESC
@@ -991,7 +992,7 @@ class PersonalizationSettings(BaseModel):
     homepage_top_k: int = Field(default=20, ge=5, le=100)
 
 
-def _require_admin(request: Request, principal: dict[str, Any] = Depends(get_current_customer)) -> dict[str, Any]:
+def _require_admin(request: Request, principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     # 复用现有的 admin 鉴权逻辑
     from .deps import assert_staff_role
     return assert_staff_role(principal, {"admin", "support"})

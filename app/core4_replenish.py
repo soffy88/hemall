@@ -94,6 +94,8 @@ async def _compute_replenish_suggestions(pool: Any, settings: dict[str, Any]) ->
     cost_fallback_pct = settings.get("cost_fallback_pct", 0.6)
     min_order_qty = settings.get("min_order_qty", 1)
 
+    import json
+
     async with pool.acquire() as conn:
         # 1. 取所有在售变体（有批次、非测试、有库存或有销量）
         variants = await conn.fetch(
@@ -114,6 +116,11 @@ async def _compute_replenish_suggestions(pool: Any, settings: dict[str, Any]) ->
             WHERE pv.deleted_at IS NULL AND p.deleted_at IS NULL AND pv.status = 'active'
             """
         )
+        # asyncpg returns JSONB as string, parse it; Records are immutable so convert to dict first
+        variants = [dict(v) for v in variants]
+        for v in variants:
+            if isinstance(v["batches"], str):
+                v["batches"] = json.loads(v["batches"])
 
         # 2. 近 7/14 天销量（按件/克聚合）
         sales_7d: dict[str, dict] = defaultdict(lambda: {"qty": 0, "orders": 0})

@@ -22,7 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
-from .deps import get_current_customer
+from .deps import get_current_user
 from .middleware.metrics import ENGINE_TICK_LAST_SECONDS, ENGINE_FAILURE_TOTAL, HTTP_REQUEST_DURATION, HTTP_REQUESTS_TOTAL
 
 router = APIRouter(prefix="/admin/system-status", tags=["monitoring"])
@@ -71,7 +71,7 @@ class AlertListResponse(BaseModel):
 # ── 管理端鉴权 ────────────────────────────────────────────────────────────
 
 def _require_admin(
-    request: Request, principal: dict[str, Any] = Depends(get_current_customer)
+    request: Request, principal: dict[str, Any] = Depends(get_current_user)
 ) -> dict[str, Any]:
     from .deps import assert_staff_role
     return assert_staff_role(principal, {"admin", "support"})

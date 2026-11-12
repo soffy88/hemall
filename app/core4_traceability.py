@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from .deps import get_current_customer
+from .deps import get_current_customer, get_current_customer_optional, get_current_user
 
 router = APIRouter(prefix="/store/traceability", tags=["traceability"])
 
@@ -58,7 +58,7 @@ async def get_product_traceability(
     product_id: str,
     request: Request,
     include_inactive: bool = Query(False, description="包含非 active 批次（如已售罄/过期）"),
-    principal: dict[str, Any] | None = Depends(get_current_customer),
+    principal: dict[str, Any] | None = Depends(get_current_customer_optional),
 ) -> TraceabilityResponse:
     """获取商品完整溯源信息（为前端详情页"溯源卡片"提供数据）。
 
@@ -93,7 +93,7 @@ async def get_product_traceability(
                    ib.origin_region, ib.storage_condition, ib.shelf_life_days,
                    ib.expiration_time, ib.quality_certificate_url,
                    ib.inspection_status, ib.inspection_note,
-                   ib.inspection_at, ib.stock_qty, ib.reserved_qty,
+                   ib.inspected_at, ib.stock_qty, ib.reserved_qty,
                    ib.retail_price_cents
             FROM inventory_batch ib
             JOIN product_variant pv ON pv.id = ib.variant_id
@@ -126,7 +126,7 @@ async def get_product_traceability(
             quality_certificate_url=r["quality_certificate_url"] or None,
             inspection_status=r["inspection_status"] or "pending",
             inspection_note=r["inspection_note"] or None,
-            inspection_at=r["inspection_at"].isoformat() if r["inspection_at"] else None,
+            inspection_at=r["inspected_at"].isoformat() if r["inspected_at"] else None,
             available_qty=max(0, available),
             retail_price_cents=_num(r["retail_price_cents"]),
         )
@@ -334,7 +334,7 @@ def _num(v: Any) -> int:
 
 # ── 管理端：溯源数据完整性报表 ────────────────────────────────────────────
 
-def _require_admin(request: Request, principal: dict[str, Any] = Depends(get_current_customer)) -> dict[str, Any]:
+def _require_admin(request: Request, principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     from .deps import assert_staff_role
     return assert_staff_role(principal, {"admin", "support"})
 
