@@ -57,7 +57,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         topbar={
           <div className="flex items-center justify-between w-full px-4 h-14 bg-white border-b border-gray-200">
             <div className="flex items-center gap-3">
-              <span className="text-lg font-semibold text-gray-900">Hemall 商家后台</span>
+              <span className="text-lg font-semibold text-gray-900">宋鲜生 商家后台</span>
             </div>
             <div className="flex items-center gap-3">
               <AdminOrderAlerts />

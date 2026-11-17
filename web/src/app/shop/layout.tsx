@@ -143,10 +143,8 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
         <div className="max-w-6xl mx-auto px-3 sm:px-4 min-h-16 py-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <div className="flex items-center gap-2 shrink-0">
             <Link href="/shop" className="flex items-center gap-2 shrink-0">
-              <span className="w-8 h-8 rounded-lg bg-emerald-700 text-white flex items-center justify-center text-base">
-                🛍
-              </span>
-              <span className="text-lg font-bold tracking-tight text-gray-900">Hemall</span>
+              <img src="/logo-header.webp" alt="宋鲜生" className="w-8 h-8 rounded-lg" />
+              <span className="text-lg font-bold tracking-tight text-gray-900">宋鲜生</span>
             </Link>
             {/* 商品分类下拉: 菜单栏最左侧, 点击弹出分类列表 */}
             <div className="relative" ref={catRef}>
@@ -259,7 +257,7 @@ function ShopChrome({ children }: { children: React.ReactNode }) {
             酒类专区（年龄确认）
           </Link>
         </div>
-        <div className="text-center text-gray-400">Hemall Commerce · Powered by 3O</div>
+        <div className="text-center text-gray-400">宋鲜生 · 社区生鲜 | Powered by 3O</div>
       </footer>
     </div>
   );

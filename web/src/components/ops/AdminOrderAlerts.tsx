@@ -64,7 +64,7 @@ export default function AdminOrderAlerts() {
         beep();
         if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
           for (const e of res.events.slice(0, 3)) {
-            new Notification(e.title, { body: e.detail || 'Hemall 门店提醒', tag: `${e.type}:${e.order_id}` });
+            new Notification(e.title, { body: e.detail || '宋鲜生 门店提醒', tag: `${e.type}:${e.order_id}` });
           }
         }
       }

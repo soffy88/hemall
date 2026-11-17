@@ -75,7 +75,7 @@ export default function OrderPrintPage() {
           style={paper === '58' ? { width: '58mm', fontSize: '10px', lineHeight: 1.45, padding: '2mm' }
             : { width: '190mm', fontSize: '13px', padding: '4mm' }}>
           <div style={{ textAlign: 'center', marginBottom: 4 }}>
-            <div style={{ fontWeight: 700, fontSize: paper === '58' ? '13px' : '18px' }}>Hemall 惠环社区店</div>
+            <div style={{ fontWeight: 700, fontSize: paper === '58' ? '13px' : '18px' }}>宋鲜生 社区生鲜店</div>
             <div>{paper === '58' ? '拣货小票' : '拣货单 / 小票'}</div>
             <div>{data.order.shipping_method_code === 'pickup' ? '到店自提' : '配送'}</div>
           </div>
