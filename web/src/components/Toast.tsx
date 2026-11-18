@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useState } from 'react';
 
-type ToastKind = 'info' | 'error';
+type ToastKind = 'info' | 'error' | 'success' | 'warning';
 interface ToastMessage {
   id: number;
   text: string;
@@ -20,6 +20,15 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     setTimeout(() => setToasts((prev) => prev.filter((m) => m.id !== id)), 3200);
   }, []);
 
+  const getBgColor = (kind: ToastKind) => {
+    switch (kind) {
+      case 'error': return 'bg-red-600';
+      case 'success': return 'bg-emerald-600';
+      case 'warning': return 'bg-amber-600';
+      default: return 'bg-gray-900';
+    }
+  };
+
   return (
     <ToastContext.Provider value={show}>
       {children}
@@ -27,9 +36,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`px-4 py-2 rounded-lg text-sm font-medium shadow-lg text-white ${
-              t.kind === 'error' ? 'bg-red-600' : 'bg-gray-900'
-            }`}
+            className={`px-4 py-2 rounded-lg text-sm font-medium shadow-lg text-white ${getBgColor(t.kind)}`}
           >
             {t.text}
           </div>
@@ -39,7 +46,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** 显示一条提示：show(text) 或 show(text, 'error')。 */
+/** 显示一条提示：show(text) 或 show(text, 'error'/'success'/'warning')。 */
 export function useToast() {
   const show = useContext(ToastContext);
   if (!show) throw new Error('useToast must be used within ToastProvider');
