@@ -55,6 +55,7 @@ from .core4_pickup import router as pickup_router, admin_router as pickup_admin_
 from .core4_traceability import router as traceability_router
 from .core4_monitoring import router as monitoring_router
 from .core4_banner import router as banner_router, admin_router as banner_admin_router
+from .scale_router import router as scale_router
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
@@ -1312,6 +1313,7 @@ def build_router() -> APIRouter:
     router.include_router(monitoring_router)
     router.include_router(banner_router)
     router.include_router(banner_admin_router)
+    router.include_router(scale_router)
     router.include_router(ext_bespoke_router)
     router.include_router(hardware_webhook_router)
 

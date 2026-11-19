@@ -258,6 +258,8 @@ export interface Customer {
   is_merchant?: boolean;
   /** 测试/停用账号：从报表与顾客统计排除 */
   excluded_from_reports?: boolean;
+  /** 员工标记：用于门店工作台权限判断 */
+  is_staff?: boolean;
 }
 
 // ── Cart types ──────────────────────────────────────────────────
@@ -1141,4 +1143,147 @@ export interface PhotoDraftResult {
   price_cents: number;
   pricing_mode: 'piece' | 'weight';
   photo: ProductPhoto;
+}
+
+// ── Scale / POS / Pick Weigh types ─────────────────────────────────
+
+export interface ScaleDevice {
+  id: string;
+  name: string;
+  port_path: string;
+  baud_rate: number;
+  protocol: string;
+  parser_config: Record<string, unknown>;
+  stable_count: number;
+  stable_threshold_g: number;
+  tare_enabled: boolean;
+  zero_enabled: boolean;
+  bridge_enabled: boolean;
+  bridge_ws_port: number | null;
+  location_id: string | null;
+  note: string;
+  status: string;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface ScaleReading {
+  weight_grams: number;
+  unit: 'g' | 'kg';
+  raw: string;
+  stable: boolean;
+  timestamp: number;
+}
+
+export interface ScaleParseResponse {
+  reading: ScaleReading | null;
+}
+
+export interface RecognitionCandidate {
+  variant_id: string;
+  score: number;
+  name: string;
+  sku: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  image_url?: string;
+  matched?: boolean;
+}
+
+export interface RecognizeResponse {
+  candidates: RecognitionCandidate[];
+  model_configured: boolean;
+  matched?: boolean;
+}
+
+export interface ProductSearchResult {
+  variant_id: string;
+  name: string;
+  sku: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  image_url?: string;
+}
+
+export interface SearchProductResponse {
+  products: ProductSearchResult[];
+}
+
+export interface TicketLine {
+  id: string;
+  variant_id: string;
+  name: string;
+  sku: string;
+  weight_grams: number;
+  unit_price_cents: number;
+  price_basis_grams: number;
+  amount_cents: number;
+  pricing_mode: 'piece' | 'weight';
+}
+
+export interface SettleRequest {
+  lines: {
+    variant_id: string;
+    weight_grams: number;
+    unit_price_cents: number;
+    price_basis_grams: number;
+    amount_cents: number;
+    pricing_mode: 'piece' | 'weight';
+  }[];
+  customer_id: string | null;
+  payment_method: 'cash' | 'qr';
+  cash_received: number;
+}
+
+export interface SettleResponse {
+  order_no: string;
+  lines: Array<{
+    name: string;
+    quantity: number;
+    amount_cents: number;
+  }>;
+}
+
+export interface PickOrderLine {
+  id: string;
+  variant_id: string;
+  name: string;
+  sku: string;
+  quantity: number;
+  unit: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  estimated_weight_grams?: number;
+  actual_weight_grams?: number;
+  estimated_amount_cents: number;
+  actual_amount_cents?: number;
+  diff_cents?: number;
+  settled: boolean;
+}
+
+export interface PickOrder {
+  id: string;
+  order_no: string;
+  customer_name: string;
+  customer_phone: string;
+  status: string;
+  lines: PickOrderLine[];
+  created_at: string;
+}
+
+export interface PickOrdersResponse {
+  orders: PickOrder[];
+}
+
+export interface RecordPickWeightRequest {
+  order_id: string;
+  line_id: string;
+  weight_grams: number;
+  confirmed_variant_id: string;
+}
+
+export interface SkipPickLineRequest {
+  order_id: string;
+  line_id: string;
+  reason: string;
 }

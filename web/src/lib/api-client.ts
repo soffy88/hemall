@@ -67,6 +67,22 @@ import type {
   TaxRate,
   TokenResponse,
   VoucherList,
+  // Scale / POS / Pick Weigh
+  ScaleDevice,
+  ScaleReading,
+  ScaleParseResponse,
+  RecognitionCandidate,
+  RecognizeResponse,
+  ProductSearchResult,
+  SearchProductResponse,
+  TicketLine,
+  SettleRequest,
+  SettleResponse,
+  PickOrderLine,
+  PickOrder,
+  PickOrdersResponse,
+  RecordPickWeightRequest,
+  SkipPickLineRequest,
 } from '@/types/api';
 
 import { errMessage } from '@/lib/errors';
@@ -1706,4 +1722,83 @@ export const api = {
 
   myCapabilities: () =>
     request<{ can_ingest: boolean; is_staff: boolean }>('/store/my-capabilities', {}, 'customer'),
+
+  // ── Scale / POS / Pick Weigh ─────────────────────────────────────
+
+  /** 秤设备列表 */
+  scaleListDevices: () =>
+    request<ScaleDevice[]>('/admin/scale/devices', {}, true),
+
+  /** 创建秤设备 */
+  scaleCreateDevice: (data: Omit<ScaleDevice, 'id' | 'created_at' | 'updated_at' | 'status'>) =>
+    request<ScaleDevice>('/admin/scale/devices', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 更新秤设备 */
+  scaleUpdateDevice: (deviceId: string, data: Partial<ScaleDevice>) =>
+    request<ScaleDevice>(`/admin/scale/devices/${deviceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 删除秤设备 */
+  scaleDeleteDevice: (deviceId: string) =>
+    request<{ ok: boolean }>(`/admin/scale/devices/${deviceId}`, {
+      method: 'DELETE',
+    }, true),
+
+  /** 解析秤数据行 */
+  scaleParseLine: (line: string, deviceId: string) =>
+    request<ScaleParseResponse>('/admin/scale/parse', {
+      method: 'POST',
+      body: JSON.stringify({ line, device_id: deviceId }),
+    }, true),
+
+  /** POS 收银模式识别 */
+  scaleRecognize: (file: File, weightGrams: number) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('weight_grams', String(weightGrams));
+    return requestForm<RecognizeResponse>('/admin/scale/recognize', form);
+  },
+
+  /** 拣货称重模式识别 */
+  scaleRecognizePick: (file: File, weightGrams: number, expectedVariantId: string) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('weight_grams', String(weightGrams));
+    form.append('expected_variant_id', expectedVariantId);
+    return requestForm<RecognizeResponse>('/admin/scale/recognize-pick', form);
+  },
+
+  /** 搜索商品（手工搜索） */
+  scaleSearchProduct: (query: string) =>
+    request<SearchProductResponse>(`/admin/scale/search-product?q=${encodeURIComponent(query)}`, {}, true),
+
+  /** 收银结算 */
+  scaleSettle: (data: SettleRequest) =>
+    request<SettleResponse>('/admin/scale/settle', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 获取拣货订单列表 */
+  scalePickOrders: () =>
+    request<PickOrdersResponse>('/admin/scale/pick-orders', {}, true),
+
+  /** 记录拣货实称重量 */
+  scaleRecordPickWeight: (data: RecordPickWeightRequest) =>
+    request<{ ok: boolean }>('/admin/scale/record-pick-weight', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 跳过拣货行 */
+  scaleSkipPickLine: (data: SkipPickLineRequest) =>
+    request<{ ok: boolean }>('/admin/scale/skip-pick-line', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
 };

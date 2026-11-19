@@ -40,6 +40,14 @@ dependencies = [
     # pillow-heif 自带 libheif wheel, 无需系统包。
     "pillow>=11.0",
     "pillow-heif>=0.20",
+    # 秤接入: 串口通讯
+    "pyserial>=3.5",
+    # 秤桥接程序: WebSocket 服务
+    "websockets>=12.0",
+    # 视觉识别: ONNX Runtime CPU 推理
+    "onnxruntime>=1.18",
+    # 视觉识别: FAISS 向量检索
+    "faiss-cpu>=1.8",
 ]
 
 [project.optional-dependencies]
