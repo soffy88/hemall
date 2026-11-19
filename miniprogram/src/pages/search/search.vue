@@ -37,6 +37,12 @@ function clearSearchHistory() {
     uni.removeStorageSync('search_history')
 }
 
+// 处理清空历史确认
+function handleClearHistory() {
+    clearSearchHistory()
+    showClearHistory.value = false
+}
+
 // 搜索商品（防抖）
 const debouncedSearch = debounce(async (keyword: string) => {
     if (!keyword.trim()) {
@@ -213,7 +219,7 @@ onMounted(() => {
                 <text class="modal-title">确定清空搜索历史吗？</text>
                 <view class="modal-actions">
                     <text class="modal-btn cancel" @tap="showClearHistory = false">取消</text>
-                    <text class="modal-btn confirm" @tap="clearSearchHistory; showClearHistory = false">清空</text>
+                    <text class="modal-btn confirm" @tap="handleClearHistory">清空</text>
                 </view>
             </view>
         </view>

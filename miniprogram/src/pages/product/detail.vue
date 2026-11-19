@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import { productApi, cartApi } from '@/utils/api'
+import { productApi, cartApi, membershipApi } from '@/utils/api'
 import { formatPriceWithSymbol, getProductMainImage, getVariantMainImage, parseOptionValues, isWeightProduct, extractWeightBasis } from '@/utils/helpers'
 import { getToken } from '@/utils/request'
-import type { Product, ProductVariant, ProductBatch, AddLineItemRequest } from '@/types'
+import type { Product, ProductVariant, ProductBatch, AddLineItemRequest, MembershipSummary } from '@/types'
 
 const props = defineProps<{ id: string }>()
 
@@ -47,9 +47,26 @@ const quantity = ref(1)
 const showSkuModal = ref(false)
 const addingToCart = ref(false)
 const cartCount = ref(0)
+const membership = ref<MembershipSummary | null>(null)
 
 // 规格选择状态
 const selectedOptions = ref<Record<string, string>>({})
+
+// 会员价计算
+const memberPrice = computed(() => {
+    if (!membership.value || !selectedVariant.value) return null
+    const tier = membership.value.tier
+    const tierDiscounts: Record<string, number> = {
+        silver: 0.05,
+        gold: 0.08,
+        platinum: 0.10,
+        diamond: 0.12
+    }
+    const rate = tierDiscounts[tier] || 0
+    if (rate === 0) return null
+    const basePrice = selectedVariant.value.min_price_cents || selectedVariant.value.reference_price_cents
+    return Math.floor(basePrice * (1 - rate))
+})
 
 async function fetchProduct() {
     loading.value = true
@@ -188,6 +205,12 @@ async function addToCart() {
     }
 }
 
+// 处理规格弹窗的确定按钮（加入购物车并关闭弹窗）
+async function handleAddToCart() {
+    await addToCart()
+    // addToCart 内部会在成功时自动关闭 showSkuModal
+}
+
 // 立即购买
 async function buyNow() {
     if (!selectedVariant.value) {
@@ -243,6 +266,12 @@ function getWeightTip(): string | null {
 onMounted(() => {
     fetchProduct()
     updateCartCount()
+    // 获取会员信息
+    membershipApi.getMembershipSummary().then(res => {
+        membership.value = res
+    }).catch(() => {
+        // 忽略未登录或错误情况
+    })
 })
 
 watch(() => props.id, () => {
@@ -279,6 +308,14 @@ watch(() => props.id, () => {
                     <text class="original-price" v-if="selectedVariant && selectedVariant.reference_price_cents > (selectedVariant.min_price_cents || 0)">
                         {{ formatPriceWithSymbol(selectedVariant.reference_price_cents) }}
                     </text>
+                </view>
+
+                <!-- 会员价 -->
+                <view class="member-price-row" v-if="memberPrice">
+                    <text class="member-price-label">会员价</text>
+                    <text class="member-price">{{ formatPriceWithSymbol(memberPrice) }}</text>
+                    <text class="price-unit">/ 份起</text>
+                    <text class="member-badge" v-if="membership?.tier">{{ membership.tier }}</text>
                 </view>
 
                 <!-- 称重商品提示 -->
@@ -365,6 +402,11 @@ watch(() => props.id, () => {
                             <view class="sku-price">
                                 <text class="price">{{ formatPriceWithSymbol(selectedVariant?.min_price_cents || product?.min_price_cents) }}</text>
                             </view>
+                            <view class="sku-member-price" v-if="memberPrice">
+                                <text class="member-price-label">会员价</text>
+                                <text class="member-price">{{ formatPriceWithSymbol(memberPrice) }}</text>
+                                <text class="member-badge" v-if="membership?.tier">{{ membership.tier }}</text>
+                            </view>
                             <view class="sku-selected-spec" v-if="selectedVariant">
                                 {{ formatOptionText(selectedVariant.option_values) }}
                             </view>
@@ -401,7 +443,7 @@ watch(() => props.id, () => {
                 </view>
                 <view class="sku-footer">
                     <button class="sku-btn-cancel" @tap="showSkuModal = false">取消</button>
-                    <button class="sku-btn-confirm" @tap="addToCart; showSkuModal = false" :disabled="addingToCart">确定</button>
+                    <button class="sku-btn-confirm" @tap="handleAddToCart" :disabled="addingToCart">确定</button>
                 </view>
             </view>
         </view>
@@ -472,6 +514,36 @@ watch(() => props.id, () => {
     font-size: 14px;
     color: #9E9E9E;
     text-decoration: line-through;
+}
+
+.member-price-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 8px 0;
+    border-top: 1px dashed #EEEEEE;
+}
+
+.member-price-label {
+    font-size: 13px;
+    color: #9E9E9E;
+}
+
+.member-price {
+    font-size: 20px;
+    font-weight: 700;
+    color: #F57C00;
+}
+
+.member-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    background: linear-gradient(135deg, #FFD700, #FFA000);
+    color: #1A1A1A;
+    border-radius: 4px;
+    font-weight: 600;
+    margin-left: 4px;
 }
 
 .weight-tip {
@@ -840,6 +912,34 @@ watch(() => props.id, () => {
 .sku-selected-spec {
     font-size: 13px;
     color: #9E9E9E;
+}
+
+.sku-member-price {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.sku-member-price .member-price-label {
+    font-size: 12px;
+    color: #9E9E9E;
+}
+
+.sku-member-price .member-price {
+    font-size: 16px;
+    font-weight: 700;
+    color: #F57C00;
+}
+
+.sku-member-price .member-badge {
+    font-size: 9px;
+    padding: 1px 4px;
+    background: linear-gradient(135deg, #FFD700, #FFA000);
+    color: #1A1A1A;
+    border-radius: 3px;
+    font-weight: 600;
+    margin-left: 4px;
 }
 
 .sku-footer {

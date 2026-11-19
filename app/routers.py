@@ -50,8 +50,11 @@ from .core4_delivery import store_router as delivery_store_router
 from .core4_expiry import router as expiry_router
 from .core4_replenish import router as replenish_router
 from .core4_personalization import router as personalization_router
+from .core4_pintuan import router as pintuan_router, admin_router as pintuan_admin_router
+from .core4_pickup import router as pickup_router, admin_router as pickup_admin_router
 from .core4_traceability import router as traceability_router
 from .core4_monitoring import router as monitoring_router
+from .core4_banner import router as banner_router, admin_router as banner_admin_router
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
 from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
@@ -1027,6 +1030,63 @@ async def issue_pickup_ticket(
     }
 
 
+@ext_bespoke_router.get("/store/orders/lookup-by-pickup-code")
+async def lookup_order_by_pickup_code(
+    request: Request,
+    pickup_code: str = Query(..., description="取货码（JWT token）"),
+):
+    """通过取货码查询订单（门店端核销用）。
+
+    解析 JWT 中的 order_id，返回订单详情。
+    """
+    from .security.tokens import decode_token, TOKEN_TYPE_PICKUP, TokenTypeError
+    from .orders.service import OrderService, OrderNotFoundError
+
+    pool = _pool(request)
+    cfg = request.app.state.config
+
+    try:
+        payload = decode_token(
+            pickup_code,
+            typ=TOKEN_TYPE_PICKUP,
+            secret=cfg.jwt_secret,
+            algorithm=cfg.jwt_algorithm,
+        )
+    except TokenTypeError:
+        raise HTTPException(400, "无效的取货码")
+    except Exception:
+        raise HTTPException(400, "取货码已过期或格式错误")
+
+    order_id = payload.get("order_id")
+    if not order_id:
+        raise HTTPException(400, "取货码中缺少订单 ID")
+
+    svc = OrderService(pool)
+    try:
+        order = await svc.get_order(order_id)
+        items = await svc.get_order_items(order_id)
+    except OrderNotFoundError:
+        raise HTTPException(404, "订单不存在")
+
+    if order is None:
+        raise HTTPException(404, "订单不存在")
+
+    return {
+        "order": order.model_dump(mode="json"),
+        "items": [
+            dict(
+                id=str(i["id"]),
+                quantity=i["quantity"],
+                unit_price_cents=i["unit_price_cents"],
+                line_total_cents=i["line_total_cents"],
+                product_id=i.get("product_id"),
+                variant_id=i.get("variant_id"),
+            )
+            for i in items
+        ],
+    }
+
+
 # ── 智能体网关 (Agent Gateway): Hermes/Cindy/任意 Agent 接管系统 ───────
 # 鉴权: /agent/* 全部要求 ADMIN OPS JWT (get_current_user)，手机指挥台先登录。
 # 工具发现/执行/命令/视频传货 —— 见 app/ext/agent_gateway.py。
@@ -1244,8 +1304,14 @@ def build_router() -> APIRouter:
     router.include_router(expiry_router)
     router.include_router(replenish_router)
     router.include_router(personalization_router)
+    router.include_router(pintuan_router)
+    router.include_router(pintuan_admin_router)
+    router.include_router(pickup_router)
+    router.include_router(pickup_admin_router)
     router.include_router(traceability_router)
     router.include_router(monitoring_router)
+    router.include_router(banner_router)
+    router.include_router(banner_admin_router)
     router.include_router(ext_bespoke_router)
     router.include_router(hardware_webhook_router)
 

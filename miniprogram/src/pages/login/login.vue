@@ -6,11 +6,7 @@ import { wxLogin, saveToken, getToken } from '@/utils/request'
 const loading = ref(false)
 const agreeing = ref(true)
 const redirectUrl = ref('')
-
-// Helper functions
-function goPhoneLogin() {
-    uni.showToast({ title: '手机验证码登录开发中', icon: 'none' })
-}
+const phoneLoginLoading = ref(false)
 
 async function handleWeChatLogin() {
     if (!agreeing.value) {
@@ -37,6 +33,40 @@ async function handleWeChatLogin() {
         uni.showToast({ title: e.message || '登录失败', icon: 'none' })
     } finally {
         loading.value = false
+    }
+}
+
+// 手机号登录处理：通过 button open-type="getPhoneNumber" 触发
+async function onGetPhoneNumber(e: any) {
+    if (!agreeing.value) {
+        uni.showToast({ title: '请先阅读并同意用户协议和隐私政策', icon: 'none' })
+        return
+    }
+
+    const detail = e.detail
+    if (detail.errMsg !== 'getPhoneNumber:ok') {
+        uni.showToast({ title: detail.errMsg || '获取手机号失败', icon: 'none' })
+        return
+    }
+
+    phoneLoginLoading.value = true
+    try {
+        const phoneCode = detail.code
+        const res = await authApi.wechatPhoneLogin(phoneCode)
+        saveToken(res)
+        uni.showToast({ title: '登录成功', icon: 'success' })
+
+        setTimeout(() => {
+            if (redirectUrl.value) {
+                uni.redirectTo({ url: redirectUrl.value })
+            } else {
+                uni.switchTab({ url: '/pages/index/index' })
+            }
+        }, 500)
+    } catch (err: any) {
+        uni.showToast({ title: err.message || '手机号登录失败', icon: 'none' })
+    } finally {
+        phoneLoginLoading.value = false
     }
 }
 
@@ -99,7 +129,7 @@ onMounted(() => {
                 </view>
             </view>
 
-            <!-- 其他登录方式占位 -->
+            <!-- 其他登录方式 -->
             <view class="divider-row">
                 <view class="divider-line" />
                 <text class="divider-text">其他方式登录</text>
@@ -107,9 +137,15 @@ onMounted(() => {
             </view>
 
             <view class="other-login">
-                <button class="btn-phone" @tap="goPhoneLogin">
-                    <text class="phone-icon">📱</text>
-                    <text>手机验证码登录</text>
+                <button class="btn-phone" @getphonenumber="onGetPhoneNumber" :disabled="phoneLoginLoading" open-type="getPhoneNumber" lang="zh_CN">
+                    <view class="btn-content" v-if="!phoneLoginLoading">
+                        <text class="phone-icon">📱</text>
+                        <text>手机号一键登录</text>
+                    </view>
+                    <view class="btn-content" v-else>
+                        <uni-loading-icon size="20" color="#616161" />
+                        <text>登录中...</text>
+                    </view>
                 </button>
             </view>
 

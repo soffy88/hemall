@@ -76,6 +76,7 @@ function wxLogin(): Promise<{ code: string }> {
     })
 }
 
+
 // 处理 401 错误：尝试刷新 Token 并重试
 async function handle401(requestFn: () => Promise<any>): Promise<any> {
     if (isRefreshing) {
@@ -223,8 +224,8 @@ export const http = {
     put<T = any>(url: string, data?: any, options?: Omit<RequestOptions, 'method' | 'data'>) {
         return request<T>(url, { ...options, method: 'PUT', data })
     },
-    delete<T = any>(url: string, options?: Omit<RequestOptions, 'method' | 'data'>) {
-        return request<T>(url, { ...options, method: 'DELETE' })
+    delete<T = any>(url: string, data?: any, options?: Omit<RequestOptions, 'method' | 'data'>) {
+        return request<T>(url, { ...options, method: 'DELETE', data })
     }
 }
 

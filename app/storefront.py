@@ -3329,6 +3329,251 @@ async def bind_wechat_customer(
     return customer
 
 
+# ── 微信手机号登录 ──────────────────────────────────────────────
+
+
+class WeChatPhoneLoginRequest(BaseModel):
+    code: str
+    referral_code: str = ""
+
+
+@router.post("/customers/wechat-phone-login", response_model=CustomerTokenResponse)
+async def wechat_phone_login_customer(body: WeChatPhoneLoginRequest, request: Request):
+    """微信手机号登录：用 getPhoneNumber code 换取手机号 → 以手机号为主键登录/注册。
+
+    手机号已注册：直接签发 token（更新 wechat_openid/unionid）
+    手机号未注册：创建新客户（phone 作为唯一标识，email 占位），并绑定微信身份
+    """
+    cfg = request.app.state.config
+    app_id = str(getattr(cfg, "wechat_mp_app_id", "") or "").strip()
+    app_secret = str(getattr(cfg, "wechat_mp_app_secret", "") or "").strip()
+    if not app_id or not app_secret:
+        raise HTTPException(503, "微信登录未配置")
+
+    pool = _pool(request)
+    from app.ext import wechat_mp
+
+    try:
+        phone_info = await wechat_mp.get_phone_number(app_id, app_secret, body.code)
+    except wechat_mp.WeChatMpError as exc:
+        raise HTTPException(401, f"获取手机号失败 (errcode={exc.errcode})") from exc
+    except Exception as exc:
+        raise HTTPException(503, "微信服务暂不可用") from exc
+
+    phone_number = phone_info.get("pure_phone_number") or phone_info.get("phone_number")
+    if not phone_number:
+        raise HTTPException(400, "未获取到手机号")
+
+    # 查找已有手机号客户
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT id, email, status, wechat_openid FROM "customer" '
+            "WHERE phone = $1 AND deleted_at IS NULL",
+            phone_number,
+        )
+
+    session = await wechat_mp.jscode2session(app_id, app_secret, body.code)
+    openid = session["openid"]
+    unionid = session.get("unionid")
+
+    if row is not None:
+        if row["status"] != "active":
+            raise HTTPException(403, f"account not active (status={row['status']!r})")
+        # 更新微信绑定
+        async with pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE "customer" SET wechat_openid = $1, wechat_unionid = COALESCE($2, wechat_unionid) WHERE id = $3',
+                openid,
+                unionid,
+                str(row["id"]),
+            )
+        issued = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
+        return CustomerTokenResponse(
+            **{"access_token": issued, "customer_id": str(row["id"]), "email": row["email"]}
+        )
+
+    # 手机号未注册，创建新客户
+    from obase.auth.password import bcrypt_hash
+    from omodul.create_customer import (
+        CreateCustomerConfig,
+        CreateCustomerInput,
+        create_customer,
+    )
+    from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
+    from obase.uuid7 import uuid7
+
+    wx_referrer_id: str | None = None
+    if (body.referral_code or "").strip():
+        async with pool.acquire() as conn:
+            try:
+                wx_referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+
+    placeholder_email = f"wx_phone_{phone_number}@mp.local"
+    result = await create_customer(
+        _cfg(request, CreateCustomerConfig),
+        CreateCustomerInput(email=placeholder_email, phone=phone_number, name="微信用户"),
+        _output_dir(request, "create_customer"),
+        pool=pool,
+    )
+    if result["status"] == "failed":
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT id, email, status FROM "customer" '
+                "WHERE phone = $1 AND deleted_at IS NULL",
+                phone_number,
+            )
+        if row is None:
+            raise HTTPException(400, result["error"]["message"])
+        if row["status"] != "active":
+            raise HTTPException(403, f"account not active (status={row['status']!r})")
+        async with pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE "customer" SET wechat_openid = $1, wechat_unionid = $2 WHERE id = $3',
+                openid,
+                unionid,
+                str(row["id"]),
+            )
+        issued = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
+        return CustomerTokenResponse(
+            **{"access_token": issued, "customer_id": str(row["id"]), "email": row["email"]}
+        )
+
+    customer_id = str(result["customer_id"])
+    hash_kwargs: dict[str, Any] = {"password": "wx-mp-" + str(uuid7())}
+    password_hash = bcrypt_hash(**hash_kwargs)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE "customer" SET password_hash = $1, wechat_openid = $2, wechat_unionid = $3 WHERE id = $4',
+            password_hash,
+            openid,
+            unionid,
+            customer_id,
+        )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if wx_referrer_id is not None:
+                await bind_referral(conn, customer_id=customer_id, referrer_id=wx_referrer_id)
+            await ensure_referral_code(conn, customer_id)
+
+    issued = _sign_customer_token(customer_id, placeholder_email, cfg.jwt_secret, cfg.jwt_algorithm)
+    return CustomerTokenResponse(
+        **{"access_token": issued, "customer_id": customer_id, "email": placeholder_email}
+    )
+
+
+# ── 订阅消息下发 ──────────────────────────────────────────────
+
+
+class SubscribeMessageRequest(BaseModel):
+    template_id: str
+    page: str
+    data: dict[str, Any]
+
+
+@router.post("/customers/subscribe-message")
+async def send_subscribe_message_endpoint(
+    body: SubscribeMessageRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """下发订阅消息 (模板消息)。
+
+    需要用户已授权订阅对应模板 ID。
+    """
+    cfg = request.app.state.config
+    app_id = str(getattr(cfg, "wechat_mp_app_id", "") or "").strip()
+    app_secret = str(getattr(cfg, "wechat_mp_app_secret", "") or "").strip()
+    if not app_id or not app_secret:
+        raise HTTPException(503, "微信订阅消息未配置")
+
+    pool = _pool(request)
+    from app.ext import wechat_mp
+
+    # 获取用户 openid
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT wechat_openid FROM "customer" WHERE id = $1 AND deleted_at IS NULL',
+            principal["customer_id"],
+        )
+    if not row or not row["wechat_openid"]:
+        raise HTTPException(400, "用户未绑定微信，无法下发订阅消息")
+
+    try:
+        result = await wechat_mp.send_subscribe_message(
+            app_id,
+            app_secret,
+            row["wechat_openid"],
+            body.template_id,
+            body.page,
+            body.data,
+        )
+    except wechat_mp.WeChatMpError as exc:
+        # 用户未订阅等非致命错误不抛 500
+        if exc.errcode in (43101, 41028, 41029, 41030):
+            return {"errcode": exc.errcode, "errmsg": exc.errmsg, "note": "用户未订阅或模板无效"}
+        raise HTTPException(400, f"订阅消息发送失败 (errcode={exc.errcode})") from exc
+    except Exception as exc:
+        raise HTTPException(503, "微信服务暂不可用") from exc
+
+    return result
+
+
+# ── 小程序码生成 ──────────────────────────────────────────────
+
+
+class WxacodeRequest(BaseModel):
+    scene: str
+    page: str | None = None
+    width: int = 430
+    auto_color: bool = False
+    line_color: dict[str, int] | None = None
+    is_hyaline: bool = False
+
+
+@router.post("/wxacode")
+async def get_wxacode(
+    body: WxacodeRequest,
+    request: Request,
+    principal: dict | None = Depends(_optional_customer),
+):
+    """生成小程序码 (无限制版本)。
+
+    场景值 scene 最大 32 字符，可用于标识分享来源、邀请码、商品 ID 等。
+    返回图片二进制 (PNG)，Content-Type: image/png。
+    """
+    cfg = request.app.state.config
+    app_id = str(getattr(cfg, "wechat_mp_app_id", "") or "").strip()
+    app_secret = str(getattr(cfg, "wechat_mp_app_secret", "") or "").strip()
+    if not app_id or not app_secret:
+        raise HTTPException(503, "微信小程序码未配置")
+
+    if len(body.scene) > 32:
+        raise HTTPException(400, "scene 最大 32 字符")
+
+    from app.ext import wechat_mp
+
+    try:
+        image_bytes = await wechat_mp.get_wxacode_unlimit(
+            app_id,
+            app_secret,
+            body.scene,
+            page=body.page,
+            width=body.width,
+            auto_color=body.auto_color,
+            line_color=body.line_color,
+            is_hyaline=body.is_hyaline,
+        )
+    except wechat_mp.WeChatMpError as exc:
+        raise HTTPException(400, f"生成小程序码失败 (errcode={exc.errcode})") from exc
+    except Exception as exc:
+        raise HTTPException(503, "微信服务暂不可用") from exc
+
+    return Response(content=image_bytes, media_type="image/png")
+
+
 @router.get("/customers/me")
 async def get_my_profile(request: Request, principal: dict = Depends(get_current_customer)):
     customer = await queries.get_customer(_pool(request), principal["customer_id"])
@@ -4903,6 +5148,15 @@ class SubmitMyClaimRequest(BaseModel):
     evidence_image_url: str
 
 
+class SubmitAftersalesClaimRequest(BaseModel):
+    order_id: str
+    line_item_id: str
+    reason: str
+    description: str
+    images: list[str] = []
+    quantity: int = 1
+
+
 @router.post("/customers/me/claims")
 async def submit_my_claim(
     body: SubmitMyClaimRequest,
@@ -4948,6 +5202,91 @@ async def submit_my_claim(
         "decision": inner.get("decision"),
         "liable_party": inner.get("liable_party"),
         "refund_amount_cents": inner.get("refund_amount"),
+    }
+
+
+@router.post("/customers/me/aftersales-claim")
+async def submit_aftersales_claim(
+    body: SubmitAftersalesClaimRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """提交售后申请（支持多图、原因、描述、行项级）。"""
+    pool = _pool(request)
+    customer_id = principal["customer_id"]
+
+    if not await _owns_order(pool, customer_id, body.order_id):
+        raise HTTPException(404, "order not found")
+
+    # 获取行项信息，找到对应的 batch_id
+    async with pool.acquire() as conn:
+        line_item = await conn.fetchrow(
+            """
+            SELECT oli.batch_id, oli.variant_id, oli.quantity, p.title
+            FROM order_line_item oli
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE oli.id = $1 AND oli.order_id = $2
+            """,
+            body.line_item_id, body.order_id,
+        )
+        if not line_item:
+            raise HTTPException(404, "订单商品不存在")
+
+        # 获取用户信任分
+        trust_score = await conn.fetchval(
+            'SELECT base_trust_score FROM "customer" WHERE id = $1', customer_id
+        )
+
+        # 如果申请数量小于总数量，记录部分退货
+        # 这里简化：取第一张图片作为证据图片，实际可扩展存多图
+        evidence_image = body.images[0] if body.images else ""
+
+    oservi = getattr(request.app.state, "ext_oservi", None)
+    if oservi is None:
+        raise HTTPException(503, "ext background engines not ready")
+
+    # 将原因映射为备注
+    reason_map = {
+        "quality": "质量问题",
+        "shortage": "少发/漏发",
+        "wrong_item": "发错商品",
+        "other": "其他原因",
+    }
+    reason_text = reason_map.get(body.reason, body.reason)
+
+    dispatch_result = await oservi.autonomous_triage.dispatch(
+        "rma.claim_submitted",
+        {
+            "order_id": body.order_id,
+            "batch_id": line_item["batch_id"],
+            "user_id": customer_id,
+            "evidence_image_url": evidence_image,
+            "user_trust_score": trust_score if trust_score is not None else 80,
+            "route_risk": 0.0,
+            # 扩展字段（供后台处理参考）
+            "claim_reason": reason_text,
+            "claim_description": body.description,
+            "claim_quantity": body.quantity,
+            "claim_images": body.images,
+            "variant_id": line_item["variant_id"],
+            "product_title": line_item["title"],
+        },
+    )
+    if dispatch_result["errors"]:
+        message = dispatch_result["errors"][0].get("error", "claim submission failed")
+        raise HTTPException(422, str(message))
+    inner = dispatch_result["results"][0] if dispatch_result["results"] else {}
+    if inner.get("status") != "completed":
+        raise HTTPException(
+            422, (inner.get("error") or {}).get("message", "claim submission failed")
+        )
+    return {
+        "claim_id": inner.get("claim_id"),
+        "decision": inner.get("decision"),
+        "liable_party": inner.get("liable_party"),
+        "refund_amount_cents": inner.get("refund_amount"),
+        "message": "售后申请已提交，客服将在 24 小时内处理",
     }
 
 

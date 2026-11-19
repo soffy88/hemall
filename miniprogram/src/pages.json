@@ -108,6 +108,127 @@
                 "navigationBarTextStyle": "white",
                 "backgroundColor": "#F5F5F5"
             }
+        },
+        {
+            "path": "pages/pintuan/list",
+            "style": {
+                "navigationBarTitleText": "社区团购",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
+            "path": "pages/pintuan/detail",
+            "style": {
+                "navigationBarTitleText": "团购详情",
+                "navigationBarBackgroundColor": "#FFFFFF",
+                "navigationBarTextStyle": "black",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/personalization/reorder",
+            "style": {
+                "navigationBarTitleText": "再来一单",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/personalization/frequent",
+            "style": {
+                "navigationBarTitleText": "常买清单",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
+            "path": "pages/personalization/recipe-list",
+            "style": {
+                "navigationBarTitleText": "菜谱",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
+            "path": "pages/personalization/recipe-detail",
+            "style": {
+                "navigationBarTitleText": "菜谱详情",
+                "navigationBarBackgroundColor": "#FFFFFF",
+                "navigationBarTextStyle": "black",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/admin/login",
+            "style": {
+                "navigationBarTitleText": "管理员登录",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/admin/banner",
+            "style": {
+                "navigationBarTitleText": "轮播图管理",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/admin/pickup",
+            "style": {
+                "navigationBarTitleText": "自提点管理",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/admin/pintuan",
+            "style": {
+                "navigationBarTitleText": "团购管理",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/near-expiry/list",
+            "style": {
+                "navigationBarTitleText": "临期特价",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
+            "path": "pages/aftersales/apply",
+            "style": {
+                "navigationBarTitleText": "申请售后",
+                "navigationBarBackgroundColor": "#FFFFFF",
+                "navigationBarTextStyle": "black",
+                "backgroundColor": "#F5F5F5"
+            }
+        },
+        {
+            "path": "pages/staff/verify-pickup",
+            "style": {
+                "navigationBarTitleText": "自提核销",
+                "navigationBarBackgroundColor": "#2E7D32",
+                "navigationBarTextStyle": "white",
+                "backgroundColor": "#F5F5F5"
+            }
         }
     ],
     "globalStyle": {

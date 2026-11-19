@@ -85,6 +85,24 @@ export function formatTime(dateString: string | null | undefined): string {
 }
 
 /**
+ * 格式化时长（分钟转为 "X小时Y分钟" 或 "X分钟"）
+ * @param minutes 分钟数
+ * @returns 格式化后的时长字符串
+ */
+export function formatDuration(minutes: number | null | undefined): string {
+    if (!minutes || minutes <= 0) return '-'
+    const hours = Math.floor(minutes / 60)
+    const mins = minutes % 60
+    if (hours > 0 && mins > 0) {
+        return `${hours}小时${mins}分钟`
+    }
+    if (hours > 0) {
+        return `${hours}小时`
+    }
+    return `${mins}分钟`
+}
+
+/**
  * 相对时间（如 "刚刚"、"5分钟前"、"2小时前"、"3天前"）
  * @param dateString ISO 日期字符串
  * @returns 相对时间字符串
@@ -384,4 +402,54 @@ export function deepClone<T>(obj: T): T {
  */
 export function generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).substr(2, 9)
+}
+
+// ==================== 团购相关 ====================
+
+/**
+ * 格式化剩余时间（倒计时）
+ * @param expiresAt ISO 日期字符串
+ * @returns 格式化后的倒计时，如 "02:30:15"、"1天 05:20"
+ */
+export function formatTimeRemaining(expiresAt: string | null | undefined): string {
+    if (!expiresAt) return '--:--:--'
+    const end = new Date(expiresAt)
+    const now = new Date()
+    if (isNaN(end.getTime())) return '--:--:--'
+
+    const diffMs = end.getTime() - now.getTime()
+    if (diffMs <= 0) return '已结束'
+
+    const totalSec = Math.floor(diffMs / 1000)
+    const days = Math.floor(totalSec / 86400)
+    const hours = Math.floor((totalSec % 86400) / 3600)
+    const minutes = Math.floor((totalSec % 3600) / 60)
+    const seconds = totalSec % 60
+
+    if (days > 0) {
+        return `${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+    }
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+/**
+ * 昵称脱敏
+ * @param nickname 原始昵称
+ * @returns 脱敏后的昵称，如 "张**"、"李**"、"王*五"
+ */
+export function maskNickname(nickname: string | null | undefined): string {
+    if (!nickname) return '用户'
+    if (nickname.length <= 1) return nickname + '*'
+    if (nickname.length === 2) return nickname[0] + '*'
+    return nickname[0] + '*'.repeat(nickname.length - 2) + nickname[nickname.length - 1]
+}
+
+/**
+ * 生成取货码二维码数据
+ * @param orderId 订单 ID
+ * @param pickupCode 取货码
+ * @returns 二维码数据字符串（JSON）
+ */
+export function generateQrCode(orderId: string, pickupCode: string): string {
+    return JSON.stringify({ order_id: orderId, pickup_code: pickupCode }, null, 2)
 }

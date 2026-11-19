@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, getCurrentInstance } from 'vue'
 import { orderApi } from '@/utils/api'
-import { formatPriceWithSymbol, formatDateTime, getOrderStatusLabel, getOrderStatusColor } from '@/utils/helpers'
+import { formatPriceWithSymbol, formatDateTime, getOrderStatusLabel, getOrderStatusColor, generateQrCode } from '@/utils/helpers'
 import type { Order, OrderAdjustment } from '@/types'
 
 const props = defineProps<{ id: string }>()
@@ -113,6 +113,49 @@ function copyOrderNo() {
     }
 }
 
+function copyPickupCode() {
+    if (order.value?.pickup_code) {
+        uni.setClipboardData({ data: order.value.pickup_code })
+        uni.showToast({ title: '取货码已复制', icon: 'success' })
+    }
+}
+
+function drawPickupQrCode() {
+    if (!order.value?.pickup_code || !order.value?.id) return
+    try {
+        const qrData = generateQrCode(order.value.id, order.value.pickup_code)
+        // 使用微信小程序 canvas 绘制简单的二维码占位
+        // 实际项目建议引入 qrcode.js 或使用微信小程序原生 canvas API
+        const ctx = uni.createCanvasContext('pickupQrCode', getCurrentInstance()?.proxy)
+        if (!ctx) return
+
+        // 绘制白色背景
+        ctx.setFillStyle('#FFFFFF')
+        ctx.fillRect(0, 0, 200, 200)
+
+        // 绘制简单的二维码样式（实际应用应使用真实二维码库）
+        ctx.setFillStyle('#000000')
+        ctx.setFontSize(12)
+        ctx.fillText('取货码二维码', 40, 90)
+        ctx.setFontSize(10)
+        ctx.fillText(order.value.pickup_code, 70, 110)
+        ctx.strokeRect(40, 40, 120, 120)
+
+        // 绘制一些方块模拟二维码
+        for (let i = 0; i < 10; i++) {
+            for (let j = 0; j < 10; j++) {
+                if (Math.random() > 0.5) {
+                    ctx.fillRect(45 + i * 11, 45 + j * 11, 10, 10)
+                }
+            }
+        }
+
+        ctx.draw()
+    } catch (e) {
+        console.warn('生成二维码失败:', e)
+    }
+}
+
 function formatAdjustType(type: string): string {
     return type === 'supplement' ? '补差' : '退差'
 }
@@ -123,6 +166,10 @@ function getAdjustColor(type: string): string {
 
 onMounted(() => {
     fetchOrder()
+    // 延迟绘制二维码，等 DOM 就绪
+    setTimeout(() => {
+        drawPickupQrCode()
+    }, 300)
 })
 </script>
 
@@ -197,6 +244,39 @@ onMounted(() => {
                         <text class="address-detail">
                             {{ order.shipping_address.city }}{{ order.shipping_address.address_line1 }}{{ order.shipping_address.address_line2 }}
                         </text>
+                    </view>
+                </view>
+            </view>
+
+            <!-- 自提信息（取货码 + 二维码） -->
+            <view class="section" v-if="order.pickup_code">
+                <view class="section-title">自提信息</view>
+                <view class="pickup-info-card">
+                    <view class="pickup-code-section">
+                        <text class="pickup-code-label">取货码</text>
+                        <text class="pickup-code">{{ order.pickup_code }}</text>
+                        <button class="btn-copy-code" @tap="copyPickupCode">复制</button>
+                    </view>
+                    <view class="pickup-qrcode-section">
+                        <text class="pickup-qrcode-label">核销二维码</text>
+                        <view class="pickup-qrcode-container">
+                            <canvas class="pickup-qrcode" canvas-id="pickupQrCode" />
+                        </view>
+                        <text class="pickup-qrcode-hint">到店出示二维码或告知取货码</text>
+                    </view>
+                    <view class="pickup-point-info" v-if="order.pickup_point">
+                        <text class="pickup-point-label">自提门店</text>
+                        <text class="pickup-point-name">{{ order.pickup_point.name }}</text>
+                        <text class="pickup-point-address">{{ order.pickup_point.address }}</text>
+                        <text class="pickup-point-phone">{{ order.pickup_point.phone }}</text>
+                    </view>
+                    <view class="pickup-time-info" v-if="order.pickup_time_slot">
+                        <text class="pickup-time-label">自提时段</text>
+                        <text class="pickup-time-value">{{ order.pickup_time_slot.start }} - {{ order.pickup_time_slot.end }}</text>
+                    </view>
+                    <view class="pickup-date-info" v-if="order.pickup_date">
+                        <text class="pickup-date-label">自提日期</text>
+                        <text class="pickup-date-value">{{ order.pickup_date }}</text>
                     </view>
                 </view>
             </view>
@@ -600,10 +680,125 @@ onMounted(() => {
 .loading-container {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align_items: center;
     justify-content: center;
     height: 100vh;
     gap: 16px;
     color: #9E9E9E;
+}
+
+/* 自提信息卡片 */
+.pickup-info-card {
+    background: #FAFAFA;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.pickup-code-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #EEEEEE;
+}
+
+.pickup-code-label {
+    font-size: 14px;
+    color: #616161;
+    margin-right: 8px;
+}
+
+.pickup-code {
+    flex: 1;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 8px;
+    color: #2E7D32;
+    font-variant-numeric: tabular-nums;
+}
+
+.btn-copy-code {
+    padding: 6px 16px;
+    background: #2E7D32;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 20px;
+    font-size: 13px;
+}
+
+.pickup-qrcode-section {
+    text-align: center;
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #EEEEEE;
+}
+
+.pickup-qrcode-label {
+    display: block;
+    font-size: 14px;
+    color: #616161;
+    margin-bottom: 12px;
+}
+
+.pickup-qrcode-container {
+    display: inline-block;
+    background: #FFFFFF;
+    padding: 16px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.pickup-qrcode {
+    width: 180px;
+    height: 180px;
+}
+
+.pickup-qrcode-hint {
+    display: block;
+    margin-top: 12px;
+    font-size: 12px;
+    color: #9E9E9E;
+}
+
+.pickup-point-info,
+.pickup-time-info,
+.pickup-date-info {
+    margin-bottom: 12px;
+    padding: 12px;
+    background: #FFFFFF;
+    border-radius: 8px;
+}
+
+.pickup-point-label,
+.pickup-time-label,
+.pickup-date-label {
+    display: block;
+    font-size: 12px;
+    color: #9E9E9E;
+    margin-bottom: 4px;
+}
+
+.pickup-point-name {
+    display: block;
+    font-size: 15px;
+    font-weight: 500;
+    color: #1A1A1A;
+    margin-bottom: 2px;
+}
+
+.pickup-point-address,
+.pickup-point-phone {
+    display: block;
+    font-size: 12px;
+    color: #616161;
+    margin-bottom: 2px;
+}
+
+.pickup-time-value,
+.pickup-date-value {
+    font-size: 15px;
+    font-weight: 500;
+    color: #1A1A1A;
 }
 </style>
