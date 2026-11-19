@@ -37,6 +37,25 @@
 		}
 	}
 
+	# 门店工作台页面 (POS/拣货称重) 由 Next.js 前端渲染
+	handle /store/pos* {
+		reverse_proxy {$HEMALL_WEB_CONTAINER}:3000 {
+			import trusted_upstream
+			header_up Host {host}
+			header_up X-Forwarded-For {http.request.client_ip}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Port {server_port}
+		}
+	}
+	handle /store/pick-weigh* {
+		reverse_proxy {$HEMALL_WEB_CONTAINER}:3000 {
+			import trusted_upstream
+			header_up Host {host}
+			header_up X-Forwarded-For {http.request.client_ip}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Port {server_port}
+		}
+	}
 	# 后端 API 路径反代到 Hemall API
 	# 注：用环境变量配置容器名，避免硬编码依赖项目名
 	handle /store/* {
