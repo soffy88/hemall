@@ -5,31 +5,50 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
-
 from obase.crypto.util import CryptoUtil
+from starlette.requests import Request
 
 from app.config import Settings
-from app.deps import anon_ref, get_current_user, get_settings
+from app.deps import anon_ref, get_current_user
+
+
+def _req(cookie: str | None = None) -> Request:
+    headers = [(b"cookie", cookie.encode())] if cookie else []
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "headers": headers,
+            "path": "/",
+            "scheme": "http",
+            "server": ("t", 80),
+            "client": ("c", 1),
+        }
+    )
 
 
 def test_no_credentials_401():
     with pytest.raises(HTTPException) as ei:
-        get_current_user(creds=None, settings=Settings())
+        get_current_user(request=_req(), creds=None, settings=Settings())
     assert ei.value.status_code == 401
 
 
 def test_invalid_token_401():
     bad = HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt")
     with pytest.raises(HTTPException) as ei:
-        get_current_user(creds=bad, settings=Settings())
+        get_current_user(request=_req(), creds=bad, settings=Settings())
     assert ei.value.status_code == 401
 
 
 def test_valid_token_resolves_principal():
     s = Settings()
-    token = CryptoUtil.jwt_sign(payload={"sub": "u42", "email": "a@b.com"}, secret=s.jwt_secret)
+    token = CryptoUtil.jwt_sign(
+        payload={"sub": "u42", "email": "a@b.com", "typ": "staff"},
+        secret=s.jwt_secret,
+    )
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-    principal = get_current_user(creds=creds, settings=s)
+    principal = get_current_user(request=_req(), creds=creds, settings=s)
     assert principal["user_id"] == "u42"
     assert principal["email"] == "a@b.com"
 
@@ -47,3 +66,24 @@ def test_login_without_db_returns_503(client):
     """无 Postgres 时 get_pool → 503 (登录也走连接池)。"""
     r = client.post("/auth/login", json={"email": "x@y.com", "password": "zzzzzzzz"})
     assert r.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"sub": "u42", "typ": "customer"},
+        {"sub": "u42", "typ": "pickup"},
+        {"sub": "u42", "typ": "receipt"},
+        {"sub": "u42"},
+        {"sub": "u42", "typ": "unknown"},
+        {"typ": "staff"},
+        {"sub": "", "typ": "staff"},
+    ],
+)
+def test_non_staff_or_invalid_subject_token_rejected(payload):
+    s = Settings()
+    token = CryptoUtil.jwt_sign(payload=payload, secret=s.jwt_secret)
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    with pytest.raises(HTTPException) as ei:
+        get_current_user(request=_req(), creds=creds, settings=s)
+    assert ei.value.status_code == 401

@@ -20,9 +20,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -41,9 +39,7 @@ async def cn_pool():
     log_notify = LogNotificationProvider()
     reg.register_generic("notification", "log", log_notify, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_phase2_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase2_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     pool._test_log_notify = log_notify  # type: ignore[attr-defined]
     yield pool
@@ -55,12 +51,14 @@ async def _make_variant(pool) -> tuple[str, str]:
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
+            "INSERT INTO stock_location (id, name, region_code, host_id, address, "
+            "lat, lng, status) "
             "VALUES ($1,'p2_loc','cn-east','host_p2','测试车库',31.0,121.0,'active') RETURNING id",
             uuid7(),
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,'土鸡蛋',$2,'active') RETURNING id",
+            "INSERT INTO product (id, title, slug, status) "
+            "VALUES ($1,'土鸡蛋',$2,'active') RETURNING id",
             uuid7(),
             f"p2-slug-{uuid7()}",
         )
@@ -117,7 +115,7 @@ async def _make_customer(pool) -> str:
     return str(customer_id)
 
 
-async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path):
+async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path, test_redis_url):
     """跑一遍共享 omodul 的建车->加车->授权支付->结账全链路，返回 complete_checkout 结果。"""
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
@@ -146,14 +144,12 @@ async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path):
         set_payment_session,
     )
 
-    cart_result = await create_cart(
-        CreateCartConfig(), CreateCartInput(), tmp_path, pool=pool
-    )
+    cart_result = await create_cart(CreateCartConfig(), CreateCartInput(), tmp_path, pool=pool)
     assert cart_result["status"] == "completed", cart_result
     cart_id = cart_result["cart_id"]
 
     add_result = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=batch_id, quantity=quantity),
         tmp_path,
         pool=pool,
@@ -185,7 +181,7 @@ async def _checkout_cart(pool, *, batch_id: str, quantity: int, tmp_path):
     assert authorize_result["status"] == "completed", authorize_result
 
     return await complete_checkout(
-        CompleteCheckoutConfig(),
+        CompleteCheckoutConfig(redis_url=test_redis_url),
         CompleteCheckoutInput(cart_id=cart_id),
         tmp_path,
         pool=pool,
@@ -225,7 +221,8 @@ async def test_create_crowd_intent_and_threshold(cn_pool, tmp_path):
     async with cn_pool.acquire() as conn:
         for _ in range(_REPLENISH_THRESHOLD - 2):
             await conn.execute(
-                "INSERT INTO crowd_intent (id, variant_id, customer_id, prepaid_amount_cents, status) "
+                "INSERT INTO crowd_intent (id, variant_id, customer_id, "
+                "prepaid_amount_cents, status) "
                 "VALUES ($1,$2,$3,$4,'pending')",
                 uuid7(),
                 var_id,
@@ -316,9 +313,7 @@ async def test_batch_settlement(cn_pool, tmp_path):
     assert result["amount"] == 4 * 1500
 
     async with cn_pool.acquire() as conn:
-        status = await conn.fetchval(
-            "SELECT status FROM inventory_batch WHERE id=$1", batch_id
-        )
+        status = await conn.fetchval("SELECT status FROM inventory_batch WHERE id=$1", batch_id)
     assert status == "settled"
 
 
@@ -326,7 +321,11 @@ async def test_batch_settlement(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_confirm_batch_pick_finalizes_stock_and_records_wage(cn_pool, tmp_path):
+async def test_confirm_batch_pick_finalizes_stock_and_records_wage(
+    cn_pool,
+    tmp_path,
+    test_redis_url,
+):
     from app.ext.omodul.confirm_batch_pick import (
         ConfirmBatchPickConfig,
         ConfirmBatchPickInput,
@@ -336,7 +335,7 @@ async def test_confirm_batch_pick_finalizes_stock_and_records_wage(cn_pool, tmp_
     loc_id, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=10)
     checkout = await _checkout_cart(
-        cn_pool, batch_id=batch_id, quantity=3, tmp_path=tmp_path
+        cn_pool, batch_id=batch_id, quantity=3, tmp_path=tmp_path, test_redis_url=test_redis_url
     )
     assert checkout["status"] == "completed", checkout
 
@@ -347,9 +346,7 @@ async def test_confirm_batch_pick_finalizes_stock_and_records_wage(cn_pool, tmp_
 
     pick = await confirm_batch_pick(
         ConfirmBatchPickConfig(),
-        ConfirmBatchPickInput(
-            order_line_item_id=str(oli_id), worker_id="worker_dama_1"
-        ),
+        ConfirmBatchPickInput(order_line_item_id=str(oli_id), worker_id="worker_dama_1"),
         tmp_path,
         pool=cn_pool,
     )
@@ -421,7 +418,7 @@ async def test_tote_deposit_charge_and_refund_cycle(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_process_drop_return_refunds_full_line(cn_pool, tmp_path):
+async def test_process_drop_return_refunds_full_line(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.process_drop_return import (
         ProcessDropReturnConfig,
         ProcessDropReturnInput,
@@ -433,7 +430,7 @@ async def test_process_drop_return_refunds_full_line(cn_pool, tmp_path):
         cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=10, retail_price=2000
     )
     checkout = await _checkout_cart(
-        cn_pool, batch_id=batch_id, quantity=2, tmp_path=tmp_path
+        cn_pool, batch_id=batch_id, quantity=2, tmp_path=tmp_path, test_redis_url=test_redis_url
     )
     assert checkout["status"] == "completed"
 
@@ -462,9 +459,7 @@ async def test_commission_new_location(cn_pool, tmp_path):
 
     result = await commission_new_location(
         CommissionNewLocationConfig(),
-        CommissionNewLocationInput(
-            host_id="host_new_1", address="新车库", lat=31.5, lon=121.3
-        ),
+        CommissionNewLocationInput(host_id="host_new_1", address="新车库", lat=31.5, lon=121.3),
         tmp_path,
         pool=cn_pool,
     )
@@ -501,7 +496,8 @@ async def test_dispatch_labor_payment_aggregates_pending(cn_pool, tmp_path):
     async with cn_pool.acquire() as conn:
         for amount in (500, 1500, 1000):
             await conn.execute(
-                "INSERT INTO labor_ledger (id, worker_id, wage_amount, status) VALUES ($1,$2,$3,'pending')",
+                "INSERT INTO labor_ledger (id, worker_id, wage_amount, status) "
+                "VALUES ($1,$2,$3,'pending')",
                 generate_id_v7("labor"),
                 worker_id,
                 amount,
@@ -634,9 +630,7 @@ async def test_execute_ambient_replenishment_not_due_yet(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(
-    cn_pool, tmp_path
-):
+async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(cn_pool, tmp_path):
     from obase.uuid7 import uuid7
 
     from app.ext.omodul.execute_ambient_replenishment import (
@@ -653,7 +647,8 @@ async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(
 
     async with cn_pool.acquire() as conn:
         far_loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
+            "INSERT INTO stock_location (id, name, region_code, host_id, address, "
+            "lat, lng, status) "
             "VALUES ($1,'p2_far','cn-east','host_far','远处车库',40.0,121.0,'active') RETURNING id",
             uuid7(),
         )
@@ -708,9 +703,7 @@ async def test_execute_ambient_replenishment_charges_and_routes_to_nearest(
 
 
 @pytest.mark.asyncio
-async def test_execute_ambient_replenishment_fails_when_no_stock_nearby(
-    cn_pool, tmp_path
-):
+async def test_execute_ambient_replenishment_fails_when_no_stock_nearby(cn_pool, tmp_path):
     from app.ext.omodul.execute_ambient_replenishment import (
         ExecuteAmbientReplenishmentConfig,
         ExecuteAmbientReplenishmentInput,

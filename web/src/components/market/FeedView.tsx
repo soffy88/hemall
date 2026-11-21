@@ -12,10 +12,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api-client';
 import { useOptimisticCart, formatCountdown, haptic } from '@/lib/cart-store';
-import { getCustomerAuth } from '@/lib/customer-auth-store';
+import { getCustomerAuth, initCustomerAuth } from '@/lib/customer-auth-store';
 import type { FeedItem, NearbyFeedResponse } from '@/types/api';
 import MarketMakerHeroCard from './MarketMakerHeroCard';
 import StandardGridItem from './StandardGridItem';
+import { errMessage } from '@/lib/errors';
 
 export default function FeedView() {
   const router = useRouter();
@@ -26,32 +27,37 @@ export default function FeedView() {
 
   const cart = useOptimisticCart();
 
-  async function load() {
-    setLoading(true);
-    setError('');
-    try {
-      // 浏览器定位 → 失败回退北京
-      let lat = 39.9042;
-      let lon = 116.4074;
-      if (navigator.geolocation) {
-        try {
-          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 3000 });
-          });
-          lat = pos.coords.latitude;
-          lon = pos.coords.longitude;
-        } catch {
-          /* 定位被拒 → 默认坐标 */
-        }
-      }
-      const cust = getCustomerAuth();
-      const data = await api.getNearbyFeed(lat, lon, { limit: 40, customerId: cust?.customerId });
-      setFeed(data);
-    } catch (e: any) {
-      setError(e.message || 'Feed 加载失败');
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    // 浏览器定位 → 失败回退北京
+    let lat = 39.9042;
+    let lon = 116.4074;
+    const locate: Promise<GeolocationPosition> = navigator.geolocation
+      ? new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 3000 });
+        })
+      : Promise.reject(new Error('定位不可用'));
+    locate
+      .then((pos) => {
+        lat = pos.coords.latitude;
+        lon = pos.coords.longitude;
+      })
+      .catch(() => {
+        /* 定位被拒 → 默认坐标 */
+      })
+      .then(() => initCustomerAuth())
+      .then(() => {
+        const cust = getCustomerAuth();
+        return api.getNearbyFeed(lat, lon, { limit: 40, customerId: cust?.customerId });
+      })
+      .then((data) => {
+        setFeed(data);
+      })
+      .catch((e) => {
+        setError(errMessage(e) || 'Feed 加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   useEffect(() => {
@@ -64,9 +70,9 @@ export default function FeedView() {
       await cart.lockItem(item);
       setToast(`✅ 已锁单: ${item.sku_name}`);
       setTimeout(() => setToast(''), 2200);
-    } catch (e: any) {
+    } catch (e) {
       haptic('fail');
-      setToast(`❌ ${e.message}`);
+      setToast(`❌ ${errMessage(e)}`);
       setTimeout(() => setToast(''), 3200);
     }
   }
@@ -94,7 +100,11 @@ export default function FeedView() {
           <div className="mb-3 text-5xl">📡</div>
           <p className="mb-4 text-gray-600">{error}</p>
           <button
-            onClick={load}
+            onClick={() => {
+              setLoading(true);
+              setError('');
+              load();
+            }}
             className="rounded-xl bg-emerald-600 px-6 py-3 text-white font-semibold active:scale-95"
           >
             重试

@@ -12,6 +12,47 @@ export interface AuthUser {
   email: string;
 }
 
+// ── Auth: TOTP 两步登录 / 首次绑定 ──────────────────────────────────────
+
+/** POST /auth/login「密码正确但需 TOTP 第二步」分支（BFF 已剥 access_token）。 */
+export interface TotpLoginChallenge {
+  requires_totp: true;
+  user_id: string;
+  email: string;
+  totp_token: string | null;
+  message: string;
+}
+
+/** POST /auth/login「生产环境特权账号尚未绑定 TOTP」分支。 */
+export interface TotpSetupChallenge {
+  requires_totp_setup: true;
+  user_id: string;
+  email: string;
+  setup_token: string | null;
+  message: string;
+}
+
+/** login() 的判别联合结果：成功建会话 / 需验证码 / 需先绑定。 */
+export type LoginOutcome =
+  | { kind: 'ok'; user: AuthUser }
+  | { kind: 'totp'; challenge: TotpLoginChallenge }
+  | { kind: 'setup'; challenge: TotpSetupChallenge };
+
+/** GET /auth/totp/setup：一次性绑定信息（secret 仅此时下发，恢复码在 bind 后返回）。 */
+export interface TotpSetupInfo {
+  otpauth_uri: string;
+  secret: string;
+  recovery_codes?: string[];
+}
+
+/** POST /auth/totp/bind 成功确认。recovery_codes 仅此一次可见。 */
+export interface TotpBindConfirm {
+  message: string;
+  recovery_codes: string[];
+}
+
+// ── Customer auth（顾客侧经 BFF，同样剥 access_token）─────────────────
+
 export interface CustomerTokenResponse {
   access_token: string;
   token_type: string;
@@ -93,6 +134,8 @@ export interface OrderLineItem {
   id: string;
   batch_id: string | null;
   quantity: number;
+  /** 该行中待配货的预订量（>0 表示部分/全部为缺货预订，到货后配货） */
+  preorder_qty: number;
   unit_price_cents: number;
   line_total_cents: number;
   product_title: string | null;
@@ -157,6 +200,9 @@ export interface Order {
   shipping_cents: number;
   grand_total_cents: number;
   payment_provider_name: string | null;
+  payment_intent_id?: string | null;
+  payment_status?: string | null;
+  payment_verified_at?: string | null;
   billing_address: Address | null;
   shipping_address: Address | null;
   created_at: string;
@@ -178,13 +224,16 @@ export interface Customer {
   created_at: string;
   order_count: number;
   total_spent_cents: number;
+  /** 商家账号标记：商家可用专属「商家预订」常购清单快速下单 */
+  is_merchant?: boolean;
 }
 
 // ── Cart types ──────────────────────────────────────────────────
 
 export interface CartLineItem {
   id: string;
-  batch_id: string;
+  batch_id: string | null;
+  variant_id: string | null;
   quantity: number;
   unit_price_cents: number;
   line_total_cents: number;
@@ -192,6 +241,8 @@ export interface CartLineItem {
   variant_sku: string | null;
   option_values: Record<string, string> | null;
   available_qty: number;
+  /** 本行中超出可用库存的预订量预览（= max(0, quantity - available_qty)） */
+  preorder_qty_preview: number;
 }
 
 export interface CartDiscount {
@@ -225,6 +276,168 @@ export interface Cart {
   line_items: CartLineItem[];
   discounts: CartDiscount[];
   gift_cards: CartGiftCard[];
+}
+
+// ── 客户预订 ────────────────────────────────────────────────────
+
+/** 我的预订一行：某订单行中尚未配齐的预订量 */
+export interface CustomerPreorder {
+  order_id: string;
+  order_status: string;
+  line_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  quantity: number;
+  preorder_qty: number;
+  created_at: string;
+}
+
+/** 商家常购清单一行 */
+export interface MerchantReserveItem {
+  id: string;
+  variant_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  price_cents: number;
+  available_qty: number;
+  default_qty: number;
+}
+
+export interface MerchantReserveOrderLine {
+  variant_id: string;
+  title: string;
+  quantity: number;
+  reserved_qty: number;
+  preorder_qty: number;
+}
+
+export interface MerchantReserveOrderResult {
+  order_id: string;
+  grand_total_cents: number;
+  lines: MerchantReserveOrderLine[];
+}
+
+/** 柜台称重：照片格一行（后端已筛掉无价/无计价基准的商品） */
+export interface CounterProduct {
+  batch_id: string;
+  variant_id: string;
+  product_id: string;
+  title: string;
+  image_url: string | null;
+  unit_price_cents: number;
+  price_basis_grams: number;
+  available_qty: number;
+}
+
+/** 称重行项（hardware_event event_type='weigh'，title 仅详情接口带） */
+export interface CounterWeighLine {
+  message_id: string;
+  event_type: string;
+  status: string;
+  settlement_status: string | null;
+  weight_grams: number | null;
+  unit_price_cents: number | null;
+  price_basis_grams: number | null;
+  amount_cents: number | null;
+  source: string | null;
+  batch_id: string | null;
+  ticket_id: string | null;
+  tote_id: string | null;
+  node_id: string | null;
+  title?: string | null;
+  created_at: string | null;
+}
+
+/** 柜台单据头（行项在详情接口里，合计为已计价行项金额之和） */
+export interface CounterTicket {
+  ticket_id: string;
+  status: string;
+  tote_id: string | null;
+  customer_id: string | null;
+  created_by: string;
+  note: string;
+  total_cents: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * 柜台收尾件：现金结算记录（一单一结算，金额单位分）
+ */
+export interface CounterSettlement {
+  settlement_id: string;
+  ticket_id: string;
+  cashier_id: string;
+  method: string;
+  amount_due_cents: number;
+  amount_received_cents: number;
+  change_cents: number;
+  settled_at: string | null;
+}
+
+/** 柜台收尾件：交接班（差异正负如实记，不抹平） */
+export interface CounterShift {
+  shift_id: string;
+  cashier_id: string;
+  status: string;
+  opening_float_cents: number;
+  opened_at: string | null;
+  closed_at: string | null;
+  counted_cash_cents: number | null;
+  expected_cash_cents: number | null;
+  variance_cents: number | null;
+  handover_to: string | null;
+  note: string;
+}
+
+/** 柜台收尾件：日结报表（毛利口径见 margin_basis） */
+export interface CounterDailyReport {
+  date: string;
+  settled_tickets: number;
+  total_sales_cents: number;
+  by_method: { method: string; tickets: number; total_cents: number }[];
+  margin_revenue_cents: number;
+  margin_cost_cents: number;
+  margin_cents: number;
+  margin_costed_lines: number;
+  margin_excluded_lines: number;
+  margin_basis: string;
+  shifts_closed: number;
+  cash_variance_total_cents: number;
+}
+
+/** 库存批次（后台质检列表一行） */
+export interface InventoryBatch {
+  id: string;
+  batch_no: string;
+  product_id: string;
+  product_title: string;
+  variant_id: string;
+  sku_code: string | null;
+  location_id: string;
+  location_name: string | null;
+  stock_qty: number;
+  reserved_qty: number;
+  available_qty: number;
+  status: string;
+  inspection_status: 'pending' | 'passed' | 'failed' | string;
+  created_at: string;
+}
+
+/** 后台待配货预订一行 */
+export interface AdminPreorder {
+  line_id: string;
+  order_id: string;
+  customer_id: string;
+  customer_name: string;
+  product_id: string;
+  title: string;
+  quantity: number;
+  preorder_qty: number;
+  available_qty_now: number;
+  created_at: string;
 }
 
 // ── Dashboard KPI ───────────────────────────────────────────────
@@ -281,7 +494,34 @@ export interface RecommendationResult {
 export interface CheckoutResult {
   order_id: string;
   grand_total_cents: number;
+  currency?: string;
   receipt_token: string;
+  payment: PaymentIntentResponse;
+}
+
+export interface PaymentIntentResponse {
+  payment_id: string;
+  order_id: string;
+  amount: string;
+  amount_cents: number;
+  currency: string;
+  provider: string;
+  status: string;
+  qr_code?: string | null;
+  code_url?: string | null;
+  client_secret?: string | null;
+  provider_result?: Record<string, unknown> | null;
+}
+
+export interface PaymentStatusResponse {
+  payment_id: string;
+  order_id: string;
+  amount_cents: number;
+  amount: string;
+  currency: string;
+  provider: string;
+  status: string;
+  provider_trade_no?: string | null;
 }
 
 // ── Phase 9: BFF v9.0 做市量化 Feed 契约 ──────────────────────
@@ -524,6 +764,86 @@ export interface CustomerGroup {
   member_count: number;
 }
 
+
+export interface MyReferral {
+  customer_id: string;
+  referral_code: string;
+  invited_by: string | null;
+  voucher_balance_cents: number;
+  referred_count: number;
+}
+
+export interface VoucherLedgerEntry {
+  id: string;
+  kind: string;
+  status: string;
+  order_id: string | null;
+  ref_id: string | null;
+  amount_cents: number;
+  base_cents: number | null;
+  balance_after_cents: number;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface VoucherList {
+  voucher_balance_cents: number;
+  entries: VoucherLedgerEntry[];
+}
+
+export interface PurchaseRequest {
+  id: string;
+  customer_id: string;
+  product_name: string;
+  brand: string;
+  spec_packaging: string;
+  price_min_cents: number | null;
+  price_max_cents: number | null;
+  expected_qty: number;
+  willing_preorder: boolean;
+  status: string;
+  admin_note: string;
+  failure_reason: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InviteGiftClaim {
+  id: string;
+  order_id: string;
+  gift_kind: string;
+  status: string;
+  cost_cap_cents: number;
+  created_at: string;
+}
+
+export interface InviteGiftStatus {
+  claim: InviteGiftClaim | null;
+  eligible: boolean;
+  order_id?: string | null;
+  net_paid_cents?: number;
+  threshold_cents?: number;
+  reason?: string | null;
+}
+
+export interface IngestResult {
+  status: string;
+  title: string;
+  product_id: string;
+  variant_id: string;
+  batch_id: string;
+  retail_price_cents: number;
+  cost_price_cents: number;
+  stock_qty: number;
+  media_url: string;
+  media_type: string;
+  matched: boolean;
+  match_via?: string | null;
+  batch_action?: string;
+  updated_fields?: string[];
+  hint?: string;
+}
+
 export interface CustomerAddress extends Address {
   id: string;
   customer_id: string;
@@ -552,4 +872,115 @@ export interface BatchJob {
   result: Record<string, unknown> | null;
   created_at: string;
   updated_at: string | null;
+}
+
+// ── Agent gateway (Phase 9.5) ─────────────────────────────────────
+
+export interface AgentTool {
+  tool: string;
+  domain: string;
+  name: string;
+  path: string;
+  require_auth: boolean;
+  parameters: Record<string, unknown>;
+}
+
+/** /agent/command 响应（规则意图路由 + 执行结果）；input 为客户端附加的原始指令。 */
+export interface AgentCommandResult {
+  status?: string;
+  text?: string;
+  matched_keyword?: string | null;
+  kind?: string | null;
+  tool?: string;
+  result?: unknown;
+  hint?: string;
+  error?: string;
+  engine?: string;
+  input?: string;
+  [key: string]: unknown;
+}
+
+/** /agent/ingest 响应：手机实拍视频/图片 → 自动上架。 */
+export interface AgentIngestResult {
+  status?: string;
+  title?: string;
+  product_id?: string;
+  variant_id?: string;
+  location_id?: string;
+  retail_price_cents?: number;
+  cost_price_cents?: number;
+  stock_qty?: number;
+  media_url?: string;
+  media_type?: string;
+  saved_path?: string;
+  hint?: string;
+  input?: string;
+  [key: string]: unknown;
+}
+
+// ── Aftersales: 退款状态机 ──────────────────────────────────────────────
+
+export type RefundStatus =
+  | 'submitted'
+  | 'approved'
+  | 'refunding'
+  | 'succeeded'
+  | 'failed'
+  | 'rejected';
+
+export type RefundType = 'refund_only' | 'return_refund';
+
+export type RefundReason =
+  | 'buyer_remorse'
+  | 'product_issue'
+  | 'not_as_described'
+  | 'shipping_delay'
+  | 'other';
+
+/** GET /aftersales/refunds 与 /my 的单条记录（_refund_to_dict）。 */
+export interface RefundRequest {
+  id: string;
+  order_id: string;
+  order_line_id: string | null;
+  customer_id: string;
+  type: RefundType;
+  reason: RefundReason;
+  reason_detail: string | null;
+  status: RefundStatus;
+  requested_amount: number;
+  approved_amount: number | null;
+  actual_refunded_amount: number | null;
+  provider: string | null;
+  provider_trade_no: string | null;
+  provider_refund_no: string | null;
+  return_tracking_no: string | null;
+  return_batch_id: string | null;
+  reviewer_id: string | null;
+  reject_reason: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  processed_at: string | null;
+}
+
+/** GET /aftersales/refunds/{id}/audit 单条。 */
+export interface RefundAuditEntry {
+  id: string;
+  refund_id: string;
+  from_status: RefundStatus | null;
+  to_status: RefundStatus;
+  operator_id: string | null;
+  operator_type: string;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RefundCreateBody {
+  order_id: string;
+  order_line_id?: string | null;
+  type?: RefundType;
+  reason?: RefundReason;
+  reason_detail?: string | null;
+  requested_amount: number;
 }

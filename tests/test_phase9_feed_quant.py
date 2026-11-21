@@ -64,36 +64,28 @@ class TestClassifyFeedTag:
     def test_clearance_by_expiry(self):
         """直降 10% 但 6 小时后过期 → clearance (临期)。"""
         assert (
-            classify_feed_tag(
-                9000, 10000, NOW - timedelta(days=5), NOW + timedelta(hours=6), NOW
-            )
+            classify_feed_tag(9000, 10000, NOW - timedelta(days=5), NOW + timedelta(hours=6), NOW)
             == "clearance"
         )
 
     def test_fresh_new_batch(self):
         """入库 24h 内、降幅 10% → fresh。"""
         assert (
-            classify_feed_tag(
-                9000, 10000, NOW - timedelta(hours=24), NOW + timedelta(days=7), NOW
-            )
+            classify_feed_tag(9000, 10000, NOW - timedelta(hours=24), NOW + timedelta(days=7), NOW)
             == "fresh"
         )
 
     def test_fresh_discount_too_big(self):
         """入库 24h 内但降幅 50% → clearance (降幅优先)。"""
         assert (
-            classify_feed_tag(
-                5000, 10000, NOW - timedelta(hours=24), NOW + timedelta(days=7), NOW
-            )
+            classify_feed_tag(5000, 10000, NOW - timedelta(hours=24), NOW + timedelta(days=7), NOW)
             == "clearance"
         )
 
     def test_standard_old_batch(self):
         """入库 10 天、降幅 10%、距过期 3 天 → standard。"""
         assert (
-            classify_feed_tag(
-                9000, 10000, NOW - timedelta(days=10), NOW + timedelta(days=3), NOW
-            )
+            classify_feed_tag(9000, 10000, NOW - timedelta(days=10), NOW + timedelta(days=3), NOW)
             == "standard"
         )
 

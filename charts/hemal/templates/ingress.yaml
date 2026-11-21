@@ -27,7 +27,12 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: {{ .Release.Name }}-api-service
+            # 必须与 templates/service.yaml 渲染出的实名完全一致。
+            # 历史上这里写的是 `{{ .Release.Name }}-api-service`，而 Service 实名是
+            # `{{ .Release.Name }}-api`：Helm 不校验跨模板引用，helm template 照样
+            # 通过，但 ingress-nginx 上游解析失败 → 过 Ingress 的流量全部 503。
+            # tests/test_helm_render_contract.py 用渲染产物做交叉校验防漂移。
+            name: {{ .Release.Name }}-api
             port:
               number: 80
 {{- end }}

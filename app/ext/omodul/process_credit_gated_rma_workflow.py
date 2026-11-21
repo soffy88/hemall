@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oskill import evaluate_claim_credibility
 
@@ -75,7 +74,8 @@ async def process_credit_gated_rma_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — process_credit_gated_rma_workflow always touches persisted stock"
+                "pool is required — process_credit_gated_rma_workflow "
+                "always touches persisted stock"
             )
 
         credibility_decision = evaluate_claim_credibility(
@@ -83,9 +83,7 @@ async def process_credit_gated_rma_workflow(
             batch_anomaly_rate=input_data.batch_anomaly_rate,
             route_risk=input_data.route_risk,
         )
-        trail.record(
-            event="credibility_evaluated", credibility_decision=credibility_decision
-        )
+        trail.record(event="credibility_evaluated", credibility_decision=credibility_decision)
 
         refund_amount = 0
         if credibility_decision == "instant":
@@ -93,7 +91,8 @@ async def process_credit_gated_rma_workflow(
 
             async with pool.acquire() as conn:
                 order = await conn.fetchrow(
-                    'SELECT payment_provider_name, payment_intent_id FROM "customer_order" WHERE id = $1',
+                    "SELECT payment_provider_name, payment_intent_id "
+                    'FROM "customer_order" WHERE id = $1',
                     input_data.order_id,
                 )
                 if order is None:

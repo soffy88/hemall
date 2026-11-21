@@ -56,8 +56,10 @@ async def health_ready(
 ) -> dict[str, Any]:
     """就绪探针 (readiness probe) — 依赖就绪才可接收流量。
 
-    Kubernetes 用此判断是否加入 Service 负载均衡。
-    降级策略：DB/Redis 不可用时返 503 + degraded，K8s/网关据此摘流。
+    Kubernetes / docker healthcheck 用此判断是否加入 Service 负载均衡。
+    降级策略：DB/Redis 不可用时返 503 + degraded，K8s/网关据此摘流；容器编排
+    的 healthcheck 连续多次失败即重启该 worker（笔记本休眠唤醒、PG 短暂不可用
+    后永久 503 的兜底，见 app/db_recovery.py）。
     """
     # 延迟导入，避免与 main.py 的循环导入
     from ..main import get_app_state
@@ -68,6 +70,10 @@ async def health_ready(
 
     # DB 检查
     db_result = await check_db_health(state.pool)
+    if db_result["status"] == "down" and getattr(state, "db_recovery_active", False):
+        db_result["message"] = (
+            f"{db_result.get('message', 'unavailable')}; background recovery retrying"
+        )
     checks["database"] = db_result
     if db_result["status"] == "down":
         overall_status = "degraded"
@@ -77,6 +83,26 @@ async def health_ready(
     checks["redis"] = redis_result
     if redis_result["status"] == "down":
         overall_status = "degraded"
+
+    # 微信小程序登录配置提示（信息性检查，不影响 overall_status）：
+    # AppID/Secret 未配齐时 /store/customers/wechat-login 与 wechat-bind
+    # 本就返回 503；这里只让运维在 /health/ready 一眼看到配置状态，无需
+    # 拿真实小程序 code 去探。只回“配齐与否”，不回 AppID/Secret 的值。
+    mp_configured = bool(
+        str(getattr(settings, "wechat_mp_app_id", "") or "").strip()
+        and str(getattr(settings, "wechat_mp_app_secret", "") or "").strip()
+    )
+    checks["wechat_mp_login"] = (
+        {"status": "configured"}
+        if mp_configured
+        else {
+            "status": "unconfigured",
+            "message": (
+                "wechat mp login not configured "
+                "(HEMALL_WECHAT_MP_APP_ID / HEMALL_WECHAT_MP_APP_SECRET_FILE)"
+            ),
+        }
+    )
 
     if overall_status != "healthy":
         response.status_code = 503

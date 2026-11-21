@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_pay_transfer
 
@@ -60,13 +59,12 @@ async def dispatch_labor_payment(
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, wage_amount FROM \"labor_ledger\" WHERE worker_id = $1 AND status = 'pending'",
+                'SELECT id, wage_amount FROM "labor_ledger" '
+                "WHERE worker_id = $1 AND status = 'pending'",
                 input_data.worker_id,
             )
         if not rows:
-            raise ValueError(
-                f"worker {input_data.worker_id!r} has no pending wage entries"
-            )
+            raise ValueError(f"worker {input_data.worker_id!r} has no pending wage entries")
         entry_ids = [r["id"] for r in rows]
         total_amount = sum(r["wage_amount"] for r in rows)
         trail.record(
@@ -88,7 +86,8 @@ async def dispatch_labor_payment(
 
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE \"labor_ledger\" SET status = 'paid', payout_transfer_id = $1 WHERE id = ANY($2)",
+                "UPDATE \"labor_ledger\" SET status = 'paid', "
+                "payout_transfer_id = $1 WHERE id = ANY($2)",
                 transfer_result["transfer_id"],
                 entry_ids,
             )

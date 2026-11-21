@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ── 库存变动类型 ─────────────────────────────────────────────────────
 
 
-class StockMovementType(str, enum.Enum):
+class StockMovementType(enum.StrEnum):
     """库存变动类型。"""
 
     # 入库
@@ -80,7 +78,7 @@ class StockMovement(BaseModel):
     reference_id: str | None = Field(None, description="关联单据 ID")
     reason: str | None = Field(None, description="变动原因/备注")
     operator_id: str | None = Field(None, description="操作人 ID")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def net_quantity(self) -> int:
@@ -134,7 +132,6 @@ class StockAlert(BaseModel):
 
 # ── DDL ──────────────────────────────────────────────────────────────
 
-
 STOCK_MOVEMENT_DDL = """
 CREATE TABLE IF NOT EXISTS stock_movement (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -149,10 +146,16 @@ CREATE TABLE IF NOT EXISTS stock_movement (
     reference_id TEXT,
     reason TEXT,
     operator_id TEXT,
+    idempotency_key TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_stock_mov_product ON stock_movement(product_id, variant_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movement_idempotency
+    ON stock_movement(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_stock_mov_product
+    ON stock_movement(product_id, variant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_mov_location ON stock_movement(location_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_mov_reference ON stock_movement(reference_type, reference_id);
 CREATE INDEX IF NOT EXISTS idx_stock_mov_type ON stock_movement(movement_type, created_at DESC);

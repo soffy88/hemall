@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oskill import check_spatial_conflict
 
@@ -75,19 +74,17 @@ async def process_cloud_franchise_claim_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — process_cloud_franchise_claim_workflow always touches persisted stock"
+                "pool is required — process_cloud_franchise_claim_workflow "
+                "always touches persisted stock"
             )
 
         async with pool.acquire() as conn:
             existing = await conn.fetch(
-                'SELECT lat, lng FROM "stock_location" '
-                "WHERE lat IS NOT NULL AND lng IS NOT NULL"
+                'SELECT lat, lng FROM "stock_location" WHERE lat IS NOT NULL AND lng IS NOT NULL'
             )
         existing_coords = [(float(r["lat"]), float(r["lng"])) for r in existing]
 
-        conflict = check_spatial_conflict(
-            (input_data.lat, input_data.lon), existing_coords
-        )
+        conflict = check_spatial_conflict((input_data.lat, input_data.lon), existing_coords)
         trail.record(
             event="spatial_conflict_checked",
             conflict=conflict,

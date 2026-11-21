@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { Product, ProductVariant } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 /** 商品/变体的“最低价”本身没有单独的币种字段，取第一个批次的币种做展示。 */
 function fmt(cents: number | null, currency?: string): string {
@@ -39,16 +40,11 @@ export default function ProductsPage() {
   const [videoUrl, setVideoUrl] = useState('');
   const [showBatchForm, setShowBatchForm] = useState(false);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.adminListProducts({ search: search || undefined });
-      setProducts(data);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListProducts({ search: search || undefined })
+      .then(setProducts)
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -57,12 +53,13 @@ export default function ProductsPage() {
     e.preventDefault();
     try {
       const res = await api.createProduct({ title, slug, description, status });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setTitle(''); setSlug(''); setDescription(''); setStatus('draft');
       setShowForm(false);
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -70,9 +67,10 @@ export default function ProductsPage() {
     if (!confirm('确认删除此商品？')) return;
     try {
       await api.deleteProduct({ product_id: id });
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -80,9 +78,10 @@ export default function ProductsPage() {
     try {
       const newStatus = product.status === 'published' ? 'draft' : 'published';
       await api.updateProduct({ product_id: product.id, status: newStatus });
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -90,12 +89,13 @@ export default function ProductsPage() {
     e.preventDefault();
     try {
       const res = await api.createProductVariant({ product_id: variantProductId, sku_code: skuCode });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建变体失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建变体失败');
       setSkuCode('');
       setShowVariantForm(false);
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -103,10 +103,11 @@ export default function ProductsPage() {
     try {
       const newStatus = v.status === 'active' ? 'inactive' : 'active';
       const res = await api.updateProductVariant({ variant_id: v.id, status: newStatus });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新变体失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新变体失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -114,10 +115,11 @@ export default function ProductsPage() {
     if (!confirm('确认删除此变体？')) return;
     try {
       const res = await api.deleteProductVariant({ variant_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除变体失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除变体失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -132,10 +134,11 @@ export default function ProductsPage() {
     const reason = prompt('调整原因：') || '';
     try {
       const res = await api.adjustInventoryLevel({ batch_id: batchId, delta, reason });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '调整库存失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '调整库存失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -144,10 +147,11 @@ export default function ProductsPage() {
     if (!name) return;
     try {
       const res = await api.createProductOption({ product_id: productId, name });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '添加选项失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '添加选项失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -156,10 +160,11 @@ export default function ProductsPage() {
     if (!name || name === currentName) return;
     try {
       const res = await api.updateProductOption({ option_id: optionId, name });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新选项失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '更新选项失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -167,10 +172,11 @@ export default function ProductsPage() {
     if (!confirm('确认删除此属性键？')) return;
     try {
       const res = await api.deleteProductOption({ option_id: optionId });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除选项失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除选项失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -186,12 +192,13 @@ export default function ProductsPage() {
         cost_price_cents: costPrice,
         video_url: videoUrl,
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建批次失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建批次失败');
       setBatchNo(''); setVideoUrl('');
       setShowBatchForm(false);
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -219,10 +226,23 @@ export default function ProductsPage() {
           placeholder="搜索商品..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && load()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              setLoading(true);
+              load();
+            }
+          }}
           className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-64"
         />
-        <button onClick={load} className="ml-2 px-3 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">搜索</button>
+        <button
+          onClick={() => {
+            setLoading(true);
+            load();
+          }}
+          className="ml-2 px-3 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200"
+        >
+          搜索
+        </button>
       </div>
 
       {/* Create Product Form */}

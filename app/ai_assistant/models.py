@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # ── 意图类型 ──────────────────────────────────────────────────────
 
@@ -46,7 +44,7 @@ class Message:
 
     role: str  # user / assistant / system
     content: str
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,20 +58,31 @@ class Message:
 
 @dataclass
 class Conversation:
-    """对话会话。"""
+    """对话会话。
+
+    ``owner_id`` 是**已认证的调用主体**（staff JWT 的 sub），由服务端从令牌
+    取，不接受请求体自报。``user_id`` 只是"这段对话在谈哪个顾客"的业务标注，
+    可以由调用方填，但它**永远不参与授权**——授权只看 owner_id。
+    """
 
     session_id: str
     user_id: str | None
+    owner_id: str | None = None
     messages: list[Message] = field(default_factory=list)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def add_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> Message:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Message:
         """添加消息到会话。"""
         msg = Message(role=role, content=content, metadata=metadata or {})
         self.messages.append(msg)
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
         return msg
 
     def get_history(self, max_turns: int = 10) -> list[dict[str, str]]:
@@ -85,6 +94,7 @@ class Conversation:
         return {
             "session_id": self.session_id,
             "user_id": self.user_id,
+            "owner_id": self.owner_id,
             "messages": [m.to_dict() for m in self.messages],
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -107,11 +117,17 @@ class AIResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """聊天请求。"""
+    """聊天请求。
+
+    ``owner_id`` 由**服务端**从 staff JWT 的 sub 填入，不接受请求体自报
+    （自报会被用来冒用他人的会话）。``user_id`` 只是"这段对话在谈哪个顾客"
+    的业务标注，不参与授权。
+    """
 
     message: str
     session_id: str | None = None
     user_id: str | None = None
+    owner_id: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
 
 
@@ -166,7 +182,7 @@ class ProductEmbedding(BaseModel):
     embedding: list[float]  # 1536 维 (OpenAI) 或 768 维 (本地模型)
     text_content: str  # 原始文本 (用于相似度匹配后展示)
     model_name: str = "text-embedding-ada-002"
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 # ── 配置模型 ──────────────────────────────────────────────────────
@@ -178,7 +194,9 @@ class AIConfig(BaseModel):
     # LLM 配置
     provider: str = "openai"  # openai / anthropic / local
     model_name: str = "gpt-4"
-    api_key: str = ""
+    # 凭据: 既不进 repr, 也不进 model_dump —— 这个对象会被 logger / 调试器 /
+    # /recommend 的 config 回显路径碰到, 明文 key 不能跟着走。
+    api_key: str = Field(default="", repr=False, exclude=True)
     api_base: str = "https://api.openai.com/v1"
 
     # 生成参数

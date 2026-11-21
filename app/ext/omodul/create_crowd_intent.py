@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_notify_send
 
@@ -83,12 +82,11 @@ async def create_crowd_intent(
                 input_data.prepaid_amount_cents,
             )
             pending_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM \"crowd_intent\" WHERE variant_id = $1 AND status = 'pending'",
+                'SELECT COUNT(*) FROM "crowd_intent" '
+                "WHERE variant_id = $1 AND status = 'pending'",
                 input_data.variant_id,
             )
-        trail.record(
-            event="intent_recorded", intent_id=intent_id, pending_count=pending_count
-        )
+        trail.record(event="intent_recorded", intent_id=intent_id, pending_count=pending_count)
 
         threshold_triggered = pending_count >= _REPLENISH_THRESHOLD
         if threshold_triggered:

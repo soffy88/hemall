@@ -28,9 +28,7 @@ from app.ext.oskill import (
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-DB_TESTS = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+DB_TESTS = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 # ── oskill: 贝叶斯平滑动态评分 ─────────────────────────────────────────────
@@ -134,9 +132,7 @@ class TestVlmParseBattleReport:
         llm_provider.set_response(
             system_prompt=_BATTLE_REPORT_SYSTEM_PROMPT,
             user_prompt="Text: x\nImage: (无)",
-            text=json.dumps(
-                {"freshness_index": 3.5, "sentiment_polarity": -7.0, "keywords": []}
-            ),
+            text=json.dumps({"freshness_index": 3.5, "sentiment_polarity": -7.0, "keywords": []}),
         )
         out = await _vlm("x")
         assert out["freshness_index"] == 1.0
@@ -178,12 +174,8 @@ async def cn_pool(tmp_path_factory):
     from app.ext.llm_provider import ManualLLMProvider
     from app.ext.schema import ensure_ext_schema
 
-    ProviderRegistry.get().register_generic(
-        "llm", "manual", ManualLLMProvider(), replace=True
-    )
-    pool = await PgPool.create(
-        name="hemall_phase9_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    ProviderRegistry.get().register_generic("llm", "manual", ManualLLMProvider(), replace=True)
+    pool = await PgPool.create(name="hemall_phase9_test", dsn=TEST_DSN, min_size=1, max_size=5)
     from db_test_utils import cleanup_db_test_rows
 
     await cleanup_db_test_rows(pool)
@@ -493,9 +485,9 @@ class TestSubmitBattleReportWorkflow:
 class TestBattleReportReadSide:
     async def test_summary_aggregation(self, cn_pool, tmp_path):
         """多份战报 → 24h 计数 / 新鲜度拟合 / 关键词共现 / 最近实拍聚合正确。"""
-        from app.queries import get_batch_battle_report_summary
-
         from obase.uuid7 import uuid7
+
+        from app.queries import get_batch_battle_report_summary
 
         # 第一个订单自带批次 (batch_id = batch_ids[0])
         s = await _seed_order(cn_pool)
@@ -528,7 +520,7 @@ class TestBattleReportReadSide:
 
         orders = [s, await _order_on_batch(), await _order_on_batch()]
         texts = ["又脆又甜，个头大", "很新鲜，回购", "脆甜，好吃"]
-        for i, (o, t) in enumerate(zip(orders, texts)):
+        for i, (o, t) in enumerate(zip(orders, texts, strict=True)):
             await _submit(
                 cn_pool,
                 user_id=o["customer_id"],
@@ -542,19 +534,16 @@ class TestBattleReportReadSide:
         assert summary is not None
         assert summary["report_count_total"] == 3
         assert summary["report_count_24h"] == 3
-        assert (
-            summary["freshness_fit_pct"] is not None
-            and 0 <= summary["freshness_fit_pct"] <= 100
-        )
+        assert summary["freshness_fit_pct"] is not None and 0 <= summary["freshness_fit_pct"] <= 100
         assert summary["dynamic_rating"] is not None
         assert len(summary["recent_images"]) == 3
         assert summary["recent_images"][0].startswith("https://cdn.example/")
         assert len(summary["top_keywords"]) >= 1
 
     async def test_summary_unknown_batch_returns_none(self, cn_pool):
-        from app.queries import get_batch_battle_report_summary
-
         from obase.uuid7 import uuid7
+
+        from app.queries import get_batch_battle_report_summary
 
         assert await get_batch_battle_report_summary(cn_pool, str(uuid7())) is None
 
@@ -629,9 +618,7 @@ async def _seed_via_own_pool() -> dict:
     """HTTP 测试专用: 用自己的短命连接池种一笔已履约订单。"""
     from obase.persistence.pool import PgPool
 
-    pool = await PgPool.create(
-        name="hemall_phase9_http_seed", dsn=TEST_DSN, min_size=1, max_size=2
-    )
+    pool = await PgPool.create(name="hemall_phase9_http_seed", dsn=TEST_DSN, min_size=1, max_size=2)
     try:
         return await _seed_order(pool)
     finally:

@@ -1,0 +1,20 @@
+services:
+  api:
+    image: registry.sxueji.com/hemall/backend:0.6.18-prod
+    environment:
+      # VLM 截图填价通道 (宿主机 hemal-shotd, 令牌在 .env 插值, 不落明文)
+      HEMALL_VLM_SCREENSHOT_URL: http://172.17.0.1:8799/shot
+      HEMALL_VLM_SCREENSHOT_TOKEN: ${HEMALL_VLM_SCREENSHOT_TOKEN}
+  web:
+    image: registry.sxueji.com/hemall/frontend:0.5.10-prod
+    environment:
+      HEMALL_BACKEND_URL: http://hemal-api-1:8000
+  caddy:
+    environment:
+      HEMALL_API_CONTAINER: hemal-api-1
+      HEMALL_WEB_CONTAINER: hemal-web-1
+  db:
+    # 功能修复 2026-10-21: 换带 pgvector 0.8.0 的同底镜像（postgres:16-alpine
+    # + 自编译 pgvector），RAG 的 ai_product_embeddings 需要 vector 扩展。
+    # 构建配方: build-pgvector/Dockerfile；换底前备份在 backup/。
+    image: hemall/postgres-pgvector:16-alpine-0.8.0

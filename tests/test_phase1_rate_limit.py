@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from app.security.rate_limit import _resolve_storage_uri, is_redis_backend, limiter
 
 
@@ -68,4 +66,6 @@ class TestRateLimitStorage:
     def test_limiter_storage_uri_set(self):
         """验证存储 URI 已设置。"""
         assert limiter._storage_uri is not None
-        assert limiter._storage_uri.startswith("memory://") or limiter._storage_uri.startswith("redis://")
+        assert limiter._storage_uri.startswith("memory://") or limiter._storage_uri.startswith(
+            "redis://"
+        )

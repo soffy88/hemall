@@ -1,4 +1,22 @@
-# Nginx 配置文件 for mall.sxueji.com (生产环境)
+# Nginx 配置文件 (生产环境) —— **模板**, 由 nginx/nginx-entrypoint.sh 渲染
+#
+# 为什么是模板 (audit P1-7):
+#   原文件把 `ssl_certificate /etc/nginx/ssl/fullchain.pem` 与
+#   `server_name api.hemall.example.com` 写死。前者依赖一个仓库里根本不存在的
+#   ./ssl 目录 (compose 会自动建成空目录 → nginx [emerg] cannot open
+#   certificate → 反复重启)；后者是占位域名却被 prod compose 当真配置使用。
+#   两者都改为从环境变量注入，并在 nginx-entrypoint.sh 里做存在性校验 +
+#   `nginx -t` 门禁 —— 配置缺失/写错时报一条说清"缺什么、怎么补"的错，
+#   而不是进 CrashLoop 让运维去猜。
+#
+# 注入的环境变量 (compose 中均以必填形式声明，缺配置即启动失败):
+#   HEMALL_API_SERVER_NAME   入口域名 (真实证书的 CN/SAN)
+#   HEMALL_SSL_CERT_PATH     fullchain 证书路径 (挂载进来)
+#   HEMALL_SSL_KEY_PATH      私钥路径
+#
+# 注意: 渲染只替换 HEMALL_ 前缀的占位符，nginx 自己的 $host / $remote_addr /
+# $proxy_add_x_forwarded_for 等变量必须原样保留。
+
 events {
     worker_connections 1024;
 }
@@ -11,18 +29,18 @@ http {
     # HTTP 重定向到 HTTPS
     server {
         listen 80;
-        server_name mall.sxueji.com www.mall.sxueji.com;
+        server_name ${HEMALL_API_SERVER_NAME};
         return 301 https://$host$request_uri;
     }
 
     # HTTPS 服务器
     server {
         listen 443 ssl http2;
-        server_name mall.sxueji.com www.mall.sxueji.com;
+        server_name ${HEMALL_API_SERVER_NAME};
 
-        # SSL 证书配置 (需要替换为实际证书)
-        ssl_certificate /etc/nginx/ssl/mall.sxueji.com/fullchain.pem;
-        ssl_certificate_key /etc/nginx/ssl/mall.sxueji.com/privkey.pem;
+        # SSL 证书: 由 nginx-entrypoint.sh 校验存在且非空后才放行
+        ssl_certificate ${HEMALL_SSL_CERT_PATH};
+        ssl_certificate_key ${HEMALL_SSL_KEY_PATH};
 
         # SSL 安全配置
         ssl_protocols TLSv1.2 TLSv1.3;
@@ -44,7 +62,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
-            
+
             # 超时设置
             proxy_connect_timeout 60s;
             proxy_send_timeout 60s;

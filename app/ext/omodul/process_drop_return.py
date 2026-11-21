@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 
 class ProcessDropReturnConfig(BaseConfig):
@@ -66,16 +65,12 @@ async def process_drop_return(
                 input_data.order_line_item_id,
             )
         if row is None:
-            raise ValueError(
-                f"order_line_item {input_data.order_line_item_id!r} not found"
-            )
+            raise ValueError(f"order_line_item {input_data.order_line_item_id!r} not found")
         if row["payment_intent_id"] is None:
             raise ValueError(
                 f"order for {input_data.order_line_item_id!r} has no captured payment to refund"
             )
-        trail.record(
-            event="order_line_item_loaded", refund_amount=row["line_total_cents"]
-        )
+        trail.record(event="order_line_item_loaded", refund_amount=row["line_total_cents"])
 
         from obase.provider_registry import ProviderRegistry
 
@@ -87,6 +82,7 @@ async def process_drop_return(
             event="refunded",
             intent_id=row["payment_intent_id"],
             amount=row["line_total_cents"],
+            provider_status=refund_result.get("status"),
             reason=input_data.reason,
         )
 

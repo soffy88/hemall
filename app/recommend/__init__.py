@@ -4,7 +4,7 @@ Phase 3 Priority 1: 为用户推荐个性化商品，提升转化率。
 
 算法选择:
     1. User-Based Collaborative Filtering (基于用户的协同过滤)
-    2. Item-Based Collaborative Filtering (基于物品的协同过滤)  
+    2. Item-Based Collaborative Filtering (基于物品的协同过滤)
     3. Content-Based Filtering (基于内容的推荐 - 品类/品牌/标签匹配)
     4. Hybrid Recommender (加权融合上述算法)
 

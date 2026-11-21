@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oskill import validate_supplier_margin
 
@@ -73,7 +72,8 @@ async def submit_supplier_reverse_auction_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — submit_supplier_reverse_auction_workflow always touches persisted stock"
+                "pool is required — submit_supplier_reverse_auction_workflow "
+                "always touches persisted stock"
             )
         if input_data.supplier_bid_price_per_gram < 0:
             raise ValueError("supplier_bid_price_per_gram must be non-negative")
@@ -110,9 +110,7 @@ async def submit_supplier_reverse_auction_workflow(
             supplier_bid_price_per_gram=input_data.supplier_bid_price_per_gram,
         )
         if not approved:
-            raise ValueError(
-                "margin_too_low: supplier bid does not clear the 50% margin red line"
-            )
+            raise ValueError("margin_too_low: supplier bid does not clear the 50% margin red line")
 
         async with pool.acquire() as conn:
             await conn.execute(

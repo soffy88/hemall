@@ -138,7 +138,7 @@ curl -X POST http://mall.sxueji.com/agent/ingest \
 uv run python -c "
 from obase.crypto.util import CryptoUtil
 secret = [l.split('=',1)[1].strip() for l in open('.env.mall-sxueji') if l.startswith('HEMALL_JWT_SECRET')][0]
-print(CryptoUtil.jwt_sign(payload={'sub':'demo-admin','email':'demo@hemall.local','role':'ADMIN_OPS'}, secret=secret, expires_in_minutes=60, algorithm='HS256'))
+print(CryptoUtil.jwt_sign(payload={'sub':'demo-admin','email':'demo@hemall.local','role':'admin','typ':'staff'}, secret=secret, expires_in_minutes=60, algorithm='HS256'))
 "
 ```
 

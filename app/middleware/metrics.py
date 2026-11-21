@@ -6,7 +6,7 @@ Phase 0 交付：/metrics 端点暴露 QPS/延迟/错误率等核心指标。
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from prometheus_client import Counter, Gauge, Histogram
@@ -69,6 +69,13 @@ ENGINE_FAILURE_TOTAL = Counter(
 DB_DEADLOCK_ERRORS_TOTAL = Counter(
     "db_deadlock_errors_total",
     "Total PostgreSQL deadlock errors observed",
+)
+
+#: 事件派发失败次数 (按事件类型)。派发失败不阻断主业务，但需可观测并告警。
+EVENT_DISPATCH_FAILURES_TOTAL = Counter(
+    "event_dispatch_failures_total",
+    "Total event dispatch failures",
+    ["event_type"],
 )
 
 

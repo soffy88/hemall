@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_notify_send
 
@@ -98,9 +97,7 @@ async def mark_batch_for_disposal(
                 "reason": input_data.reason,
             },
         )
-        trail.record(
-            event="dispose_task_dispatched", location_id=str(batch["location_id"])
-        )
+        trail.record(event="dispose_task_dispatched", location_id=str(batch["location_id"]))
 
         trail_path = trail.write(output_dir)
         return build_result(

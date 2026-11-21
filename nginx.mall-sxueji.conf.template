@@ -1,4 +1,9 @@
-# Nginx 配置文件 (生产环境)
+# Nginx 配置文件 for mall.sxueji.com (生产环境) —— **模板**, 由
+# nginx/nginx-entrypoint.sh 渲染 (审计 P1-7: 证书路径与 server_name 不得写死)
+#
+# 注入的环境变量 (compose 中均以必填形式声明，缺配置即启动失败):
+#   HEMALL_API_SERVER_NAME / HEMALL_SSL_CERT_PATH / HEMALL_SSL_KEY_PATH
+# 渲染只替换 HEMALL_ 前缀占位符；nginx 自身的 $host 等变量原样保留。
 events {
     worker_connections 1024;
 }
@@ -11,18 +16,18 @@ http {
     # HTTP 重定向到 HTTPS
     server {
         listen 80;
-        server_name _;
+        server_name ${HEMALL_API_SERVER_NAME};
         return 301 https://$host$request_uri;
     }
 
     # HTTPS 服务器
     server {
         listen 443 ssl http2;
-        server_name api.hemall.example.com;
+        server_name ${HEMALL_API_SERVER_NAME};
 
-        # SSL 证书配置 (需要替换为实际证书)
-        ssl_certificate /etc/nginx/ssl/fullchain.pem;
-        ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+        # SSL 证书: 由 nginx-entrypoint.sh 校验存在且非空后才放行 (audit P1-7)
+        ssl_certificate ${HEMALL_SSL_CERT_PATH};
+        ssl_certificate_key ${HEMALL_SSL_KEY_PATH};
 
         # SSL 安全配置
         ssl_protocols TLSv1.2 TLSv1.3;

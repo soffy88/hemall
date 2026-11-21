@@ -21,9 +21,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -44,24 +42,24 @@ async def cn_pool():
     cv = ManualCVProvider()
     reg.register_generic("cv", "manual", cv, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_phase4_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase4_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     pool._test_cv = cv  # type: ignore[attr-defined]
     yield pool
     await pool.close()
 
 
-async def _make_variant(
-    pool, *, lat: float = 31.0, lon: float = 121.0
-) -> tuple[str, str, str]:
+async def _make_variant(pool, *, lat: float = 31.0, lon: float = 121.0) -> tuple[str, str, str]:
     from obase.uuid7 import uuid7
 
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
-            "VALUES ($1,'p4_loc','cn-east','host_p4','测试车库',$2,$3,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, lat, lng, status) "
+                "VALUES ($1,'p4_loc','cn-east','host_p4','测试车库',$2,$3,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
             lat,
             lon,
@@ -104,10 +102,13 @@ async def _make_batch(
     batch_id = uuid7()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inventory_batch "
-            "(id, batch_no, variant_id, location_id, video_url, stock_qty, reserved_qty, "
-            "cost_price_cents, retail_price_cents, supplier_id, status, created_at, vwap_target_curve, inspection_status) "
-            "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,COALESCE($11, NOW()),$12,'passed')",
+            (
+                "INSERT INTO inventory_batch "
+                "(id, batch_no, variant_id, location_id, video_url, stock_qty, "
+                "reserved_qty, cost_price_cents, retail_price_cents, supplier_id, "
+                "status, created_at, vwap_target_curve, inspection_status) "
+                "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,COALESCE($11, NOW()),$12,'passed')"
+            ),
             batch_id,
             f"p4-batch-{batch_id}",
             var_id,
@@ -124,7 +125,7 @@ async def _make_batch(
     return str(batch_id)
 
 
-async def _make_order(pool, *, batch_id: str, qty: int = 1) -> tuple[str, str]:
+async def _make_order(pool, *, batch_id: str, qty: int = 1, test_redis_url: str) -> tuple[str, str]:
     """建车+加车+授权支付+结账 (共享 omodul 链路)，拿到 (order_id, order_line_item_id)。"""
     from omodul.add_line_item_to_cart import (
         AddLineItemConfig,
@@ -153,14 +154,12 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1) -> tuple[str, str]:
         set_payment_session,
     )
 
-    cart_result = await create_cart(
-        CreateCartConfig(), CreateCartInput(), Path("/tmp"), pool=pool
-    )
+    cart_result = await create_cart(CreateCartConfig(), CreateCartInput(), Path("/tmp"), pool=pool)
     assert cart_result["status"] == "completed", cart_result
     cart_id = cart_result["cart_id"]
 
     add_result = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=batch_id, quantity=qty),
         Path("/tmp"),
         pool=pool,
@@ -192,7 +191,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1) -> tuple[str, str]:
     assert authorize_result["status"] == "completed", authorize_result
 
     checkout_result = await complete_checkout(
-        CompleteCheckoutConfig(),
+        CompleteCheckoutConfig(redis_url=test_redis_url),
         CompleteCheckoutInput(cart_id=cart_id),
         Path("/tmp"),
         pool=pool,
@@ -201,9 +200,7 @@ async def _make_order(pool, *, batch_id: str, qty: int = 1) -> tuple[str, str]:
     order_id = str(checkout_result["order_id"])
 
     async with pool.acquire() as conn:
-        oli_id = await conn.fetchval(
-            "SELECT id FROM order_line_item WHERE order_id=$1", order_id
-        )
+        oli_id = await conn.fetchval("SELECT id FROM order_line_item WHERE order_id=$1", order_id)
     return order_id, str(oli_id)
 
 
@@ -253,9 +250,7 @@ async def test_claim_origin_workflow_registers_supplier(cn_pool, tmp_path):
             wallet_account="wallet_claim_test",
             spatial_polygon={
                 "type": "Polygon",
-                "coordinates": [
-                    [[121.0, 31.0], [121.1, 31.0], [121.1, 31.1], [121.0, 31.0]]
-                ],
+                "coordinates": [[[121.0, 31.0], [121.1, 31.0], [121.1, 31.1], [121.0, 31.0]]],
             },
         ),
         tmp_path,
@@ -299,7 +294,7 @@ async def test_claim_origin_workflow_rejects_bad_polygon(cn_pool, tmp_path):
 
 @pytest.mark.asyncio
 async def test_execute_slashing_workflow_debits_and_freezes_below_red_line(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from app.ext.omodul.execute_slashing_workflow import (
         ExecuteSlashingWorkflowConfig,
@@ -309,10 +304,8 @@ async def test_execute_slashing_workflow_debits_and_freezes_below_red_line(
 
     supplier_id = await _make_supplier(cn_pool, escrow_balance=100_000)
     loc_id, _, var_id = await _make_variant(cn_pool)
-    batch_id = await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, supplier_id=supplier_id
-    )
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, supplier_id=supplier_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
 
     result = await execute_slashing_workflow(
         ExecuteSlashingWorkflowConfig(),
@@ -342,7 +335,10 @@ async def test_execute_slashing_workflow_debits_and_freezes_below_red_line(
 
 
 @pytest.mark.asyncio
-async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_path):
+@pytest.mark.asyncio
+async def test_execute_slashing_workflow_not_frozen_above_red_line(
+    cn_pool, tmp_path, test_redis_url
+):
     from app.ext.omodul.execute_slashing_workflow import (
         ExecuteSlashingWorkflowConfig,
         ExecuteSlashingWorkflowInput,
@@ -351,10 +347,8 @@ async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_
 
     supplier_id = await _make_supplier(cn_pool, escrow_balance=100_000)
     loc_id, _, var_id = await _make_variant(cn_pool)
-    batch_id = await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, supplier_id=supplier_id
-    )
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, supplier_id=supplier_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
 
     result = await execute_slashing_workflow(
         ExecuteSlashingWorkflowConfig(),
@@ -372,9 +366,7 @@ async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_
     assert result["frozen"] is False
 
     async with cn_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT status FROM supplier WHERE id=$1", supplier_id
-        )
+        row = await conn.fetchrow("SELECT status FROM supplier WHERE id=$1", supplier_id)
     assert row["status"] == "sandbox"
 
 
@@ -383,7 +375,7 @@ async def test_execute_slashing_workflow_not_frozen_above_red_line(cn_pool, tmp_
 
 @pytest.mark.asyncio
 async def test_report_phantom_stock_workflow_zeroes_stock_and_refunds(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from app.ext.omodul.report_phantom_stock_workflow import (
         ReportPhantomStockWorkflowConfig,
@@ -395,13 +387,13 @@ async def test_report_phantom_stock_workflow_zeroes_stock_and_refunds(
     batch_id = await _make_batch(
         cn_pool, var_id=var_id, loc_id=loc_id, stock_qty=10, cost_price=2000
     )
-    order_id, oli_id = await _make_order(cn_pool, batch_id=batch_id, qty=1)
+    order_id, oli_id = await _make_order(
+        cn_pool, batch_id=batch_id, qty=1, test_redis_url=test_redis_url
+    )
 
     result = await report_phantom_stock_workflow(
         ReportPhantomStockWorkflowConfig(),
-        ReportPhantomStockWorkflowInput(
-            order_line_item_id=oli_id, worker_id="worker_p4"
-        ),
+        ReportPhantomStockWorkflowInput(order_line_item_id=oli_id, worker_id="worker_p4"),
         tmp_path,
         pool=cn_pool,
     )
@@ -428,9 +420,8 @@ async def test_report_phantom_stock_workflow_zeroes_stock_and_refunds(
 
 
 @pytest.mark.asyncio
-async def test_execute_ambient_intake_workflow_activates_pending_batch(
-    cn_pool, tmp_path
-):
+@pytest.mark.asyncio
+async def test_execute_ambient_intake_workflow_activates_pending_batch(cn_pool, tmp_path):
     from app.ext.omodul.execute_ambient_intake_workflow import (
         ExecuteAmbientIntakeWorkflowConfig,
         ExecuteAmbientIntakeWorkflowInput,
@@ -438,9 +429,7 @@ async def test_execute_ambient_intake_workflow_activates_pending_batch(
     )
 
     loc_id, _, var_id = await _make_variant(cn_pool)
-    batch_id = await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, status="pending"
-    )
+    batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, status="pending")
 
     video_bytes = b"phase4-fake-video"
     cn_pool._test_cv.set_intake_result(
@@ -471,9 +460,7 @@ async def test_execute_ambient_intake_workflow_activates_pending_batch(
 
 
 @pytest.mark.asyncio
-async def test_execute_ambient_intake_workflow_fails_when_cv_cannot_identify(
-    cn_pool, tmp_path
-):
+async def test_execute_ambient_intake_workflow_fails_when_cv_cannot_identify(cn_pool, tmp_path):
     from app.ext.omodul.execute_ambient_intake_workflow import (
         ExecuteAmbientIntakeWorkflowConfig,
         ExecuteAmbientIntakeWorkflowInput,
@@ -494,7 +481,7 @@ async def test_execute_ambient_intake_workflow_fails_when_cv_cannot_identify(
 
 @pytest.mark.asyncio
 async def test_execute_peer_delivery_workflow_releases_tote_and_pays_neighbor(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from obase.uuid7 import uuid7
 
@@ -506,7 +493,7 @@ async def test_execute_peer_delivery_workflow_releases_tote_and_pays_neighbor(
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id)
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
 
     tote_id = uuid7()
     async with cn_pool.acquire() as conn:
@@ -540,7 +527,7 @@ async def test_execute_peer_delivery_workflow_releases_tote_and_pays_neighbor(
 
 @pytest.mark.asyncio
 async def test_process_credit_gated_rma_workflow_instant_refunds_high_trust(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from app.ext.omodul.process_credit_gated_rma_workflow import (
         ProcessCreditGatedRmaWorkflowConfig,
@@ -550,7 +537,7 @@ async def test_process_credit_gated_rma_workflow_instant_refunds_high_trust(
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id)
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
     user_id = await _make_customer(cn_pool)
 
     result = await process_credit_gated_rma_workflow(
@@ -570,7 +557,9 @@ async def test_process_credit_gated_rma_workflow_instant_refunds_high_trust(
 
 
 @pytest.mark.asyncio
-async def test_process_credit_gated_rma_workflow_honeypot_low_trust(cn_pool, tmp_path):
+async def test_process_credit_gated_rma_workflow_honeypot_low_trust(
+    cn_pool, tmp_path, test_redis_url
+):
     from app.ext.omodul.process_credit_gated_rma_workflow import (
         ProcessCreditGatedRmaWorkflowConfig,
         ProcessCreditGatedRmaWorkflowInput,
@@ -579,7 +568,7 @@ async def test_process_credit_gated_rma_workflow_honeypot_low_trust(cn_pool, tmp
 
     loc_id, _, var_id = await _make_variant(cn_pool)
     batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id)
-    order_id, _ = await _make_order(cn_pool, batch_id=batch_id)
+    order_id, _ = await _make_order(cn_pool, batch_id=batch_id, test_redis_url=test_redis_url)
     user_id = await _make_customer(cn_pool)
 
     result = await process_credit_gated_rma_workflow(
@@ -604,9 +593,7 @@ async def test_process_credit_gated_rma_workflow_honeypot_low_trust(cn_pool, tmp
 
 
 @pytest.mark.asyncio
-async def test_generate_crushing_offer_workflow_matches_and_reports_savings(
-    cn_pool, tmp_path
-):
+async def test_generate_crushing_offer_workflow_matches_and_reports_savings(cn_pool, tmp_path):
     from app.ext.omodul.generate_crushing_offer_workflow import (
         GenerateCrushingOfferWorkflowConfig,
         GenerateCrushingOfferWorkflowInput,
@@ -617,14 +604,10 @@ async def test_generate_crushing_offer_workflow_matches_and_reports_savings(
     customer_id = await _make_customer(cn_pool)
     # 给同一个 product 建两个批次，价格不同，期望命中价格更低的那个
     await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, retail_price=5000)
-    cheap_batch_id = await _make_batch(
-        cn_pool, var_id=var_id, loc_id=loc_id, retail_price=3000
-    )
+    cheap_batch_id = await _make_batch(cn_pool, var_id=var_id, loc_id=loc_id, retail_price=3000)
 
     async with cn_pool.acquire() as conn:
-        product_name = await conn.fetchval(
-            "SELECT title FROM product WHERE id=$1", prod_id
-        )
+        product_name = await conn.fetchval("SELECT title FROM product WHERE id=$1", prod_id)
 
     result = await generate_crushing_offer_workflow(
         GenerateCrushingOfferWorkflowConfig(),
@@ -720,11 +703,9 @@ async def test_tote_balancing_engine_flags_shortage_location(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_spatial_fomo_engine_promo_push_and_threshold_commission(
-    cn_pool, tmp_path
-):
-    from app.ext.oservi import build_spatial_fomo_engine
+async def test_spatial_fomo_engine_promo_push_and_threshold_commission(cn_pool, tmp_path):
     from app.config import Settings
+    from app.ext.oservi import build_spatial_fomo_engine
 
     engine = build_spatial_fomo_engine(cn_pool, settings=Settings(output_root=tmp_path))
 

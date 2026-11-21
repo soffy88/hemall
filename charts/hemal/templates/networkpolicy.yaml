@@ -1,8 +1,22 @@
 {{- if .Values.security.networkPolicies.enabled }}
+{{- /*
+  NetworkPolicy 的 egress 一旦声明就默认拒绝**全部**未列出的出站。
+  漏掉一条的表现不是报错也不是 CrashLoop，而是安静地连不上：
+
+    - Jaeger OTLP 4317 漏了 -> app/observability/tracing.py 里 tracing 失败
+      只打一行 "tracing setup failed (non-fatal)" warning，监控从此静默缺失；
+    - 同 ns 出站没放行   -> 同 ns 部署的 OTLP collector / 内部服务全被拒；
+    - DNS 只放 UDP       -> 响应包超 MTU 时回落 TCP，大响应静默解析失败。
+
+  所以目的地不再写死 `namespaceSelector.matchLabels.name=database` 这类标签，
+  改为从 values 读，换 namespace 时改配置而不是去改 chart（audit P2-5）。
+*/ -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-api-network-policy
+  labels:
+    app: hemall-api
 spec:
   podSelector:
     matchLabels:
@@ -15,7 +29,7 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          name: ingress-nginx
+          {{- toYaml .Values.security.networkPolicies.ingressNamespaceSelector | nindent 10 }}
     ports:
     - protocol: TCP
       port: 8000
@@ -26,42 +40,45 @@ spec:
     - protocol: TCP
       port: 8000
   egress:
-  # Allow DNS resolution
+  # DNS 解析：UDP + TCP 都要。缺 TCP 时超过 MTU 的响应会解析失败。
   - to:
     - namespaceSelector:
         matchLabels:
-          name: kube-system
+          {{- toYaml .Values.security.networkPolicies.dnsNamespaceSelector | nindent 10 }}
     ports:
     - protocol: UDP
       port: 53
     - protocol: TCP
       port: 53
-  # Allow database connections
+  {{- range $name, $dest := .Values.security.networkPolicies.egress }}
+  # {{ $name }}
+  {{- /*
+    两种写法都要支持：
+      sameNamespace: true  -> podSelector: {}   (本 release 所在 ns)
+      namespaceSelector    -> 限定到带该标签的 ns
+      两者都没有            -> **不写 to**，NetworkPolicy 语义即"不限目的地"
+                                (写 `matchLabels: null` 会被 API server 拒绝)
+  */}}
+  {{- if $dest.sameNamespace }}
+  - to:
+    - podSelector: {}
+    ports:
+  {{- else if $dest.namespaceSelector }}
   - to:
     - namespaceSelector:
         matchLabels:
-          name: database
+          {{- toYaml $dest.namespaceSelector | nindent 10 }}
     ports:
-    - protocol: TCP
-      port: 5432  # PostgreSQL
-  # Allow Redis connections
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          name: cache
-    ports:
-    - protocol: TCP
-      port: 6379  # Redis
-  # Allow Elasticsearch connections
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          name: logging
-    ports:
-    - protocol: TCP
-      port: 9200  # Elasticsearch
-  # Allow HTTPS outbound (for external APIs)
+  {{- else }}
   - ports:
-    - protocol: TCP
-      port: 443
+  {{- end }}
+    {{- range $port := $dest.ports }}
+    {{- $proto := "TCP" }}
+    {{- if $dest.protocols }}
+    {{- $proto = index $dest.protocols $port | default "TCP" }}
+    {{- end }}
+    - protocol: {{ $proto }}
+      port: {{ $port }}
+    {{- end }}
+  {{- end }}
 {{- end }}

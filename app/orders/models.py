@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ── 订单状态枚举 ─────────────────────────────────────────────────────
 
 
-class OrderStatus(str, enum.Enum):
+class OrderStatus(enum.StrEnum):
     """订单生命周期状态。
 
     完整流转:
@@ -36,6 +35,7 @@ class OrderStatus(str, enum.Enum):
         any          → failed (系统异常)
     """
 
+    DRAFT = "draft"
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
@@ -53,6 +53,11 @@ class OrderStatus(str, enum.Enum):
 
 
 VALID_ORDER_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
+    OrderStatus.DRAFT: {
+        OrderStatus.CONFIRMED,
+        OrderStatus.CANCELLED,
+        OrderStatus.FAILED,
+    },
     OrderStatus.PENDING: {
         OrderStatus.CONFIRMED,
         OrderStatus.CANCELLED,
@@ -110,8 +115,20 @@ class InvalidOrderTransitionError(Exception):
         self.from_status = from_status
         self.to_status = to_status
         super().__init__(
-            f"invalid order transition for {order_id}: "
-            f"{from_status.value} → {to_status.value}"
+            f"invalid order transition for {order_id}: {from_status.value} → {to_status.value}"
+        )
+
+
+class ConcurrentOrderTransitionError(Exception):
+    """两个调用者基于同一版本竞争 transition，只有一个可以成功。"""
+
+    def __init__(self, order_id: str, expected_version: int, current_version: int) -> None:
+        self.order_id = order_id
+        self.expected_version = expected_version
+        self.current_version = current_version
+        super().__init__(
+            f"stale order version for {order_id}: expected {expected_version}, "
+            f"current {current_version}"
         )
 
 
@@ -131,6 +148,7 @@ class OrderSnapshot(BaseModel):
     """订单快照 (查询用)。"""
 
     id: str
+    version: int = 0
     cart_id: str | None = None
     customer_id: str | None = None
     status: OrderStatus
@@ -193,7 +211,7 @@ class StatusHistoryEntry(BaseModel):
     reason: str | None = None
     operator_id: str | None = None
     metadata: dict[str, Any] | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 # ── DDL ──────────────────────────────────────────────────────────────
@@ -212,11 +230,16 @@ CREATE TABLE IF NOT EXISTS order_status_history (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_order_history_order ON order_status_history(order_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_order_history_status ON order_status_history(to_status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_order
+    ON order_status_history(order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_status
+    ON order_status_history(to_status, created_at DESC);
 
 -- 给 customer_order 加 status 索引 (如果还没有)
-CREATE INDEX IF NOT EXISTS idx_customer_order_status ON customer_order(status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_customer_order_customer ON customer_order(customer_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_customer_order_created ON customer_order(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_order_status
+    ON customer_order(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_order_customer
+    ON customer_order(customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_order_created
+    ON customer_order(created_at DESC);
 """

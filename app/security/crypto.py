@@ -6,7 +6,8 @@
 
 配置:
     环境变量 ENCRYPTION_KEY (Fernet key, 32 字节 base64)
-    自动生成: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    自动生成:
+        python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 用法:
     from app.security.crypto import encrypt_field, decrypt_field
@@ -25,11 +26,9 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
-from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -46,9 +45,7 @@ def _get_fernet() -> Fernet:
         if not key:
             # 开发环境自动生成 (警告！生产环境必须显式配置)
             key = Fernet.generate_key().decode()
-            logger.warning(
-                "ENCRYPTION_KEY not set — auto-generated key (NOT for production!)"
-            )
+            logger.warning("ENCRYPTION_KEY not set — auto-generated key (NOT for production!)")
         _fernet_instance = Fernet(key.encode() if isinstance(key, str) else key)
     return _fernet_instance
 

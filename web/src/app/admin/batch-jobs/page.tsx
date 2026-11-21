@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import type { BatchJob } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 export default function BatchJobsPage() {
   const [jobs, setJobs] = useState<BatchJob[]>([]);
@@ -12,16 +13,11 @@ export default function BatchJobsPage() {
   const [jobType, setJobType] = useState('');
   const [payloadText, setPayloadText] = useState('{}');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.adminListBatchJobs();
-      setJobs(data);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListBatchJobs()
+      .then(setJobs)
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -37,12 +33,13 @@ export default function BatchJobsPage() {
     }
     try {
       const res = await api.createBatchJob({ job_type: jobType, payload });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setJobType(''); setPayloadText('{}');
       setShowForm(false);
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -50,10 +47,11 @@ export default function BatchJobsPage() {
     if (!confirm('确认取消此任务？')) return;
     try {
       const res = await api.cancelBatchJob({ batch_job_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 

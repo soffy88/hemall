@@ -15,7 +15,6 @@ from __future__ import annotations
 import base64
 import json
 import time
-from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -46,10 +45,14 @@ def _make_keypair() -> tuple[str, str]:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    pub_pem = key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    pub_pem = (
+        key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
     return priv_pem, pub_pem
 
 
@@ -84,7 +87,11 @@ def test_aes_gcm_decrypt_roundtrip():
 def test_aes_gcm_decrypt_wrong_key_fails():
     nonce = "123456789012"
     ct, _ = _aes_256_gcm_encrypt("0" * 32, nonce, "secret")
-    with pytest.raises(Exception):
+    # 密钥/associated_data 不匹配时 AEAD 校验失败 -> cryptography 的 InvalidTag，
+    # 不能是别的异常（否则这个用例等于没有断言）。
+    from cryptography.exceptions import InvalidTag
+
+    with pytest.raises(InvalidTag):
         aes_256_gcm_decrypt("1" * 32, nonce, ct, "")
 
 
@@ -114,9 +121,7 @@ async def test_wechat_prepay_request_shape():
         captured["url"] = str(request.url)
         captured["auth"] = request.headers.get("Authorization", "")
         captured["body"] = json.loads(request.content)
-        return httpx.Response(
-            200, json={"code_url": "weixin://wxpay/bizpayurl?pr=test123"}
-        )
+        return httpx.Response(200, json={"code_url": "weixin://wxpay/bizpayurl?pr=test123"})
 
     gw = _wechat_gateway(transport=httpx.MockTransport(handler))
     result = await gw.prepay(
@@ -145,9 +150,7 @@ async def test_wechat_prepay_api_error_raises():
 
     gw = _wechat_gateway(transport=httpx.MockTransport(handler))
     with pytest.raises(Exception) as exc:
-        await gw.prepay(
-            out_trade_no="o", total_fee_cents=100, description="x", notify_url=""
-        )
+        await gw.prepay(out_trade_no="o", total_fee_cents=100, description="x", notify_url="")
     assert "401" in str(exc.value)
 
 
@@ -162,10 +165,14 @@ def _wechat_platform_gateway() -> tuple[WechatPayNativeGateway, str]:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    pub_pem = key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    pub_pem = (
+        key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
 
     priv, _ = _make_keypair()  # 商户私钥
     gw = WechatPayNativeGateway(
@@ -190,7 +197,14 @@ async def test_wechat_callback_verify_and_decrypt():
     )
     ct, ad = _aes_256_gcm_encrypt("0" * 32, nonce_iv, plaintext)
     envelope = json.dumps(
-        {"resource": {"algorithm": "AEAD_AES_256_GCM", "ciphertext": ct, "nonce": nonce_iv, "associated_data": ad}}
+        {
+            "resource": {
+                "algorithm": "AEAD_AES_256_GCM",
+                "ciphertext": ct,
+                "nonce": nonce_iv,
+                "associated_data": ad,
+            }
+        }
     ).encode()
     ts = str(int(time.time()))
     nonce = "platform_nonce_1"
@@ -259,7 +273,11 @@ async def test_stripe_prepay_request_shape():
         captured["body"] = request.content.decode()
         return httpx.Response(
             200,
-            json={"id": "pi_123", "client_secret": "pi_123_secret", "status": "requires_payment_method"},
+            json={
+                "id": "pi_123",
+                "client_secret": "pi_123_secret",
+                "status": "requires_payment_method",
+            },
         )
 
     gw = _stripe_gateway(transport=httpx.MockTransport(handler))
@@ -293,9 +311,11 @@ async def test_stripe_refund_shape():
 def test_stripe_webhook_verify():
     body = b'{"type":"payment_intent.succeeded"}'
     ts = int(time.time())
-    expected = __import__("hmac").new(
-        b"whsec_test", f"{ts}.{body.decode()}".encode(), __import__("hashlib").sha256
-    ).hexdigest()
+    expected = (
+        __import__("hmac")
+        .new(b"whsec_test", f"{ts}.{body.decode()}".encode(), __import__("hashlib").sha256)
+        .hexdigest()
+    )
     header = f"t={ts},v1={expected}"
     assert stripe_webhook_verify("whsec_test", body, header)
     assert not stripe_webhook_verify("whsec_wrong", body, header)
@@ -355,3 +375,77 @@ def test_build_gateway_stripe_with_keys_real():
     assert name == "stripe"
     assert isinstance(gw, StripePaymentGateway)
     assert gw.is_configured
+
+
+def test_production_security_rejects_manual_payment_gateway():
+    with pytest.raises(RuntimeError, match="HEMALL_PAYMENT_GATEWAY_PROVIDER"):
+        Settings(
+            environment="production", payment_gateway_provider="manual"
+        ).validate_production_security()
+
+
+def test_production_security_rejects_incomplete_wechat_gateway():
+    with pytest.raises(RuntimeError, match="微信支付生产配置缺失"):
+        Settings(
+            environment="production", payment_gateway_provider="wechat"
+        ).validate_production_security()
+
+
+def test_production_security_rejects_incomplete_stripe_gateway():
+    with pytest.raises(RuntimeError, match="Stripe 生产配置缺失"):
+        Settings(
+            environment="production", payment_gateway_provider="stripe"
+        ).validate_production_security()
+
+
+def test_build_gateway_refuses_manual_fallback_in_production():
+    with pytest.raises(RuntimeError, match="refusing manual fallback"):
+        build_payment_gateway(Settings(environment="production", payment_gateway_provider="wechat"))
+    with pytest.raises(RuntimeError, match="refusing manual fallback"):
+        build_payment_gateway(Settings(environment="production", payment_gateway_provider="stripe"))
+
+
+def test_build_gateway_refuses_unknown_provider_in_production():
+    with pytest.raises(RuntimeError, match="unsupported production payment gateway provider"):
+        build_payment_gateway(Settings(environment="production", payment_gateway_provider="bogus"))
+
+
+def test_production_security_rejects_short_hmac_secrets():
+    # Provide all other required production settings to isolate JWT secret length error
+    settings = Settings(
+        environment="production",
+        payment_gateway_provider="wechat",
+        jwt_secret="x" * 31,
+        webhook_secret="x" * 32,
+        hardware_secret="x" * 32,
+        privileged_staff_ids="user1",
+        wechat_pay_appid="wx_app",
+        wechat_pay_mchid="1900000001",
+        wechat_pay_serial_no="SERIAL_1",
+        wechat_pay_private_key_path="priv.pem",
+        wechat_pay_api_v3_key="0" * 32,
+        wechat_pay_platform_cert_path="pub.pem",
+    )
+    with pytest.raises(RuntimeError, match="HEMALL_JWT_SECRET 必须至少 32 字节"):
+        settings.validate_production_security()
+
+
+def test_production_security_rejects_invalid_fernet_key(monkeypatch):
+    # Provide all other required production settings to isolate ENCRYPTION_KEY error
+    settings = Settings(
+        environment="production",
+        payment_gateway_provider="wechat",
+        jwt_secret="x" * 32,
+        webhook_secret="x" * 32,
+        hardware_secret="x" * 32,
+        privileged_staff_ids="user1",
+        wechat_pay_appid="wx_app",
+        wechat_pay_mchid="1900000001",
+        wechat_pay_serial_no="SERIAL_1",
+        wechat_pay_private_key_path="priv.pem",
+        wechat_pay_api_v3_key="0" * 32,
+        wechat_pay_platform_cert_path="pub.pem",
+        encryption_key="not-a-fernet-key",  # Invalid Fernet key
+    )
+    with pytest.raises(RuntimeError, match="ENCRYPTION_KEY 必须是有效的 Fernet base64 key"):
+        settings.validate_production_security()

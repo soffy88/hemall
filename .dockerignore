@@ -14,6 +14,12 @@ __pycache__/
 .git/
 .gitignore
 
+# veya 本地运行数据（worktrees 里含整套 node_modules 等，2GB+；
+# 与 .gitignore 对齐——曾因未排除被 Dockerfile.prod 的 COPY . . 打进
+# 镜像层、把构建盘打满，2026-10-21）
+.veya/
+.veya-project/
+
 # Docker
 Dockerfile
 Dockerfile.prod
@@ -43,6 +49,10 @@ htmlcov/
 # Docs
 docs/
 *.md
+# 例外：README.md 是 Dockerfile.prod 构建阶段的显式 COPY 源。
+# 缺少本行时 `COPY pyproject.toml uv.lock README.md ./` 报
+# "file not found in build context"，所有 prod/mall 构建失败（审计 P0-1）。
+!README.md
 
 # Misc
 *.log

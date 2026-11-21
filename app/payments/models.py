@@ -22,17 +22,16 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ── 支付状态枚举 ─────────────────────────────────────────────────────
 
 
-class PaymentStatus(str, enum.Enum):
+class PaymentStatus(enum.StrEnum):
     """支付会话状态。"""
 
     PENDING = "pending"  # 待支付
@@ -44,7 +43,7 @@ class PaymentStatus(str, enum.Enum):
     EXPIRED = "expired"  # 超时未支付
 
 
-class PaymentProvider(str, enum.Enum):
+class PaymentProvider(enum.StrEnum):
     """支付渠道。"""
 
     WECHAT = "wechat"  # 微信支付
@@ -83,9 +82,7 @@ class InvalidTransitionError(Exception):
     def __init__(self, from_status: PaymentStatus, to_status: PaymentStatus) -> None:
         self.from_status = from_status
         self.to_status = to_status
-        super().__init__(
-            f"invalid payment transition: {from_status.value} → {to_status.value}"
-        )
+        super().__init__(f"invalid payment transition: {from_status.value} → {to_status.value}")
 
 
 def validate_transition(from_status: PaymentStatus, to_status: PaymentStatus) -> None:
@@ -107,21 +104,19 @@ class PaymentSession(BaseModel):
     currency: str = "CNY"
     provider: PaymentProvider
     status: PaymentStatus = PaymentStatus.PENDING
-    provider_trade_no: str | None = Field(
-        None, description="第三方支付流水号 (微信/支付宝)"
-    )
+    provider_trade_no: str | None = Field(None, description="第三方支付流水号 (微信/支付宝)")
     payer_info: str | None = Field(None, description="付款人信息 (加密存储)")
     refund_amount: Decimal | None = Field(None, description="退款金额")
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = Field(None, description="支付过期时间")
 
     def transition_to(self, new_status: PaymentStatus) -> None:
         """执行状态转换。"""
         validate_transition(self.status, new_status)
         self.status = new_status
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def is_terminal(self) -> bool:
         """是否终态。"""

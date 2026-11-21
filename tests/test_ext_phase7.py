@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,6 @@ from app.ext.spider_targets import (  # noqa: E402
     parse_openfoodfacts,
     parse_suning_search,
 )
-
 
 # ── 任务 1: 微信证书轮换 ──────────────────────────────────────────────
 
@@ -81,9 +80,7 @@ async def test_fetch_wechat_certificates_decrypts_and_parses():
     """GET /v3/certificates → AES-GCM 解密 → PEM 平台证书可加载。"""
     priv_pem, pub_pem = _make_keypair()
     api_v3_key = "0" * 32
-    cert_resp = _build_cert_response(
-        api_v3_key, pub_pem, "SERIAL_A", "2030-01-01T00:00:00+08:00"
-    )
+    cert_resp = _build_cert_response(api_v3_key, pub_pem, "SERIAL_A", "2030-01-01T00:00:00+08:00")
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v3/certificates"
@@ -170,8 +167,11 @@ async def test_rotate_platform_cert_rejects_garbage_pem():
         api_v3_key="0" * 32,
         platform_cert=None,
     )
-    with pytest.raises(Exception):
-        gateway.rotate_platform_cert("not a pem")
+    # 内联垃圾 PEM（带 BEGIN 标记）必须在解析阶段被拒，而不是被当成路径去读盘。
+    with pytest.raises(ValueError):
+        gateway.rotate_platform_cert(
+            "-----BEGIN CERTIFICATE-----\nnot base64 at all\n-----END CERTIFICATE-----"
+        )
 
 
 async def test_cert_rotation_engine_skips_non_wechat_gateway():
@@ -208,7 +208,8 @@ _SUNING_FIXTURE = """
 <html><body><script>
 window.__data = [
   {"prdid":"12448577421","productName":"货出六盘 宁夏西吉县谷草饲喂养 六盘山牛肉 精品黄牛 牛腩4斤"},
-  {"prdid":"12436273128","productName":"潮汕牛肉新鲜火锅食材鲜切雪花嫩肉吊龙匙仁肥胼家庭烧烤 潮汕牛肉套餐1.5斤"}
+  {"prdid":"12436273128",
+   "productName":"潮汕牛肉新鲜火锅食材鲜切雪花嫩肉吊龙匙仁肥胼家庭烧烤 潮汕牛肉套餐1.5斤"}
 ];
 </script></body></html>
 """
@@ -277,8 +278,8 @@ def test_build_cooccurrence_matrix():
     matrix = build_cooccurrence_matrix(
         [
             ["beef", "tomato", "onion"],  # 牛肉+番茄+洋葱 一起买
-            ["beef", "tomato"],           # 牛肉+番茄 又一起买
-            ["milk", "bread"],            # 无关组合
+            ["beef", "tomato"],  # 牛肉+番茄 又一起买
+            ["milk", "bread"],  # 无关组合
         ]
     )
     assert matrix[("beef", "tomato")] == 2

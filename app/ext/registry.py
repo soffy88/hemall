@@ -2,7 +2,8 @@
 
 跟 hemall 原有商城域的 app/registry.py 同一个模式 (EndpointSpec + respond.py
 的 omodul_endpoint 工厂)，区别只在于 omodul 的模块来源：hemall 原有域的
-omodul 来自共享包 platform/3O/omodul (``import omodul.xxx``)，本模块的 omodul 是本项目内的 app.ext.omodul 包。
+omodul 来自共享包 platform/3O/omodul (``import omodul.xxx``)，本模块的 omodul 是
+本项目内的 app.ext.omodul 包。
 
 **统一改造说明**：加车/运费/结账 (add_line_item_to_cart / cart_shipping_
 method_set / complete_checkout) 以前在这里各自有一份跟共享包同名但完全不同

@@ -340,7 +340,8 @@ function card(p) {
       '<div class="card-meta"><span class="price"><small>起</small> ' + price + "</span>" +
       '<span class="stock ' + stockCls + '">' + stockTxt + "</span></div>" +
       '<button class="add-btn" ' + disabled +
-        ' onclick="addToCart(\'' + (firstBatch ? firstBatch.id : "") + '\', \'' + escapeHtml(p.title).replace(/'/g, "\\'") + '\')">' +
+        ' data-batch="' + escapeHtml(firstBatch ? firstBatch.id : "") + '"' +
+        ' data-title="' + escapeHtml(p.title) + '">' +
         (firstBatch ? "加入购物车" : "暂时缺货") + "</button>" +
     "</div>"
   );
@@ -544,6 +545,14 @@ async function submitCheckout() {
 
 /* ── 初始化 ── */
 (async function init() {
+  // 事件委托代替内联 onclick：商品名只进 data-* 属性，不再拼进 JS 源码。
+  // （内联属性里 HTML 实体先于 JS 解析还原，单引号商品名可逃逸出字符串字面量。）
+  document.getElementById("productArea").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".add-btn");
+    if (!btn || btn.disabled) return;
+    addToCart(btn.dataset.batch, btn.dataset.title);
+  });
+
   await loadProducts();
   await loadRegions();
   await refreshCart();

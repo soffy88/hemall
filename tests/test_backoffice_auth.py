@@ -9,12 +9,9 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
-
 from obase.crypto.util import CryptoUtil
 
 from app.deps import get_settings
-from app.main import app
 
 # (method, path, json_body) — 每个受保护路由取一个代表性端点。
 PROTECTED_ENDPOINTS = [
@@ -49,22 +46,16 @@ def test_backoffice_endpoint_rejects_anonymous(client, method, path, body):
 
 
 @pytest.mark.parametrize("method,path,body", PROTECTED_ENDPOINTS)
-def test_backoffice_endpoint_rejects_customer_token(
-    client, customer_headers, method, path, body
-):
+def test_backoffice_endpoint_rejects_customer_token(client, customer_headers, method, path, body):
     r = client.request(method, path, json=body, headers=customer_headers)
     assert r.status_code == 401, f"{method} {path} 不应接受顾客 token"
 
 
 @pytest.mark.parametrize("method,path,body", PROTECTED_ENDPOINTS)
-def test_backoffice_endpoint_accepts_staff_token(
-    client, auth_headers, method, path, body
-):
+def test_backoffice_endpoint_accepts_staff_token(client, auth_headers, method, path, body):
     # 员工 token 应越过鉴权到达 handler：不再是 401 (可能 200/422/503/404 视 DB/校验)。
     r = client.request(method, path, json=body, headers=auth_headers)
-    assert r.status_code != 401, (
-        f"{method} {path} 应接受员工 token, 实得 {r.status_code}"
-    )
+    assert r.status_code != 401, f"{method} {path} 应接受员工 token, 实得 {r.status_code}"
 
 
 # 顾客自助报案：需顾客 token，身份/信誉/订单归属服务端认定，绝不信客户端自报。
@@ -78,9 +69,7 @@ def test_rma_claim_rejects_anonymous(client):
 
 def test_rma_claim_rejects_staff_token(client, auth_headers):
     # 员工 token 不是顾客主体，get_current_customer 拒之。
-    r = client.post(
-        "/aftersales/submit_rma_claim", json=_RMA_BODY, headers=auth_headers
-    )
+    r = client.post("/aftersales/submit_rma_claim", json=_RMA_BODY, headers=auth_headers)
     assert r.status_code == 401
 
 
@@ -93,3 +82,30 @@ def test_rma_claim_ignores_client_supplied_trust_and_identity(client, customer_h
         headers=customer_headers,
     )
     assert r.status_code != 401
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"sub": "u1", "typ": "pickup"},
+        {"sub": "o1", "typ": "receipt"},
+        {"sub": "u1"},
+        {"sub": "u1", "typ": "unknown"},
+        {"typ": "staff"},
+        {"sub": "", "typ": "staff"},
+    ],
+)
+@pytest.mark.parametrize("method,path,body", PROTECTED_ENDPOINTS[:4])
+def test_backoffice_endpoints_reject_non_staff_and_invalid_subject_tokens(
+    client, method, path, body, payload
+):
+    settings = get_settings()
+    token = CryptoUtil.jwt_sign(
+        payload=payload,
+        secret=settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    response = client.request(method, path, json=body, headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 401, (
+        f"{method} {path} accepted invalid staff token payload {payload!r}"
+    )

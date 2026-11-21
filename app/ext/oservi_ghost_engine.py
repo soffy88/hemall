@@ -13,19 +13,18 @@ Phase 8 Task 1: oservi 层面的自动化调度 —— 扫描意向金池，执�
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from ..config import Settings
-from .oskill_ghost_clustering import cluster_intentions_by_radius, IGNITION_THRESHOLD
 from .omodul.ignite_ghost_node import (
     IgniteGhostNodeConfig,
     IgniteGhostNodeInput,
     ignite_ghost_node,
 )
 from .oprim import db_query_many
-from oservi.engines.cron_scheduler_engine import CronSchedulerEngine
+from .oservi_compat import CronSchedulerEngine
+from .oskill_ghost_clustering import cluster_intentions_by_radius
 
 logger = logging.getLogger("hemall.ext.oservi_ghost")
 
@@ -50,7 +49,6 @@ def build_ghost_ignition_engine(
     """
 
     async def ghost_ignition_tick(**_: Any) -> dict[str, Any]:
-        now = datetime.now(UTC)
         # 获取最近 7 天内产生的 pending 意向单 (带坐标信息)
         # crowd_intent 表本身不含 lat/lon，需要从 customer 或外部关联表获取
         # intention_order 是 Phase 8 新增表，直接含坐标
@@ -61,21 +59,23 @@ def build_ghost_ignition_engine(
         intention_order_rows = await db_query_many(
             pool,
             sql=(
-                'SELECT id, variant_id, customer_id, lat, lng, prepaid_cents, status '
+                "SELECT id, variant_id, customer_id, lat, lng, prepaid_cents, status "
                 'FROM "intention_order" '
                 "WHERE status = 'pending' AND created_at > NOW() - INTERVAL '7 days'"
             ),
         )
         for row in intention_order_rows:
             if row.get("lat") is not None and row.get("lng") is not None:
-                intention_orders_raw.append({
-                    "id": str(row["id"]),
-                    "variant_id": str(row.get("variant_id", "")),
-                    "customer_id": str(row.get("customer_id", "")),
-                    "lat": float(row["lat"]),
-                    "lon": float(row["lng"]),
-                    "prepaid_amount_cents": int(row.get("prepaid_cents", 0)),
-                })
+                intention_orders_raw.append(
+                    {
+                        "id": str(row["id"]),
+                        "variant_id": str(row.get("variant_id", "")),
+                        "customer_id": str(row.get("customer_id", "")),
+                        "lat": float(row["lat"]),
+                        "lon": float(row["lng"]),
+                        "prepaid_amount_cents": int(row.get("prepaid_cents", 0)),
+                    }
+                )
 
         # ── 从 crowd_intent 补充 (有 GPS 数据的旧意向单) ────────────
         # crowd_intent 没有直接的 lat/lon 列，但可以通过 customer 表关联地址
@@ -84,8 +84,8 @@ def build_ghost_ignition_engine(
         crowd_intent_rows = await db_query_many(
             pool,
             sql=(
-                'SELECT ci.id, ci.variant_id, ci.customer_id, ci.prepaid_amount_cents, '
-                'c.lat AS lat, c.lng AS lon '
+                "SELECT ci.id, ci.variant_id, ci.customer_id, ci.prepaid_amount_cents, "
+                "c.lat AS lat, c.lng AS lon "
                 'FROM "crowd_intent" ci '
                 'JOIN "customer" c ON c.id = ci.customer_id '
                 "WHERE ci.status = 'pending' "
@@ -95,14 +95,16 @@ def build_ghost_ignition_engine(
         )
         for row in crowd_intent_rows:
             if row.get("lat") is not None and row.get("lng") is not None:
-                intention_orders_raw.append({
-                    "id": str(row["id"]),
-                    "variant_id": str(row.get("variant_id", "")),
-                    "customer_id": str(row.get("customer_id", "")),
-                    "lat": float(row["lat"]),
-                    "lon": float(row["lng"]),
-                    "prepaid_amount_cents": int(row.get("prepaid_amount_cents", 0)),
-                })
+                intention_orders_raw.append(
+                    {
+                        "id": str(row["id"]),
+                        "variant_id": str(row.get("variant_id", "")),
+                        "customer_id": str(row.get("customer_id", "")),
+                        "lat": float(row["lat"]),
+                        "lon": float(row["lng"]),
+                        "prepaid_amount_cents": int(row.get("prepaid_amount_cents", 0)),
+                    }
+                )
 
         if not intention_orders_raw:
             return {"scanned": 0, "clusters_found": 0, "nodes_ignited": [], "errors": []}
@@ -111,7 +113,8 @@ def build_ghost_ignition_engine(
         clusters = cluster_intentions_by_radius(intention_orders_raw)
         logger.info(
             "ghost ignition: scanned %d orders, found %d clusters",
-            len(intention_orders_raw), len(clusters),
+            len(intention_orders_raw),
+            len(clusters),
         )
 
         ignited_nodes: list[dict[str, Any]] = []
@@ -134,10 +137,12 @@ def build_ghost_ignition_engine(
                 params=(cluster["center_lon"], cluster["center_lat"]),
             )
             if near_existing:
-                skipped.append({
-                    "cluster_id": cluster_id,
-                    "reason": "nearby_active_node_exists",
-                })
+                skipped.append(
+                    {
+                        "cluster_id": cluster_id,
+                        "reason": "nearby_active_node_exists",
+                    }
+                )
                 continue
 
             # 拉点火 omodul
@@ -158,18 +163,22 @@ def build_ghost_ignition_engine(
             )
 
             if result["status"] == "completed":
-                ignited_nodes.append({
-                    "cluster_id": cluster_id,
-                    "location_id": result.get("location_id"),
-                    "bounty_id": result.get("bounty_id"),
-                    "count": cluster["count"],
-                    "nearest_lord": result.get("nearest_lord"),
-                })
+                ignited_nodes.append(
+                    {
+                        "cluster_id": cluster_id,
+                        "location_id": result.get("location_id"),
+                        "bounty_id": result.get("bounty_id"),
+                        "count": cluster["count"],
+                        "nearest_lord": result.get("nearest_lord"),
+                    }
+                )
             else:
-                errors.append({
-                    "cluster_id": cluster_id,
-                    "error": result.get("error", {}).get("message", "unknown"),
-                })
+                errors.append(
+                    {
+                        "cluster_id": cluster_id,
+                        "error": result.get("error", {}).get("message", "unknown"),
+                    }
+                )
 
         return {
             "scanned_orders": len(intention_orders_raw),

@@ -29,8 +29,6 @@ DDL 代码本身放在 hemall 项目自己这一层。
 
 from __future__ import annotations
 
-from typing import Any
-
 from obase.persistence.ddl import ensure_column, ensure_index, ensure_table
 from obase.persistence.pool import PgPool
 
@@ -334,11 +332,11 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("raw_text", "TEXT"),
             ("raw_image_url", "VARCHAR(255)"),
             # VLM/LLM 提纯后的量化特征 (Quantified Features)
-            ("freshness_index", "DECIMAL(3,2)"),     # 新鲜度指数 (0.00 - 1.00)
+            ("freshness_index", "DECIMAL(3,2)"),  # 新鲜度指数 (0.00 - 1.00)
             ("sentiment_polarity", "DECIMAL(3,2)"),  # 情感极性 (-1.00 到 1.00)
-            ("keywords", "JSONB"),                   # 提取的关键标签 ["脆甜", "个头大"]
+            ("keywords", "JSONB"),  # 提取的关键标签 ["脆甜", "个头大"]
             # 引擎反馈
-            ("reward_granted", "INT DEFAULT 0"),     # 给予的算力金奖励 (分)
+            ("reward_granted", "INT DEFAULT 0"),  # 给予的算力金奖励 (分)
             ("status", "VARCHAR(20) DEFAULT 'published'"),
             ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
         ],
@@ -357,7 +355,7 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
             ("message_id", "VARCHAR(64) NOT NULL UNIQUE"),
-            ("event_type", "VARCHAR(20) NOT NULL"),  # 'pick' | 'gate'
+            ("event_type", "VARCHAR(20) NOT NULL"),  # 'pick' | 'gate' | 'weigh'
             ("node_id", "VARCHAR(32)"),
             ("shelf_id", "VARCHAR(32)"),
             ("tote_id", "VARCHAR(32)"),
@@ -365,7 +363,16 @@ _TABLES: list[tuple[str, list[tuple[str, str]]]] = [
             ("qty_delta", "INT DEFAULT 0"),
             ("unit_weight_grams", "INT DEFAULT 0"),
             ("payload", "JSONB"),
-            ("status", "VARCHAR(20) DEFAULT 'processed'"),  # processed|orphan|duplicate
+            ("status", "VARCHAR(20) DEFAULT 'processed'"),  # processed|orphan|duplicate|unpriced
+            # 称重台列 (IoT 报告 §4.2)：称重行项与 pick 同记一本账。
+            ("session_id", "TEXT"),
+            ("settlement_status", "VARCHAR(20) NOT NULL DEFAULT 'unsettled'"),
+            ("weight_grams", "INT"),
+            ("unit_price_cents", "INT"),
+            ("price_basis_grams", "INT"),
+            ("amount_cents", "INT"),
+            ("source", "VARCHAR(20) NOT NULL DEFAULT 'scale'"),
+            ("ticket_id", "UUID"),
             ("created_at", "TIMESTAMPTZ DEFAULT NOW()"),
         ],
     ),
@@ -605,13 +612,13 @@ async def ensure_ext_schema(pool: PgPool) -> None:
     # REFERENCES 需要 supplier 表已存在)。
     for table, columns in _TABLES:
         await ensure_table(pool=pool, schema=_SCHEMA, table=table, columns=columns)
-    for table, index_name, columns in _INDEXES:
+    for table, index_name, index_cols in _INDEXES:
         await ensure_index(
             pool=pool,
             schema=_SCHEMA,
             table=table,
             index_name=index_name,
-            columns=columns,
+            columns=index_cols,
         )
     await _ensure_shared_table_local_columns(pool)
     await _ensure_labor_ledger_widened_column(pool)

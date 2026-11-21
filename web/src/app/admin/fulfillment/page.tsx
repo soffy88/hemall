@@ -39,7 +39,7 @@ export default function FulfillmentPage() {
             { key: 'worker_id', label: 'worker_id' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallConfirmBatchPick(v as any)}
+          onSubmit={(v) => api.hemallConfirmBatchPick(v as Parameters<typeof api.hemallConfirmBatchPick>[0])}
         />
         <ActionCard
           title="幽灵库存上报 report_phantom_stock_workflow"
@@ -51,7 +51,7 @@ export default function FulfillmentPage() {
             { key: 'reason', label: 'reason (默认 phantom_stock)' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallReportPhantomStock(v as any)}
+          onSubmit={(v) => api.hemallReportPhantomStock(v as Parameters<typeof api.hemallReportPhantomStock>[0])}
         />
         <ActionCard
           title="邻居代送确认 execute_peer_delivery_workflow"
@@ -64,7 +64,7 @@ export default function FulfillmentPage() {
             { key: 'bounty_amount', label: 'bounty_amount (分)', type: 'number' },
           ]}
           defaults={ctx}
-          onSubmit={(v) => api.hemallExecutePeerDelivery(v as any)}
+          onSubmit={(v) => api.hemallExecutePeerDelivery(v as Parameters<typeof api.hemallExecutePeerDelivery>[0])}
         />
       </OpsSection>
     </div>

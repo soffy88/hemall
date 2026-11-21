@@ -10,9 +10,12 @@
 (`await request.body()` / `request.form()`) 拿到的还是原始 payload，不丢失。
 
 签名协议 (本域自建契约，README 已注明)：
-    X-Hemall-Signature: hex( HMAC_SHA256(secret, raw_body_bytes) )
-    X-Hemall-Timestamp: Unix 秒 (可选，提供则校验 ±300s 防重放)
-    X-Hemall-Nonce:     一次性随机串 (可选，提供则进防重放去重集)
+    X-Hemall-Signature: hex( HMAC_SHA256(secret, raw_body_bytes) )  (必填)
+    X-Hemall-Timestamp: Unix 秒 (必填，±300s 防重放)
+    X-Hemall-Nonce:     一次性随机串 (必填，防重放去重)
+
+    timestamp/nonce 均为必填：调用方省略任一即 403。verify_hmac_sha256
+    本身保留可选参数仅为单测可注入，中间件层强制要求。
 
 诚实的空白：真实微信支付回调用的是"微信支付平台证书验签 + wechatpay-* 头"，
 支付宝用 RSA2 验签，不是这个 HMAC 契约——这两个 provider 目前是 mock，没有
@@ -132,13 +135,45 @@ class WebhookSignatureMiddleware:
         *,
         secret: str,
         protected_paths: set[str],
+        redis_url: str | None = None,
+        fail_closed: bool = False,
     ) -> None:
         self.app = app
         self.secret = secret
         self.protected_paths = protected_paths
+        self.redis_url = redis_url
+        self.fail_closed = fail_closed
+        self._redis: Any | None = None
+
+    async def _claim_nonce(self, path: str, nonce: str) -> bool | None:
+        """Atomically claim a nonce in shared Redis; None means Redis unavailable."""
+        if not self.redis_url:
+            return None
+        try:
+            if self._redis is None:
+                from redis.asyncio import from_url
+
+                self._redis = from_url(self.redis_url, decode_responses=True)
+            digest = hashlib.sha256(f"{path}:{nonce}".encode()).hexdigest()
+            claimed = await self._redis.set(
+                f"hemall:webhook:nonce:{digest}",
+                "1",
+                ex=_REPLAY_WINDOW_SECONDS * 2,
+                nx=True,
+            )
+            return bool(claimed)
+        except Exception:
+            logger.exception("shared Redis webhook nonce store unavailable")
+            return None
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if scope["type"] != "http" or scope["path"] not in self.protected_paths:
+        # 路径归一化："/notify/" 与 "/notify" 视为同一受保护路径，防止
+        # 尾斜杠变体绕过精确匹配。
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"].rstrip("/") or "/"
+        if path not in self.protected_paths:
             await self.app(scope, receive, send)
             return
 
@@ -154,31 +189,69 @@ class WebhookSignatureMiddleware:
                 return
 
         headers = {
-            k.decode("latin-1").lower(): v.decode("latin-1")
-            for k, v in scope.get("headers", [])
+            k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])
         }
         signature = headers.get("x-hemall-signature", "")
         timestamp = headers.get("x-hemall-timestamp", "")
         nonce = headers.get("x-hemall-nonce", "")
 
-        if not verify_hmac_sha256(
-            body,
-            signature,
-            self.secret,
-            timestamp=timestamp,
-            nonce=nonce,
-        ):
+        # timestamp/nonce 必填：省略即视为重放风险，直接拒绝。
+        if not timestamp or not nonce:
             from ..middleware.metrics import WEBHOOK_SIGNATURE_REJECTED
 
             WEBHOOK_SIGNATURE_REJECTED.inc()
             logger.warning(
-                "webhook signature rejected: path=%s client=%s",
-                scope["path"],
+                "webhook replay headers missing: path=%s client=%s",
+                path,
                 scope.get("client"),
             )
             response = JSONResponse(
                 status_code=403,
-                content={"detail": "invalid webhook signature"},
+                content={"detail": "missing replay protection headers"},
+            )
+            await response(scope, receive, send)
+            return
+
+        shared_nonce = None
+        # When shared Redis is configured, verify the signature/timestamp first, then claim
+        # the nonce atomically in Redis. Without Redis, retain the bounded process-local cache.
+        if self.redis_url:
+            valid_signature = verify_hmac_sha256(
+                body, signature, self.secret, timestamp=timestamp, nonce=None
+            )
+            if valid_signature:
+                shared_nonce = await self._claim_nonce(path, nonce)
+                if shared_nonce is None and not self.fail_closed:
+                    valid_signature = verify_hmac_sha256(
+                        body, signature, self.secret, timestamp=timestamp, nonce=nonce
+                    )
+                elif shared_nonce is None:
+                    response = JSONResponse(
+                        status_code=503,
+                        content={"detail": "shared webhook replay protection unavailable"},
+                        headers={"Retry-After": "1"},
+                    )
+                    await response(scope, receive, send)
+                    return
+                elif shared_nonce is False:
+                    valid_signature = False
+        else:
+            valid_signature = verify_hmac_sha256(
+                body, signature, self.secret, timestamp=timestamp, nonce=nonce
+            )
+
+        if not valid_signature:
+            from ..middleware.metrics import WEBHOOK_SIGNATURE_REJECTED
+
+            WEBHOOK_SIGNATURE_REJECTED.inc()
+            logger.warning(
+                "webhook signature or replay check rejected: path=%s client=%s",
+                path,
+                scope.get("client"),
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "invalid webhook signature or replayed nonce"},
             )
             await response(scope, receive, send)
             return

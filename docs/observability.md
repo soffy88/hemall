@@ -191,6 +191,7 @@ from app.observability.tracing import get_tracer
 
 tracer = get_tracer(__name__)
 
+
 async def process_order(order_id: str):
     with tracer.start_as_current_span("process_order") as span:
         span.set_attribute("order_id", order_id)

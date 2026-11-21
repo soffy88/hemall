@@ -21,70 +21,72 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, cast
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from prometheus_client import make_asgi_app
 
-from . import __version__
-from .bootstrap import init_db, register_providers
-from .deps import ensure_redis_connected, get_settings
-from .events import build_event_dispatcher
-from .ext.oservi_lifecycle import build_ext_oservi
-from .inventory.router import router as inventory_router
-from .middleware.logging import LoggingMiddleware, configure_structlog
-from .orders.router import router as orders_router
-from .middleware.metrics import MetricsMiddleware
-from .observability.health import check_redis_health
-from .observability.health import router as health_router
-from .observability.tracing import setup_tracing
-from .payments.router import router as payment_router
-from .push.service import PushManager
-from .realtime.hub import manager as realtime_manager
-from .realtime.hub import router as realtime_router
-from .search.client import ElasticsearchClient
-from .search.router import router as search_router
-from .cache.service import CacheManager
-from .cache.router import router as cache_router
-from .push.router import router as push_router
-from .eventsourcing.router import router as eventsourcing_router
-from .analytics.service import AnalyticsService
-from .i18n.service import CurrencyConverter, LocalizedPaymentRouter, TranslationManager
-from .recommend.router import router as recommend_router
-from .recommend.service import RecommendationService
-from .recommend.models import ProductFeatures
-from . import queries
-from .risk.engine import RiskEngine
-from .risk.router import router as risk_router
-from .ai_assistant.router import router as ai_router
-from .ai_assistant.models import AIConfig
-from .ai_assistant.service import AIAssistantService
-
-# Phase 8 Task 2: LLM 智能体运维中枢
-from .ext.admin_agent_chat import router as agent_chat_router
-
-
-from .cache.service import CacheManager
-
-from .routers import build_router, public_zero_login_paths
-
-# 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)
-from .security.webhook import WebhookSignatureMiddleware
-
-# 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (IP + Device_ID)
-from .middleware.ratelimit import TokenBucketRateLimitMiddleware
-
 # Phase 0 Week 2: 限流
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from .security.rate_limit import limiter
+
+from . import __version__, queries
+from .ai_assistant.models import AIConfig
+from .ai_assistant.router import router as ai_router
+from .ai_assistant.service import AIAssistantService
+from .analytics.service import AnalyticsService
+from .bootstrap import register_providers
+from .cache.router import router as cache_router
+from .cache.service import CacheManager
+from .config import Settings
+from .db_recovery import start_pool_or_recover
+from .deps import ensure_redis_connected, get_settings
+from .events import build_event_dispatcher
+from .eventsourcing.router import router as eventsourcing_router
+
+# Phase 8 Task 2: LLM 智能体运维中枢
+from .ext.admin_agent_chat import router as agent_chat_router
+from .ext.oservi_lifecycle import build_ext_oservi
+from .i18n.service import CurrencyConverter, LocalizedPaymentRouter, TranslationManager
+from .inventory.router import router as inventory_router
+from .middleware.logging import LoggingMiddleware, configure_structlog
+from .middleware.metrics import MetricsMiddleware
+
+# 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (IP + Device_ID)
+from .middleware.ratelimit import TokenBucketRateLimitMiddleware
+from .observability.health import check_redis_health
+from .observability.health import router as health_router
+from .observability.tracing import setup_tracing, shutdown_tracing
+from .orders.router import router as orders_router
+from .payments.refund_router import router as refund_router
+from .payments.router import router as payment_router
+from .push.router import router as push_router
+from .push.service import PushManager
+from .realtime.hub import manager as realtime_manager
+from .realtime.hub import router as realtime_router
+from .recommend.models import ProductFeatures
+from .recommend.router import router as recommend_router
+from .recommend.service import RecommendationService
+from .risk.engine import RiskEngine
+from .risk.router import router as risk_router
+from .routers import build_router, public_zero_login_paths
+from .search.client import ElasticsearchClient
+from .search.router import router as search_router
+
+# F-03: CSRF 保护中间件 (双重提交 token + Origin/Sec-Fetch-Site)
+from .security import CSRFMiddleware
 
 # Phase 0 Week 2: 审计日志中间件
 from .security.audit import AuditMiddleware
+from .security.rate_limit import limiter
+
+# 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)
+from .security.webhook import WebhookSignatureMiddleware
 
 # Phase 0: 配置结构化日志 (进程启动期一次)
 configure_structlog()
@@ -203,12 +205,15 @@ class AppState:
     """应用运行时状态 (供 health/observability 访问)。"""
 
     pool: object | None = None
+    #: 池缺失且后台自愈重试进行中 (健康检查据此暴露降级原因)
+    db_recovery_active: bool = False
     version: str = __version__
     # Phase 1
     realtime_manager: Any = None
     # Phase 2
     cache_manager: CacheManager | None = None
     search_client: ElasticsearchClient | None = None
+    search_service: Any = None  # 懒初始化（见 app/search/router.get_search_service）
     push_manager: PushManager | None = None
     # Phase 3
     recommend_service: RecommendationService | None = None
@@ -223,6 +228,7 @@ class AppState:
     event_store: Any = None
     projector_registry: Any = None
     event_bus: Any = None
+    payment_reconciliation_task: asyncio.Task | None = None
 
 
 _app_state = AppState()
@@ -231,6 +237,22 @@ _app_state = AppState()
 def get_app_state() -> AppState:
     """获取应用运行时状态 (供 health 模块使用)。"""
     return _app_state
+
+
+async def _payment_reconciliation_loop(pool: Any, settings: Settings) -> None:
+    """持续处理 provider 成功后 DB 短暂不可用留下的 outbox。"""
+
+    from .payments.service import PaymentService
+
+    service = PaymentService(pool, settings)
+    while True:
+        try:
+            await service.reconcile(limit=100)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reconciliation must stay alive
+            logger.warning("payment reconciliation tick failed: %s", exc)
+        await asyncio.sleep(5)
 
 
 def _recommend_price_bucket(min_price_cents: int | None) -> str:
@@ -244,6 +266,100 @@ def _recommend_price_bucket(min_price_cents: int | None) -> str:
     if min_price_cents < 200000:
         return "high"
     return "premium"
+
+
+async def _wire_db_dependent_services(app: FastAPI, settings: Settings, pool: Any) -> None:
+    """连接池就绪后的全部装配 — 启动成功与后台自愈恢复共用同一条路径。
+
+    每一步都是 best-effort: 任何单项失败只降级对应能力, 不影响已经可用的
+    连接池。必须幂等 —— :class:`app.db_recovery.PoolRecovery` 在池消失后重建时
+    会再调一次。
+    """
+    app.state.pool = pool
+    _app_state.pool = pool
+    _app_state.db_recovery_active = False
+
+    payment_reconciliation_task = asyncio.create_task(_payment_reconciliation_loop(pool, settings))
+    app.state.payment_reconciliation_task = payment_reconciliation_task
+    _app_state.payment_reconciliation_task = payment_reconciliation_task
+
+    # Eventsourcing: DB 可用时初始化 EventStore，否则路由层诚实降级 503/空态。
+    try:
+        from .eventsourcing.service import EventBus, EventStore, ProjectorRegistry
+
+        _store = EventStore(settings)
+        await _store.initialize(pool)
+        _registry = ProjectorRegistry()
+        _bus = EventBus(_store, _registry)
+        _app_state.event_store = _store
+        _app_state.projector_registry = _registry
+        _app_state.event_bus = _bus
+        app.state.event_store = _store
+        app.state.projector_registry = _registry
+        app.state.event_bus = _bus
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EventStore init failed (eventsourcing degraded): %s", exc)
+
+    # Phase 3: 初始化分析服务 (依赖连接池)
+    try:
+        _app_state.analytics_service = AnalyticsService(settings.clickhouse_url)
+        await _app_state.analytics_service.initialize(pool)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AnalyticsService init failed: %s", exc)
+
+    # Phase 4+: 初始化 AI 助手服务 (依赖连接池)
+    try:
+        ai_config = AIConfig(
+            provider=settings.ai_provider,
+            model_name=settings.ai_model_name,
+            api_key=settings.ai_api_key,
+            api_base=settings.ai_api_base,
+            temperature=settings.ai_temperature,
+            max_tokens=settings.ai_max_tokens,
+            embedding_model=settings.ai_embedding_model,
+            top_k_retrieval=settings.ai_top_k_retrieval,
+            similarity_threshold=settings.ai_similarity_threshold,
+            max_history_turns=settings.ai_max_history_turns,
+            timeout_seconds=settings.ai_timeout_seconds,
+        )
+        _app_state.ai_service = AIAssistantService(ai_config, pool)
+        await _app_state.ai_service.initialize(pool)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AI Assistant Service init failed: %s", exc)
+
+    # Phase 3: 用真实商城目录数据灌入推荐引擎 (否则 /recommend/* 一直返回空列表)
+    if _app_state.recommend_service is not None:
+        try:
+            products = await queries.list_storefront_products(pool, limit=500)
+            features = [
+                ProductFeatures(
+                    product_id=p["id"],
+                    category_id=p.get("category_id") or "uncategorized",
+                    brand_id=None,
+                    price_range=_recommend_price_bucket(p.get("min_price_cents")),
+                    tags=[],
+                    min_price_cents=p.get("min_price_cents"),
+                    max_price_cents=p.get("max_price_cents"),
+                    avg_rating=0.0,
+                    review_count=0,
+                    sold_count=0,
+                )
+                for p in products
+            ]
+            await _app_state.recommend_service.register_product_features(features)
+            await _app_state.recommend_service.train()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("recommend product feature seeding failed: %s", exc)
+
+    app.state.ext_oservi = None
+    try:
+        oservi = build_ext_oservi(pool, settings)
+        oservi.start_cron_engines()
+        app.state.ext_oservi = oservi
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ext oservi engines start failed (degraded): %s", exc)
+
+    logger.info("DB-dependent services wired (pool ready)")
 
 
 @asynccontextmanager
@@ -316,94 +432,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("i18n services init failed: %s", exc)
 
-    metrics_task: asyncio.Task | None = None
-    try:
-        app.state.pool, metrics_task = await init_db(settings)
-    except Exception as exc:  # noqa: BLE001 - DB 不可达不阻止应用启动
-        logger.warning(
-            "database unavailable at startup; DB-backed endpoints will return 503: %s",
-            exc,
-        )
-        app.state.pool = None
+    # Phase 0/1/3/4: 建池 + 所有依赖 DB 的服务装配。
+    #
+    # 事故修复 (2026-10-15): 原来这里 init_db 失败只把 app.state.pool 置 None
+    # 就往下走, 该 worker 此后永久 503。现在改为后台退避重试 (PoolRecovery),
+    # DB 恢复后自动建池并回调同一个装配函数; 健康检查在池缺失时返 503,
+    # 容器编排据此摘流/重启兜底。
+    async def _on_pool_ready(pool: Any, metrics_task: asyncio.Task) -> None:
+        app.state.db_metrics_task = metrics_task
+        await _wire_db_dependent_services(app, settings, pool)
 
-    # Phase 0: 更新全局状态供 health 模块访问
-    _app_state.pool = app.state.pool
-
-    # Eventsourcing: DB 可用时初始化 EventStore，否则路由层诚实降级 503/空态。
-    if app.state.pool is not None:
-        try:
-            from .eventsourcing.service import EventBus, EventStore, ProjectorRegistry
-
-            _store = EventStore(settings)
-            await _store.initialize(app.state.pool)
-            _registry = ProjectorRegistry()
-            _bus = EventBus(_store, _registry)
-            _app_state.event_store = _store
-            _app_state.projector_registry = _registry
-            _app_state.event_bus = _bus
-            app.state.event_store = _store
-            app.state.projector_registry = _registry
-            app.state.event_bus = _bus
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("EventStore init failed (eventsourcing degraded): %s", exc)
-
-    # Phase 3: 初始化分析服务 (依赖 app.state.pool, 须在 init_db 之后)
-    try:
-        _app_state.analytics_service = AnalyticsService(settings.clickhouse_url)
-        if app.state.pool is not None:
-            await _app_state.analytics_service.initialize(app.state.pool)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("AnalyticsService init failed: %s", exc)
-
-    # Phase 4+: 初始化 AI 助手服务 (依赖 app.state.pool, 须在 init_db 之后)
-    try:
-        ai_config = AIConfig(
-            provider=settings.ai_provider,
-            model_name=settings.ai_model_name,
-            api_key=settings.ai_api_key,
-            api_base=settings.ai_api_base,
-            temperature=settings.ai_temperature,
-            max_tokens=settings.ai_max_tokens,
-            embedding_model=settings.ai_embedding_model,
-            top_k_retrieval=settings.ai_top_k_retrieval,
-            similarity_threshold=settings.ai_similarity_threshold,
-            max_history_turns=settings.ai_max_history_turns,
-            timeout_seconds=settings.ai_timeout_seconds,
-        )
-        _app_state.ai_service = AIAssistantService(ai_config, app.state.pool)
-        await _app_state.ai_service.initialize(app.state.pool)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("AI Assistant Service init failed: %s", exc)
-
-    # Phase 3: 用真实商城目录数据灌入推荐引擎 (否则 /recommend/* 一直返回空列表)
-    if app.state.pool is not None and _app_state.recommend_service is not None:
-        try:
-            products = await queries.list_storefront_products(app.state.pool, limit=500)
-            features = [
-                ProductFeatures(
-                    product_id=p["id"],
-                    category_id=p.get("category_id") or "uncategorized",
-                    brand_id=None,
-                    price_range=_recommend_price_bucket(p.get("min_price_cents")),
-                    tags=[],
-                    min_price_cents=p.get("min_price_cents"),
-                    max_price_cents=p.get("min_price_cents"),
-                    avg_rating=0.0,
-                    review_count=0,
-                    sold_count=0,
-                )
-                for p in products
-            ]
-            await _app_state.recommend_service.register_product_features(features)
-            await _app_state.recommend_service.train()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("recommend product feature seeding failed: %s", exc)
-
-    app.state.ext_oservi = None
-    if app.state.pool is not None:
-        oservi = build_ext_oservi(app.state.pool, settings)
-        oservi.start_cron_engines()
-        app.state.ext_oservi = oservi
+    pool, pool_recovery = await start_pool_or_recover(app, settings, _on_pool_ready)
+    app.state.pool = pool
+    app.state.pool_recovery = pool_recovery
+    if pool_recovery is not None:
+        _app_state.db_recovery_active = True
+    if pool is not None:
+        await _wire_db_dependent_services(app, settings, pool)
 
     logger.info("hemall backend started (version=%s)", __version__)
     yield
@@ -413,13 +458,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         oservi.stop()
         logger.info("ext oservi cron engines stopped (best-effort)")
 
+    recovery = getattr(app.state, "pool_recovery", None)
+    if recovery is not None:
+        await recovery.stop()
+
+    metrics_task = getattr(app.state, "db_metrics_task", None)
     if metrics_task is not None:
         metrics_task.cancel()
+
+    payment_reconciliation_task = getattr(app.state, "payment_reconciliation_task", None)
+    if payment_reconciliation_task is not None:
+        payment_reconciliation_task.cancel()
 
     pool = getattr(app.state, "pool", None)
     if pool is not None:
         await pool.close()
         logger.info("database pool closed")
+    _app_state.pool = None
+    app.state.pool = None
 
     # Phase 1: 关停 WebSocket 实时推送
     await realtime_manager.stop()
@@ -439,6 +495,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _app_state.ai_service.close()
 
     # Phase 3: 分析服务无需显式关闭
+    events = getattr(app.state, "events", None)
+    if events is not None:
+        events.stop()
+
+    # Phase 0: 正确关闭 OpenTelemetry 追踪，flush 并 shutdown 所有 processor
+    shutdown_tracing()
+
+
+def _slowapi_rate_limit_handler(request: Request, exc: Exception) -> Response:
+    """slowapi 限流异常处理器的签名适配层。
+
+    Starlette 要求异常处理器兼容 ``(Request, Exception)`` 签名；slowapi 自带的
+    ``_rate_limit_exceeded_handler`` 第二个参数收窄为 ``RateLimitExceeded``，
+    直接注册会触发 mypy ``[arg-type]``。包一层转发（``cast`` 在运行时是恒等
+    函数），运行时行为不变；有/无 slowapi 的 mypy 环境下都能通过
+    （无 slowapi 时相关名字退化为 Any）。
+    """
+    return _rate_limit_exceeded_handler(request, cast("RateLimitExceeded", exc))
 
 
 def create_app() -> FastAPI:
@@ -459,16 +533,19 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。JWT 走 Authorization
-    # 头而非 cookie, 故 allow_credentials=False (与具体 origin 列表兼容)。
+    # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。
+    # Cookie 认证需 allow_credentials=True。
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # F-03: CSRF 保护中间件 (双重提交 token + Origin/Sec-Fetch-Site 校验)
+    app.add_middleware(CSRFMiddleware, settings=settings)
 
     # Phase 0: 添加可观测性中间件 (顺序很重要：Metrics 在外层，Logging 在内层)
     app.add_middleware(MetricsMiddleware)
@@ -485,6 +562,12 @@ def create_app() -> FastAPI:
         public_paths=public_zero_login_paths(),
         path_prefixes={"/store/"},
         trusted_proxy_hops=settings.ratelimit_trusted_proxy_hops,
+        redis_url=settings.redis_url,
+        fail_closed=settings.environment.lower() == "production",
+        # 测试环境禁用：全套件 TestClient 共用 127.0.0.1 一个令牌桶
+        # (60 令牌、1/s 补充)，套件跑得快即 429 误杀无关测试 (CI 抖动根因)。
+        # 仅 environment == "test" 时生效；开发/预发布/生产配额一字不动。
+        disabled=settings.environment.lower() == "test",
     )
 
     # 补天计划 Task 1.1: Webhook 验签装甲 (最外层)——抖音/支付回调在 ASGI 层
@@ -502,11 +585,13 @@ def create_app() -> FastAPI:
         WebhookSignatureMiddleware,
         secret=settings.webhook_secret,
         protected_paths=protected_webhook_paths,
+        redis_url=settings.redis_url,
+        fail_closed=settings.environment.lower() == "production",
     )
 
     # Phase 0 Week 2: 限流
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, _slowapi_rate_limit_handler)
 
     # Phase 0: 挂载健康检查路由
     app.include_router(health_router)
@@ -521,12 +606,16 @@ def create_app() -> FastAPI:
     # 实际保存路径: <output_root>/ext_bespoke/agent_ingest/agent_ingest/<user>/<file>
     ingest_root = settings.output_root / "ext_bespoke" / "agent_ingest" / "agent_ingest"
     ingest_root.mkdir(parents=True, exist_ok=True)
-    app.mount(
-        "/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest"
-    )
+    app.mount("/media/agent_ingest", StaticFiles(directory=ingest_root), name="agent_ingest")
+
+    # 蜘蛛商品图本地化 (spider_media 输出): /media/spider/<hash>.<ext>
+    spider_root = settings.output_root / "ext_bespoke" / "spider_media"
+    spider_root.mkdir(parents=True, exist_ok=True)
+    app.mount("/media/spider", StaticFiles(directory=spider_root), name="spider_media")
 
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
+    app.include_router(refund_router)
 
     # Phase 1: 挂载库存管理路由
     app.include_router(inventory_router)
@@ -573,9 +662,7 @@ def create_app() -> FastAPI:
         redis_up = False
         if settings is not None:
             try:
-                redis_up = (await check_redis_health(settings.redis_url))[
-                    "status"
-                ] == "up"
+                redis_up = (await check_redis_health(settings.redis_url))["status"] == "up"
             except Exception:  # noqa: BLE001 - 落地页状态降级显示
                 redis_up = False
 
@@ -584,9 +671,7 @@ def create_app() -> FastAPI:
 
         def _dot(up: bool) -> str:
             return (
-                '<span class="dot dot-up"></span>'
-                if up
-                else '<span class="dot dot-down"></span>'
+                '<span class="dot dot-up"></span>' if up else '<span class="dot dot-down"></span>'
             )
 
         html = _render_landing(

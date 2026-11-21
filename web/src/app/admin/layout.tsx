@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { OAppShell, OSideBar } from '@helios/oui';
 import type { SideBarNavItem } from '@helios/oui';
-import { getAuth, clearAuth } from '@/lib/auth-store';
+import { logout } from '@/lib/auth-store';
 
 const navItems: SideBarNavItem[] = [
   { id: 'dashboard', label: '仪表盘', href: '/admin' },
@@ -12,6 +12,7 @@ const navItems: SideBarNavItem[] = [
   { id: 'catalog', label: '分类与合集', href: '/admin/catalog' },
   { id: 'orders', label: '订单管理', href: '/admin/orders' },
   { id: 'draft-orders', label: '草稿订单', href: '/admin/draft-orders' },
+  { id: 'preorders', label: '预订配货', href: '/admin/preorders' },
   { id: 'manual-order', label: '代客下单', href: '/admin/manual-order' },
   { id: 'customers', label: '客户管理', href: '/admin/customers' },
   { id: 'marketing', label: '营销管理', href: '/admin/marketing' },
@@ -29,17 +30,7 @@ const navItems: SideBarNavItem[] = [
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [ready, setReady] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-
-  useEffect(() => {
-    const auth = getAuth();
-    if (!auth) {
-      router.push('/login');
-    } else {
-      setReady(true);
-    }
-  }, [router]);
 
   const activeId = navItems.find(
     (item) => item.href === pathname || (item.href !== '/admin' && pathname.startsWith(item.href!))
@@ -49,13 +40,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     if (item.href) router.push(item.href);
   }
 
-  function handleLogout() {
-    clearAuth();
+  async function handleLogout() {
+    // 通知后端清 HttpOnly cookie，再清本地状态（clearAuth 无法删 cookie）。
+    await logout();
     router.push('/login');
-  }
-
-  if (!ready) {
-    return <div className="flex min-h-screen items-center justify-center"><span className="text-gray-500">加载中...</span></div>;
   }
 
   return (

@@ -6,9 +6,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_pay_transfer
 
@@ -61,9 +60,7 @@ async def dispatch_host_dividend(
     """
     trail = Trail()
     period_obj = (
-        date.fromisoformat(input_data.period_date)
-        if input_data.period_date
-        else date.today()
+        date.fromisoformat(input_data.period_date) if input_data.period_date else date.today()
     )
     period = period_obj.isoformat()
     fp = compute_fingerprint(
@@ -83,16 +80,12 @@ async def dispatch_host_dividend(
             raise ValueError("tote_count must be positive")
 
         amount = input_data.tote_count * config.dividend_per_tote_cents
-        trail.record(
-            event="dividend_computed", tote_count=input_data.tote_count, amount=amount
-        )
+        trail.record(event="dividend_computed", tote_count=input_data.tote_count, amount=amount)
 
         transfer_result = await ext_pay_transfer(
             config.payout_provider, account=input_data.payout_account, amount=amount
         )
-        trail.record(
-            event="host_paid", transfer_id=transfer_result["transfer_id"], amount=amount
-        )
+        trail.record(event="host_paid", transfer_id=transfer_result["transfer_id"], amount=amount)
 
         from obase.uuid7 import uuid7
 
@@ -100,7 +93,8 @@ async def dispatch_host_dividend(
         async with pool.acquire() as conn:
             await conn.execute(
                 'INSERT INTO "host_dividend_ledger" '
-                "(id, host_id, location_id, tote_count, amount_cents, payout_transfer_id, period_date) "
+                "(id, host_id, location_id, tote_count, amount_cents, "
+                "payout_transfer_id, period_date) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 ledger_id,
                 input_data.host_id,

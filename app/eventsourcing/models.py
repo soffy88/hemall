@@ -12,12 +12,9 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Generic, TypeVar
-
-from pydantic import BaseModel, Field
-
+from typing import Any, TypeVar
 
 # ── 事件类型枚举 ────────────────────────────────────────────────
 
@@ -75,7 +72,7 @@ class DomainEvent:
     event_type: EventType | None = None
     aggregate_id: str = ""
     aggregate_type: str = ""
-    occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: int = 1
     data: dict[str, Any] = field(default_factory=dict)
 
@@ -104,7 +101,11 @@ class DomainEvent:
             event_type=event_type,
             aggregate_id=d.get("aggregate_id", ""),
             aggregate_type=d.get("aggregate_type", ""),
-            occurred_at=datetime.fromisoformat(d["occurred_at"]) if isinstance(d.get("occurred_at"), str) else d.get("occurred_at", datetime.now()),
+            occurred_at=(
+                datetime.fromisoformat(d["occurred_at"])
+                if isinstance(d.get("occurred_at"), str)
+                else d.get("occurred_at", datetime.now())
+            ),
             version=d.get("version", 1),
             data=d.get("data", {}),
         )
@@ -184,7 +185,7 @@ class AggregateRoot(ABC):
 ProjectionType = TypeVar("ProjectionType")
 
 
-class Projection(ABC, Generic[ProjectionType]):
+class Projection[ProjectionType](ABC):
     """读模型投影抽象基类。
 
     将领域事件转换为面向查询的读模型格式。
@@ -229,7 +230,7 @@ class Snapshot:
     aggregate_type: str
     version: int
     state: dict[str, Any]
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict[str, Any]:
         return {

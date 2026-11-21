@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import (
     BaseConfig,
     Trail,
@@ -14,9 +12,9 @@ from omodul._base import (
     compute_fingerprint,
     write_report,
 )
+from pydantic import BaseModel
 
 from ..oskill import recompute_voronoi_grid
-
 
 #: 旧版扩展域节点从没填过这个字段——统一之后借用商城默认区域码，不新增
 #: Input 字段 (调用方目前也没有区域信息可传)。
@@ -65,9 +63,7 @@ async def commission_new_location(
         (bool) / neighbors (grid_recomputed=True 时该节点的最近邻列表)。
     """
     trail = Trail()
-    fp = compute_fingerprint(
-        {"host_id": input_data.host_id, "address": input_data.address}
-    )
+    fp = compute_fingerprint({"host_id": input_data.host_id, "address": input_data.address})
 
     try:
         if pool is None:
@@ -96,7 +92,6 @@ async def commission_new_location(
                 location_id=location_id,
                 host_id=input_data.host_id,
             )
-
 
             # 门店有坐标)——旧版实现的 lat/lon 是 NOT NULL，统一
             # 之后不能再假设"active 节点都有坐标"，WHERE 里过滤掉没坐标的。

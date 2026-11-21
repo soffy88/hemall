@@ -299,10 +299,10 @@ CREATE INDEX idx_stock_product_warehouse_updated ON stock_movement(product_id, w
 ```python
 # 分级缓存策略
 CACHE_TTL_MAP = {
-    "hot_data": 300,      # 热点数据 5 分钟
-    "warm_data": 1800,    # 温数据 30 分钟
-    "cold_data": 7200,    # 冷数据 2 小时
-    "static_data": 86400, # 静态数据 24 小时
+    "hot_data": 300,  # 热点数据 5 分钟
+    "warm_data": 1800,  # 温数据 30 分钟
+    "cold_data": 7200,  # 冷数据 2 小时
+    "static_data": 86400,  # 静态数据 24 小时
 }
 ```
 

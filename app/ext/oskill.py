@@ -152,13 +152,9 @@ def compute_transparent_shipping_options(
         ValueError: distance_km 或 weight 为负。
     """
     if distance_km < 0:
-        raise ValueError(
-            "compute_transparent_shipping_options: distance_km must be non-negative"
-        )
+        raise ValueError("compute_transparent_shipping_options: distance_km must be non-negative")
     if weight < 0:
-        raise ValueError(
-            "compute_transparent_shipping_options: weight must be non-negative"
-        )
+        raise ValueError("compute_transparent_shipping_options: weight must be non-negative")
 
     base_fee = 500  # 起步价 5 元
     distance_fee = round(distance_km * 100)  # 每公里 1 元
@@ -201,9 +197,7 @@ def recompute_voronoi_grid(
 
     ids = [n[0] for n in node_coordinates]
     if len(set(ids)) != len(ids):
-        raise ValueError(
-            "recompute_voronoi_grid: duplicate location_id in node_coordinates"
-        )
+        raise ValueError("recompute_voronoi_grid: duplicate location_id in node_coordinates")
 
     points = np.array([(lon, lat) for _, lat, lon in node_coordinates])
     vor = Voronoi(points)
@@ -251,10 +245,7 @@ def verify_media_provenance(
     phi1, phi2 = math.radians(lat), math.radians(sup_lat)
     dphi = math.radians(sup_lat - lat)
     dlambda = math.radians(sup_lon - lon)
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     distance_km = earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     return distance_km <= _MAX_PROVENANCE_DRIFT_KM
@@ -266,9 +257,7 @@ _DECAY_INITIAL_MARKUP = 1.5  # 入库时刻零售价 = 1.5x 成本价
 _DECAY_FLOOR_MARKUP = 1.0  # 清仓底价下限 = 成本价 (不做亏本甩卖)
 
 
-def calculate_decay_price(
-    intake_time: datetime, *, shelf_life_hours: int, base_cost: int
-) -> int:
+def calculate_decay_price(intake_time: datetime, *, shelf_life_hours: int, base_cost: int) -> int:
     """按时间衰减曲线计算当前应报的零售价 (清仓底价)。
 
     从入库时刻的 1.5x 成本价，随保质期临近线性衰减到 1.0x 成本价；超过
@@ -295,9 +284,7 @@ def calculate_decay_price(
     elapsed_hours = (now - intake_time).total_seconds() / 3600
     progress = min(max(elapsed_hours / shelf_life_hours, 0.0), 1.0)
 
-    markup = (
-        _DECAY_INITIAL_MARKUP - (_DECAY_INITIAL_MARKUP - _DECAY_FLOOR_MARKUP) * progress
-    )
+    markup = _DECAY_INITIAL_MARKUP - (_DECAY_INITIAL_MARKUP - _DECAY_FLOOR_MARKUP) * progress
     return round(base_cost * markup)
 
 
@@ -324,13 +311,9 @@ def adjust_demand_curve_by_weather(
     if base_price <= 0:
         raise ValueError("adjust_demand_curve_by_weather: base_price must be positive")
     if not 0.0 <= rain_probability <= 1.0:
-        raise ValueError(
-            "adjust_demand_curve_by_weather: rain_probability must be within [0, 1]"
-        )
+        raise ValueError("adjust_demand_curve_by_weather: rain_probability must be within [0, 1]")
     if rain_intensity < 0:
-        raise ValueError(
-            "adjust_demand_curve_by_weather: rain_intensity must be non-negative"
-        )
+        raise ValueError("adjust_demand_curve_by_weather: rain_intensity must be non-negative")
 
     if rain_probability < 0.6 or rain_intensity < 2:
         return base_price
@@ -419,15 +402,11 @@ def predict_household_burn_rate(
 
     sorted_history = sorted(purchase_history, key=lambda p: p["purchased_at"])
     intervals_seconds = [
-        (
-            sorted_history[i]["purchased_at"] - sorted_history[i - 1]["purchased_at"]
-        ).total_seconds()
+        (sorted_history[i]["purchased_at"] - sorted_history[i - 1]["purchased_at"]).total_seconds()
         for i in range(1, len(sorted_history))
     ]
     avg_interval_seconds = sum(intervals_seconds) / len(intervals_seconds)
-    scaled_interval_seconds = avg_interval_seconds * (
-        _REFERENCE_FAMILY_SIZE / family_size
-    )
+    scaled_interval_seconds = avg_interval_seconds * (_REFERENCE_FAMILY_SIZE / family_size)
 
     last_purchase = sorted_history[-1]["purchased_at"]
     return last_purchase + timedelta(seconds=scaled_interval_seconds)
@@ -463,13 +442,9 @@ def evaluate_claim_credibility(
         ValueError: 任一参数超出取值范围。
     """
     if not 0 <= user_trust_score <= 100:
-        raise ValueError(
-            "evaluate_claim_credibility: user_trust_score must be within [0, 100]"
-        )
+        raise ValueError("evaluate_claim_credibility: user_trust_score must be within [0, 100]")
     if not 0.0 <= batch_anomaly_rate <= 1.0:
-        raise ValueError(
-            "evaluate_claim_credibility: batch_anomaly_rate must be within [0, 1]"
-        )
+        raise ValueError("evaluate_claim_credibility: batch_anomaly_rate must be within [0, 1]")
     if not 0.0 <= route_risk <= 1.0:
         raise ValueError("evaluate_claim_credibility: route_risk must be within [0, 1]")
 
@@ -525,6 +500,21 @@ _MARKET_MAKER_MAX_MARKUP = 0.2
 _MARKET_MAKER_MAX_MARKDOWN = -0.3
 
 
+def build_default_vwap_curve(stock_qty: int) -> dict[str, Any]:
+    """新批次的默认做市消化曲线: 72 小时线性消化 stock_qty。
+
+    格式与 calculate_vwap_deviation 的契约一致 ({"expected_cumulative":
+    [按小时累计销量], "stddev": 正数})。拍照上架 (agent_gateway) 与蜘蛛
+    自动上架 (oservi spider_listing) 共用同一条默认曲线, 新批次从出生
+    就被 market_maker 引擎联动调价。
+    """
+    qty = max(int(stock_qty), 0)
+    return {
+        "expected_cumulative": [round(qty * (i + 1) / 72) for i in range(72)],
+        "stddev": max(2.0, qty * 0.15),
+    }
+
+
 def calculate_vwap_deviation(
     current_sales: int, *, target_curve: dict[str, Any], elapsed_hours: int
 ) -> float:
@@ -552,13 +542,9 @@ def calculate_vwap_deviation(
     expected_cumulative = target_curve.get("expected_cumulative")
     stddev = target_curve.get("stddev")
     if not expected_cumulative:
-        raise ValueError(
-            "calculate_vwap_deviation: target_curve.expected_cumulative is required"
-        )
+        raise ValueError("calculate_vwap_deviation: target_curve.expected_cumulative is required")
     if not stddev or stddev <= 0:
-        raise ValueError(
-            "calculate_vwap_deviation: target_curve.stddev must be positive"
-        )
+        raise ValueError("calculate_vwap_deviation: target_curve.stddev must be positive")
 
     idx = min(elapsed_hours, len(expected_cumulative) - 1)
     expected_at_hour = expected_cumulative[idx]
@@ -566,7 +552,11 @@ def calculate_vwap_deviation(
 
 
 def compute_market_maker_price(
-    base_price: int, *, vwap_deviation: float, theta_decay: float
+    base_price: int,
+    *,
+    vwap_deviation: float,
+    theta_decay: float,
+    floor_cents: int = 0,
 ) -> int:
     """结合销量偏离度与时间衰减 (Theta)，算出当前的"最佳做市零售价"。
 
@@ -579,9 +569,12 @@ def compute_market_maker_price(
         base_price: 未做市调整前的基准零售价 (分)，必须为正。
         vwap_deviation: calculate_vwap_deviation 算出的偏离度 (标准差倍数)。
         theta_decay: 时间衰减系数 [0.0, 1.0]，0 表示无衰减。
+        floor_cents: 做市价下限 (分)，默认 0；调用方传批次成本价时，
+            做市价永不低于成本 (2026-10-28 回归：此前下限为 0，零销量
+            蜘蛛批次被一路降到 1 分)。
 
     Returns:
-        做市后的零售价 (分，整数)，不低于 0。
+        做市后的零售价 (分，整数)，不低于 floor_cents。
 
     Raises:
         ValueError: base_price 非正，theta_decay 不在 [0, 1]。
@@ -589,15 +582,15 @@ def compute_market_maker_price(
     if base_price <= 0:
         raise ValueError("compute_market_maker_price: base_price must be positive")
     if not 0.0 <= theta_decay <= 1.0:
-        raise ValueError(
-            "compute_market_maker_price: theta_decay must be within [0, 1]"
-        )
+        raise ValueError("compute_market_maker_price: theta_decay must be within [0, 1]")
+    if floor_cents < 0:
+        raise ValueError("compute_market_maker_price: floor_cents must be non-negative")
 
     deviation_adjustment = max(
         min(vwap_deviation * 0.05, _MARKET_MAKER_MAX_MARKUP), _MARKET_MAKER_MAX_MARKDOWN
     )
     price = base_price * (1 + deviation_adjustment) * (1 - theta_decay)
-    return max(round(price), 0)
+    return max(round(price), floor_cents)
 
 
 #: calculate_membership_dividend 每邀请 1 个活跃邻居对应的减免/分红比例。
@@ -623,9 +616,7 @@ def calculate_membership_dividend(active_referrals: int, *, base_fee: int) -> in
         ValueError: active_referrals 为负，base_fee 非正。
     """
     if active_referrals < 0:
-        raise ValueError(
-            "calculate_membership_dividend: active_referrals must be non-negative"
-        )
+        raise ValueError("calculate_membership_dividend: active_referrals must be non-negative")
     if base_fee <= 0:
         raise ValueError("calculate_membership_dividend: base_fee must be positive")
     return round(base_fee * _REFERRAL_DIVIDEND_RATE) * active_referrals
@@ -692,10 +683,7 @@ def _haversine_km(p1: tuple[float, float], p2: tuple[float, float]) -> float:
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -733,9 +721,7 @@ def construct_fomo_user_prompt(batch_info: dict[str, Any], *, market_price: int)
         raise ValueError("construct_fomo_user_prompt: market_price must be positive")
     retail_price = batch_info["retail_price"]
     if retail_price <= 0:
-        raise ValueError(
-            "construct_fomo_user_prompt: batch_info['retail_price'] must be positive"
-        )
+        raise ValueError("construct_fomo_user_prompt: batch_info['retail_price'] must be positive")
 
     retail_price_yuan = retail_price / 100.0
     market_price_yuan = market_price / 100.0
@@ -745,7 +731,8 @@ def construct_fomo_user_prompt(batch_info: dict[str, Any], *, market_price: int)
         f"批次号: {batch_info['id']}\n"
         f"商品: {batch_info['variant_desc']}\n"
         f"源头直拍: {batch_info['supplier_polygon_name']}\n"
-        f"hemall 底价: {retail_price_yuan}元 (传统超市均价 {market_price_yuan}元，暴降 {discount_pct}%)\n"
+        f"hemall 底价: {retail_price_yuan}元 "
+        f"(传统超市均价 {market_price_yuan}元，暴降 {discount_pct}%)\n"
         f"全城仅剩物理库存: {batch_info['stock_qty']} 箱\n"
         f"当前状态: {batch_info['broadcast_type']} (上新或清仓)"
     )
@@ -827,9 +814,7 @@ def normalize_sku_price(raw_price: int, *, raw_unit: str) -> float | None:
     return raw_price / qty
 
 
-def validate_supplier_margin(
-    supplier_bid_price: float, *, benchmark_price: float
-) -> bool:
+def validate_supplier_margin(supplier_bid_price: float, *, benchmark_price: float) -> bool:
     """核算供应商申报底价是否能击穿毛利红线 (至少 50% 的物理套利空间)。
 
     两个参数必须是同一个计价口径 (如都是"分/克")——这个函数本身不做单位
@@ -848,9 +833,7 @@ def validate_supplier_margin(
         ValueError: supplier_bid_price 为负，或 benchmark_price 非正。
     """
     if supplier_bid_price < 0:
-        raise ValueError(
-            "validate_supplier_margin: supplier_bid_price must be non-negative"
-        )
+        raise ValueError("validate_supplier_margin: supplier_bid_price must be non-negative")
     if benchmark_price <= 0:
         raise ValueError("validate_supplier_margin: benchmark_price must be positive")
 
@@ -882,9 +865,7 @@ def calculate_next_probe_price(
     if current_price <= 0:
         raise ValueError("calculate_next_probe_price: current_price must be positive")
     if observed_velocity < 0:
-        raise ValueError(
-            "calculate_next_probe_price: observed_velocity must be non-negative"
-        )
+        raise ValueError("calculate_next_probe_price: observed_velocity must be non-negative")
     if target_velocity <= 0:
         raise ValueError("calculate_next_probe_price: target_velocity must be positive")
 
@@ -928,8 +909,7 @@ def compute_mercenary_bounty_rate(hours_to_expiry: float) -> float:
     span = _MERCENARY_SAFE_HORIZON_HOURS - _MERCENARY_PANIC_HORIZON_HOURS
     urgency_rate = (
         _MERCENARY_MAX_BOUNTY_RATE
-        - ((hours_to_expiry - _MERCENARY_PANIC_HORIZON_HOURS) / span)
-        * _MERCENARY_MAX_BOUNTY_RATE
+        - ((hours_to_expiry - _MERCENARY_PANIC_HORIZON_HOURS) / span) * _MERCENARY_MAX_BOUNTY_RATE
     )
     return round(urgency_rate, 4)
 
@@ -974,8 +954,7 @@ def check_spatial_conflict(
         True 表示方圆 1 公里内已有节点，认领应被拒绝。
     """
     return any(
-        _haversine_km(claim, loc) <= _LORD_CLAIM_CONFLICT_RADIUS_KM
-        for loc in existing_locations
+        _haversine_km(claim, loc) <= _LORD_CLAIM_CONFLICT_RADIUS_KM for loc in existing_locations
     )
 
 
@@ -1003,9 +982,7 @@ def find_nearest_location(
         raise ValueError("find_nearest_location: locations must not be empty")
 
     nearest_id = locations[0][0]
-    nearest_dist = _haversine_km(
-        (lat, lon), (float(locations[0][1]), float(locations[0][2]))
-    )
+    nearest_dist = _haversine_km((lat, lon), (float(locations[0][1]), float(locations[0][2])))
     for loc_id, loc_lat, loc_lon in locations[1:]:
         dist = _haversine_km((lat, lon), (float(loc_lat), float(loc_lon)))
         if dist < nearest_dist:
@@ -1098,7 +1075,10 @@ def compute_batch_affinity_scores(
             continue
         total = 0
         for u in user_set:
-            key = tuple(sorted((u, cand)))
+            # tuple(sorted(...)) 推导为 tuple[str, ...]，与
+            # dict[tuple[str, str], int] 的键类型不匹配；两元解包写法等价且类型精确。
+            first, second = sorted((u, cand))
+            key = (first, second)
             total += cooccurrence.get(key, 0)
         if total > 0:
             scores[cand] = total / len(user_set)
@@ -1172,17 +1152,11 @@ def compute_batch_dynamic_rating(
             new_polarity 超出 [-1, 1]。
     """
     if not 0 <= current_rating <= 100:
-        raise ValueError(
-            "compute_batch_dynamic_rating: current_rating must be within [0, 100]"
-        )
+        raise ValueError("compute_batch_dynamic_rating: current_rating must be within [0, 100]")
     if current_count < 0:
-        raise ValueError(
-            "compute_batch_dynamic_rating: current_count must be non-negative"
-        )
+        raise ValueError("compute_batch_dynamic_rating: current_count must be non-negative")
     if not -1.0 <= new_polarity <= 1.0:
-        raise ValueError(
-            "compute_batch_dynamic_rating: new_polarity must be within [-1, 1]"
-        )
+        raise ValueError("compute_batch_dynamic_rating: new_polarity must be within [-1, 1]")
 
     # 情感极性 (-1.0 到 1.0) 映射到常规的可视化评分 (0 到 100 分制)。
     normalized_new_score = (new_polarity + 1.0) / 2.0 * 100.0
@@ -1191,9 +1165,7 @@ def compute_batch_dynamic_rating(
     if current_count == 0:
         return (round(normalized_new_score, 2), 1)
 
-    new_avg = (
-        (current_rating * current_count) + normalized_new_score
-    ) / (current_count + 1)
+    new_avg = ((current_rating * current_count) + normalized_new_score) / (current_count + 1)
     return (round(new_avg, 2), current_count + 1)
 
 
@@ -1304,9 +1276,6 @@ def compute_tare_adjustment(
         ValueError: max_tare_drift_grams 为负。
     """
     if max_tare_drift_grams < 0:
-        raise ValueError(
-            "compute_tare_adjustment: max_tare_drift_grams must be non-negative"
-        )
+        raise ValueError("compute_tare_adjustment: max_tare_drift_grams must be non-negative")
     drift = raw_weight_grams - expected_weight_grams
     return round(max(-max_tare_drift_grams, min(max_tare_drift_grams, drift)))
-

@@ -8,6 +8,8 @@ import { formatMoney } from '@/lib/format';
 import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type { Cart } from '@/types/api';
+import { errMessage } from '@/lib/errors';
+import { displayOptionLabel, isInternalSku } from '@/lib/option-label';
 
 const SHIPPING_METHODS = [
   { name: '标准配送', price_cents: 0 },
@@ -26,20 +28,20 @@ export default function CartPage() {
   const [giftCardCode, setGiftCardCode] = useState('');
   const [applying, setApplying] = useState(false);
 
-  async function loadCart() {
+  function loadCart() {
     const cartId = sessionStorage.getItem('hemall_cart_id');
-    if (!cartId) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const data = await api.getCart(cartId);
-      setCart(data);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+    const pending: Promise<void> = cartId
+      ? api.getCart(cartId).then((data) => {
+          setCart(data);
+        })
+      : Promise.resolve();
+    pending
+      .catch((e) => {
+        setError(errMessage(e));
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
   useEffect(() => { loadCart(); }, []);
@@ -53,8 +55,8 @@ export default function CartPage() {
         await api.updateLineItem(cart.id, lineItemId, newQty);
       }
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -63,8 +65,8 @@ export default function CartPage() {
     try {
       await api.deleteLineItem(cart.id, lineItemId);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -76,8 +78,8 @@ export default function CartPage() {
       await api.storeApplyDiscount(cart.id, discountCode.trim());
       setDiscountCode('');
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     } finally {
       setApplying(false);
     }
@@ -88,8 +90,8 @@ export default function CartPage() {
     try {
       await api.storeRemoveDiscount(cart.id, discountId);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -101,8 +103,8 @@ export default function CartPage() {
       await api.storeApplyGiftCard(cart.id, giftCardCode.trim());
       setGiftCardCode('');
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     } finally {
       setApplying(false);
     }
@@ -113,8 +115,8 @@ export default function CartPage() {
     try {
       await api.storeRemoveGiftCard(cart.id, giftCardId);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -123,8 +125,8 @@ export default function CartPage() {
     try {
       await api.storeAddShippingMethod(cart.id, methodName, priceCents);
       loadCart();
-    } catch (e: any) {
-      showToast(e.message, 'error');
+    } catch (e) {
+      showToast(errMessage(e), 'error');
     }
   }
 
@@ -155,12 +157,19 @@ export default function CartPage() {
               <div className="flex-1 min-w-0">
                 <h3 className="font-medium text-gray-900 truncate">{item.product_title || '—'}</h3>
                 <p className="text-xs text-gray-500">
-                  {item.variant_sku}
-                  {item.option_values && Object.values(item.option_values).length > 0 && (
-                    <> · {Object.values(item.option_values).join(' / ')}</>
-                  )}
+                  {[
+                    !isInternalSku(item.variant_sku) ? String(item.variant_sku) : '',
+                    displayOptionLabel(item.option_values, ''),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </p>
                 <p className="text-sm text-emerald-700 font-medium mt-1">{fmt(item.unit_price_cents)}</p>
+                {(item.preorder_qty_preview ?? 0) > 0 && (
+                  <p className="text-xs text-amber-600 mt-0.5">
+                    其中预订 ×{item.preorder_qty_preview}（到货后配货）
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <button

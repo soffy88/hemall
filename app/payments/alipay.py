@@ -16,16 +16,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
-import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger("hemall.payments.alipay")
+
+#: 真正的支付宝实现（RSA2 签名 / 异步通知验签）尚未落地。与 wechat.py 同理：
+#: 配了 ALIPAY_APP_ID 就等于选到一条必然抛 NotImplementedError 的路径
+#: （回调不验签 = 任何人都能把订单标 paid）。真正的收款走
+#: app/ext/payment_gateways.py。因此选了生产模式就构造即失败。
+PRODUCTION_IMPLEMENTED: bool = False
 
 
 # ── 请求/响应模型 ─────────────────────────────────────────────────────
@@ -102,24 +105,32 @@ class AlipayProvider:
 
         # 内存态订单存储 (沙箱模式)
         self._orders: dict[str, dict[str, Any]] = {}
+        self._refunds: dict[str, dict[str, Any]] = {}
+
+        # fail-fast: 选了生产模式但生产实现不存在 —— 拒绝构造。
+        # 支付宝异步通知不验签等于任何人可把订单标 paid，必须在启动/构造期
+        # 就把这条配置挡掉。
+        if not self._sandbox and not PRODUCTION_IMPLEMENTED:
+            raise NotImplementedError(
+                "AlipayProvider production mode is selected (ALIPAY_APP_ID is set) but the "
+                "RSA2 signing / async-notify verification is not implemented; all production "
+                "branches raise NotImplementedError. Use app/ext/payment_gateways.py for real "
+                "collection, or unset ALIPAY_APP_ID for sandbox mode."
+            )
 
         if self._sandbox:
             logger.warning(
-                "AlipayProvider running in SANDBOX mode "
-                "(set ALIPAY_APP_ID for production)"
+                "AlipayProvider running in SANDBOX mode (set ALIPAY_APP_ID for production)"
             )
 
-    async def create_order(
-        self, request: AlipayOrderRequest
-    ) -> AlipayOrderResponse:
+    async def create_order(self, request: AlipayOrderRequest) -> AlipayOrderResponse:
         """创建支付宝当面付订单 (预下单)。"""
         if self._sandbox:
             return self._sandbox_create_order(request)
 
         # TODO: 生产实现 — 调用 alipay.trade.precreate
         raise NotImplementedError(
-            "production Alipay not yet implemented; "
-            "set ALIPAY_APP_ID='' for sandbox mode"
+            "production Alipay not yet implemented; set ALIPAY_APP_ID='' for sandbox mode"
         )
 
     async def handle_notify(self, params: dict[str, str]) -> AlipayNotify | None:
@@ -145,24 +156,27 @@ class AlipayProvider:
     ) -> dict[str, Any]:
         """申请退款 (alipay.trade.refund)。"""
         if self._sandbox:
+            if out_request_no and out_request_no in self._refunds:
+                return self._refunds[out_request_no]
             order = self._orders.get(out_trade_no)
             if order is None:
                 return {"code": "ACQ.TRADE_NOT_EXIST", "msg": "order not found"}
             order["refund_amount"] = refund_amount
-            return {
+            result = {
                 "code": "10000",
                 "msg": "Success",
                 "refund_fee": refund_amount,
                 "fund_change": "Y",
             }
+            if out_request_no:
+                self._refunds[out_request_no] = result
+            return result
 
         raise NotImplementedError("production refund not yet implemented")
 
     # ── 沙箱实现 ──────────────────────────────────────────────────
 
-    def _sandbox_create_order(
-        self, request: AlipayOrderRequest
-    ) -> AlipayOrderResponse:
+    def _sandbox_create_order(self, request: AlipayOrderRequest) -> AlipayOrderResponse:
         trade_no = f"alipay_{uuid.uuid4().hex[:16]}"
         self._orders[request.out_trade_no] = {
             "out_trade_no": request.out_trade_no,
@@ -170,7 +184,7 @@ class AlipayProvider:
             "subject": request.subject,
             "total_amount": request.total_amount,
             "trade_status": "WAIT_BUYER_PAY",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         qr_code = f"https://qr.alipay.com/{trade_no}"
         return AlipayOrderResponse(qr_code=qr_code)
@@ -182,7 +196,7 @@ class AlipayProvider:
             if order is None:
                 return None
             order["trade_status"] = "TRADE_SUCCESS"
-            order["gmt_payment"] = datetime.now(timezone.utc).isoformat()
+            order["gmt_payment"] = datetime.now(UTC).isoformat()
             return AlipayNotify(
                 out_trade_no=out_trade_no,
                 trade_no=order["trade_no"],
@@ -208,7 +222,5 @@ class AlipayProvider:
 
         fail-closed 存根：未接支付宝公钥验签，永不返回 True。
         """
-        logger.warning(
-            "legacy alipay _verify_notify_signature called — fail-closed"
-        )
+        logger.warning("legacy alipay _verify_notify_signature called — fail-closed")
         return False

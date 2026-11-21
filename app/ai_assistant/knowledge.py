@@ -12,14 +12,13 @@ Phase 4+ Priority 2: 构建可维护的知识库，提升 AI 助手的回答质�
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 logger = logging.getLogger("hemall.ai.knowledge")
 
@@ -28,14 +27,14 @@ logger = logging.getLogger("hemall.ai.knowledge")
 
 
 class KnowledgeCategory(Enum):
-    ORDER = "order"          # 订单相关
-    SHIPPING = "shipping"    # 物流相关
-    PAYMENT = "payment"      # 支付相关
-    PRODUCT = "product"      # 商品相关
-    RETURN = "return"        # 退换货相关
-    ACCOUNT = "account"      # 账号相关
+    ORDER = "order"  # 订单相关
+    SHIPPING = "shipping"  # 物流相关
+    PAYMENT = "payment"  # 支付相关
+    PRODUCT = "product"  # 商品相关
+    RETURN = "return"  # 退换货相关
+    ACCOUNT = "account"  # 账号相关
     PROMOTION = "promotion"  # 活动优惠
-    GENERAL = "general"      # 通用知识
+    GENERAL = "general"  # 通用知识
 
 
 @dataclass
@@ -46,7 +45,7 @@ class KnowledgeItem:
     category: KnowledgeCategory
     title: str
     question: str  # 用户常见问题
-    answer: str    # 标准答案
+    answer: str  # 标准答案
     keywords: list[str] = field(default_factory=list)
     embedding: list[float] | None = None
     is_active: bool = True
@@ -149,7 +148,8 @@ class KnowledgeBase:
                 async with self._pool.acquire() as conn:
                     await conn.execute(
                         """
-                        INSERT INTO ai_knowledge_base (item_id, category, title, question, answer, keywords)
+                        INSERT INTO ai_knowledge_base
+                            (item_id, category, title, question, answer, keywords)
                         VALUES ($1, $2, $3, $4, $5, $6)
                         """,
                         knowledge_item.item_id,
@@ -172,7 +172,12 @@ class KnowledgeBase:
             item.view_count += 1
         return item
 
-    async def update_item(self, item_id: str, answer: str | None = None, title: str | None = None) -> KnowledgeItem | None:
+    async def update_item(
+        self,
+        item_id: str,
+        answer: str | None = None,
+        title: str | None = None,
+    ) -> KnowledgeItem | None:
         """更新知识条目。"""
         item = self._items.get(item_id)
         if not item:
@@ -183,7 +188,7 @@ class KnowledgeBase:
         if title:
             item.title = title
 
-        item.updated_at = datetime.now(timezone.utc)
+        item.updated_at = datetime.now(UTC)
 
         # 同步到数据库
         if self._pool:
@@ -192,8 +197,11 @@ class KnowledgeBase:
                 new_title = item.title
                 async with self._pool.acquire() as conn:
                     await conn.execute(
-                        "UPDATE ai_knowledge_base SET answer=$1, title=$2, updated_at=NOW() WHERE item_id=$3",
-                        new_answer, new_title, item_id,
+                        "UPDATE ai_knowledge_base SET answer=$1, title=$2,"
+                        " updated_at=NOW() WHERE item_id=$3",
+                        new_answer,
+                        new_title,
+                        item_id,
                     )
             except Exception as exc:
                 logger.warning("Failed to update knowledge item: %s", exc)
@@ -218,7 +226,12 @@ class KnowledgeBase:
 
     # ── 检索 ──────────────────────────────────────────────────────
 
-    async def search(self, query: str, category: str | None = None, limit: int = 5) -> list[KnowledgeItem]:
+    async def search(
+        self,
+        query: str,
+        category: str | None = None,
+        limit: int = 5,
+    ) -> list[KnowledgeItem]:
         """检索知识库。
 
         使用关键词重叠 + 类别过滤的简单匹配。

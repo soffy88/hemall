@@ -360,12 +360,15 @@ service = AIAssistantService(config, pool)
 await service.initialize()
 
 # 索引单个商品
-await service._rag.index_product("prod-123", {
-    "name": "iPhone 15 Pro",
-    "description": "...",
-    "selling_price_cents": 999900,
-    # ...
-})
+await service._rag.index_product(
+    "prod-123",
+    {
+        "name": "iPhone 15 Pro",
+        "description": "...",
+        "selling_price_cents": 999900,
+        # ...
+    },
+)
 ```
 
 ---

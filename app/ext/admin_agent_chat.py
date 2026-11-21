@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..db_recovery import kick_pool_recovery
 from ..ext.oskill_ghost_clustering import IGNITION_THRESHOLD
 
 logger = logging.getLogger("hemall.admin_agent")
@@ -30,8 +31,10 @@ router = APIRouter(prefix="/admin", tags=["admin-agent"])
 
 # ── Tool 注册定义 ──────────────────────────────────────────────────────────────
 
+
 class ToolDefinition(BaseModel):
     """Tool Calling 的函数定义 (兼容 OpenAI / Anthropic 格式)。"""
+
     name: str
     description: str
     parameters: dict[str, Any]
@@ -58,8 +61,16 @@ TOOLS: list[ToolDefinition] = [
                 },
                 "time_range": {
                     "type": "string",
-                    "enum": ["today", "yesterday", "last_7_days", "last_30_days", "custom"],
-                    "description": "时间范围。如 custom 需在 extra_params 中传入 start_date/end_date。",
+                    "enum": [
+                        "today",
+                        "yesterday",
+                        "last_7_days",
+                        "last_30_days",
+                        "custom",
+                    ],
+                    "description": (
+                        "时间范围。如 custom 需在 extra_params 中传入 start_date/end_date。"
+                    ),
                 },
             },
             "required": ["time_range"],
@@ -252,7 +263,7 @@ SQL_QUERIES: dict[str, tuple[str, list[str]]] = {
     ),
     "query_intent_cluster_summary": (
         # 意向金聚类统计
-        f"""
+        """
         SELECT
             COUNT(*) AS total_pending_intentions,
             COUNT(*) FILTER (WHERE id::text LIKE 'ghost_%') AS ghost_cluster_intentions,
@@ -281,8 +292,12 @@ COMPLEMENTARY_SQL: dict[str, str] = {
 
 
 def _require_admin_ops(request: Request) -> None:
-    """Admin Ops 级别鉴权——不仅要有 token，还要验证 role = ADMIN_OPS。"""
-    from obase.crypto.util import CryptoUtil
+    """Admin Ops 级别鉴权——typ=staff 主体 **且** role = ADMIN_OPS。
+
+    两道都要过：只查 role 的写法下，一条任何来源的、恰好带
+    ``role: "ADMIN_OPS"`` 但 ``typ`` 是 cart/receipt/裸的令牌同样畅通。
+    """
+    from app.security.tokens import TOKEN_TYPE_STAFF, decode_token
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -290,11 +305,17 @@ def _require_admin_ops(request: Request) -> None:
     token = auth_header.removeprefix("Bearer ")
     cfg = request.app.state.config
     try:
-        decoded = CryptoUtil.jwt_decode(
-            token=token, secret=cfg.jwt_secret, algorithm=cfg.jwt_algorithm
+        decoded = decode_token(
+            token,
+            typ=TOKEN_TYPE_STAFF,
+            secret=cfg.jwt_secret,
+            algorithm=cfg.jwt_algorithm,
         )
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid token")
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="invalid token") from exc
+
+    if not isinstance(decoded.get("sub"), str) or not decoded["sub"].strip():
+        raise HTTPException(status_code=401, detail="staff token missing subject")
 
     # 检查 role 字段是否存在且为 ADMIN_OPS
     claims_role = decoded.get("role")
@@ -310,6 +331,7 @@ def _require_admin_ops(request: Request) -> None:
 
 class AgentChatRequest(BaseModel):
     """Agent Chat 请求体。"""
+
     message: str = Field(..., description="管理员的自然语言查询。")
     model: str | None = Field(None, description="覆盖默认模型的模型名，可选。")
     temperature: float = Field(0.3, ge=0, le=1, description="LLM 温度参数。")
@@ -317,6 +339,7 @@ class AgentChatRequest(BaseModel):
 
 class ToolCallResult(BaseModel):
     """工具调用执行结果。"""
+
     tool_name: str
     arguments: dict[str, Any]
     result: dict[str, Any] | None = None
@@ -325,6 +348,7 @@ class ToolCallResult(BaseModel):
 
 class AgentChatResponse(BaseModel):
     """Agent Chat 响应体 (流式时逐条 SSE event)。"""
+
     role: str = "assistant"  # always assistant
     content: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
@@ -355,6 +379,7 @@ async def admin_agent_chat(
     settings = getattr(request.app.state, "config", None)
 
     if pool is None:
+        kick_pool_recovery(request.app)
         raise HTTPException(status_code=503, detail="database not ready")
     if settings is None:
         raise HTTPException(status_code=503, detail="settings not ready")
@@ -366,7 +391,9 @@ async def admin_agent_chat(
     llm = ai_service._llm
     from app.ai_assistant.llm_provider import LLMMessage
 
-    compensation_amount = settings.sla_compensation_cents if hasattr(settings, 'sla_compensation_cents') else 400
+    compensation_amount = (
+        settings.sla_compensation_cents if hasattr(settings, "sla_compensation_cents") else 400
+    )
 
     async def execute_tool(tool_name: str, args: dict[str, Any]) -> str:
         """根据工具名执行对应的 SQL 查询，返回 JSON 字符串。"""
@@ -410,7 +437,6 @@ async def admin_agent_chat(
     ]
 
     # Step 2: 第一轮 LLM 调用 —— 可能触发 tool calls
-    from app.ai_assistant.models import AIConfig
 
     model_name = body.model or ai_service._config.model_name
     temperature = body.temperature
@@ -440,7 +466,11 @@ async def admin_agent_chat(
             arguments=json.loads(tc["function"].get("arguments", "{}")),
         )
         raw_result = await execute_tool(tool_result.tool_name, tool_result.arguments)
-        tool_result.result = json.loads(raw_result) if raw_result.strip().startswith("{") else {"raw_text": raw_result}
+        tool_result.result = (
+            json.loads(raw_result)
+            if raw_result.strip().startswith("{")
+            else {"raw_text": raw_result}
+        )
         tool_results.append(tool_result)
 
     # Step 4: 组装第二轮对话 —— 把工具结果喂给 LLM
@@ -474,9 +504,7 @@ async def admin_agent_chat(
 # ── Tool 执行器实现 ────────────────────────────────────────────────────────────
 
 
-async def _execute_query_node_revenue(
-    pool: Any, args: dict[str, Any]
-) -> str:
+async def _execute_query_node_revenue(pool: Any, args: dict[str, Any]) -> str:
     """执行微仓营收查询。"""
     from datetime import UTC, datetime, timedelta
 
@@ -506,8 +534,8 @@ async def _execute_query_node_revenue(
     params.append(start_time.isoformat())
 
     if location_name:
-        safe_sql = safe_sql.replace("b.location_id = :location_id", 'sl.name ILIKE :loc_name')
-        safe_sql = safe_sql.replace("$%d" % (len(params)-1), ":loc_name")
+        safe_sql = safe_sql.replace("b.location_id = :location_id", "sl.name ILIKE :loc_name")
+        safe_sql = safe_sql.replace(f"${len(params) - 1}", ":loc_name")
         params.append(f"%{location_name}%")
         # Reconstruct with named params
         safe_sql = sql.replace(":location_id", ":loc_name").replace(":start_time", ":start_time")
@@ -515,18 +543,19 @@ async def _execute_query_node_revenue(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(safe_sql[:500], *params[:3])  # truncation safety
         if row:
-            return json.dumps({
-                "total_orders": row.get("total_orders", 0),
-                "total_revenue_cents": row.get("total_revenue_cents", 0),
-                "avg_order_value_cents": row.get("avg_order_value_cents", 0),
-                "active_batches": row.get("active_batches", 0),
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "total_orders": row.get("total_orders", 0),
+                    "total_revenue_cents": row.get("total_revenue_cents", 0),
+                    "avg_order_value_cents": row.get("avg_order_value_cents", 0),
+                    "active_batches": row.get("active_batches", 0),
+                },
+                ensure_ascii=False,
+            )
         return json.dumps({"message": "no revenue data found"}, ensure_ascii=False)
 
 
-async def _execute_query_batch_status(
-    pool: Any, args: dict[str, Any]
-) -> str:
+async def _execute_query_batch_status(pool: Any, args: dict[str, Any]) -> str:
     """执行批次状态查询。"""
     batch_id = args.get("batch_id")
     product_search = args.get("product_search")
@@ -549,7 +578,7 @@ async def _execute_query_batch_status(
     for r in rows:
         d = dict(r)
         for k, v in d.items():
-            if hasattr(v, 'isoformat'):
+            if hasattr(v, "isoformat"):
                 d[k] = v.isoformat()
         results.append(d)
 
@@ -562,7 +591,7 @@ async def _execute_query_system_liabilities(
     pool: Any, args: dict[str, Any], compensation_amount: int
 ) -> str:
     """执行系统总负债查询。"""
-    liability_data = {}
+    liability_data: dict[str, float] = {}
 
     async with pool.acquire() as conn:
         # 用户余额
@@ -588,7 +617,8 @@ async def _execute_query_system_liabilities(
 
         # 待结分润
         row = await conn.fetchval(
-            'SELECT SUM(dividend_amount_cents) FROM "douyin_conversion_log" WHERE settlement_status = $1',
+            "SELECT SUM(dividend_amount_cents) "
+            'FROM "douyin_conversion_log" WHERE settlement_status = $1',
             "pending",
         )
         liability_data["affiliate_payouts_pending_cents"] = int(row or 0)
@@ -607,9 +637,7 @@ async def _execute_query_system_liabilities(
     return json.dumps(liability_data, ensure_ascii=False, default=str)
 
 
-async def _execute_query_intent_summary(
-    pool: Any, args: dict[str, Any]
-) -> str:
+async def _execute_query_intent_summary(pool: Any, args: dict[str, Any]) -> str:
     """执行意向金聚类统计查询。"""
     min_size = args.get("min_cluster_size", IGNITION_THRESHOLD)
 
@@ -631,15 +659,18 @@ async def _execute_query_intent_summary(
 
         # 近期点火成功的簇
         recent_ignitions = await conn.fetchval(
-            "SELECT COUNT(*) FROM \"stock_location\" "
+            'SELECT COUNT(*) FROM "stock_location" '
             "WHERE status = $1 AND created_at > NOW() - INTERVAL '7 days'",
             "pending_hardware",
         )
 
-    return json.dumps({
-        "total_pending_intentions": int(total_pending or 0),
-        "total_prepaid_cents": int(total_prepaid or 0),
-        "pending_hardware_nodes": int(ghost_nodes or 0),
-        "recent_ignitions_7d": int(recent_ignitions or 0),
-        "threshold_for_ignition": min_size,
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "total_pending_intentions": int(total_pending or 0),
+            "total_prepaid_cents": int(total_prepaid or 0),
+            "pending_hardware_nodes": int(ghost_nodes or 0),
+            "recent_ignitions_7d": int(recent_ignitions or 0),
+            "threshold_for_ignition": min_size,
+        },
+        ensure_ascii=False,
+    )

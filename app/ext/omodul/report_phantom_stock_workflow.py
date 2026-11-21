@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 
 class ReportPhantomStockWorkflowConfig(BaseConfig):
@@ -69,9 +68,7 @@ async def report_phantom_stock_workflow(
                 input_data.order_line_item_id,
             )
             if oli is None:
-                raise ValueError(
-                    f"order_line_item {input_data.order_line_item_id!r} not found"
-                )
+                raise ValueError(f"order_line_item {input_data.order_line_item_id!r} not found")
             batch = await conn.fetchrow(
                 'SELECT location_id, cost_price_cents FROM "inventory_batch" WHERE id = $1',
                 oli["batch_id"],
@@ -79,7 +76,8 @@ async def report_phantom_stock_workflow(
             if batch is None:
                 raise ValueError(f"batch {oli['batch_id']!r} not found")
             order = await conn.fetchrow(
-                'SELECT payment_provider_name, payment_intent_id FROM "customer_order" WHERE id = $1',
+                "SELECT payment_provider_name, payment_intent_id "
+                'FROM "customer_order" WHERE id = $1',
                 oli["order_id"],
             )
             if order is None:

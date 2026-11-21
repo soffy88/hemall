@@ -7,7 +7,6 @@ Phase 8 Task 1: C2B 幽灵节点点火闭环的空间维度。
 from __future__ import annotations
 
 import math
-from collections import defaultdict
 from typing import Any
 
 
@@ -19,10 +18,7 @@ def _haversine_km(p1: tuple[float, float], p2: tuple[float, float]) -> float:
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -80,8 +76,6 @@ def cluster_intentions_by_radius(
         if seed_idx in assigned:
             continue
 
-        seed_lat = order["lat"]
-        seed_lon = order["lon"]
         current_cluster: list[dict[str, Any]] = [order]
         assigned.add(seed_idx)
 

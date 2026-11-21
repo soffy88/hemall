@@ -9,28 +9,26 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class PushPlatform(Enum):
     """推送目标平台。"""
 
-    FCM = "fcm"              # Firebase Cloud Messaging (Android/iOS)
-    APNS = "apns"            # Apple Push Notification Service (iOS)
+    FCM = "fcm"  # Firebase Cloud Messaging (Android/iOS)
+    APNS = "apns"  # Apple Push Notification Service (iOS)
 
 
 class PushPriority(Enum):
     """推送优先级。"""
 
-    LOW = "low"              # 低优先级 (可能延迟送达)
-    NORMAL = "normal"        # 正常优先级
-    HIGH = "high"            # 高优先级 (立即推送)
+    LOW = "low"  # 低优先级 (可能延迟送达)
+    NORMAL = "normal"  # 正常优先级
+    HIGH = "high"  # 高优先级 (立即推送)
 
 
 @dataclass
@@ -82,7 +80,7 @@ class DeviceToken:
     platform: PushPlatform
     app_version: str | None = None
     model: str | None = None
-    registered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    registered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class PushResult(BaseModel):
@@ -92,6 +90,8 @@ class PushResult(BaseModel):
     success: bool
     error_code: int | None = None
     error_message: str | None = None
+    # 服务商侧消息 ID（FCM message_id / APNs apns-id）；sandbox 或失败时为 None
+    message_id: str | None = None
 
 
 class PushBatchResponse(BaseModel):
@@ -108,6 +108,6 @@ class TemplateMessage(BaseModel):
 
     template_id: str  # 如: order.shipped, payment.success
     title_template: str  # 如: "订单 {order_id} 已发货"
-    body_template: str   # 如: "您的包裹正在路上，物流单号: {tracking_number}"
+    body_template: str  # 如: "您的包裹正在路上，物流单号: {tracking_number}"
     placeholders: list[str] = field(default_factory=list)  # 待替换变量列表
     default_data: dict[str, str] = field(default_factory=dict)

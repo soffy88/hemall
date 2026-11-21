@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Generic, TypeVar
+from datetime import datetime
+from typing import Any, TypeVar
 
 from ..config import Settings
-from .models import AggregateRoot, DomainEvent, EventType, Projection, Snapshot
+from .models import DomainEvent, EventType, Projection, Snapshot
 
 logger = logging.getLogger("hemall.eventsourcing.service")
 
@@ -101,14 +102,19 @@ class EventStore:
                 for event in events:
                     d = event.to_dict()
                     sql = """
-                        INSERT INTO event_store 
-                        (event_id, event_type, aggregate_id, aggregate_type, version, data, occurred_at)
+                        INSERT INTO event_store
+                        (event_id, event_type, aggregate_id, aggregate_type,
+                         version, data, occurred_at)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """
                     await conn.execute(
                         sql,
-                        d["event_id"], d["event_type"], d["aggregate_id"],
-                        d["aggregate_type"], d["version"], str(d["data"]),
+                        d["event_id"],
+                        d["event_type"],
+                        d["aggregate_id"],
+                        d["aggregate_type"],
+                        d["version"],
+                        str(d["data"]),
                         d["occurred_at"].isoformat(),
                     )
                     inserted += 1
@@ -153,14 +159,16 @@ class EventStore:
             events.append(DomainEvent.from_dict(d))
         return events
 
-    async def get_latest_snapshot(
-        self, aggregate_id: str
-    ) -> Snapshot | None:
+    async def get_latest_snapshot(self, aggregate_id: str) -> Snapshot | None:
         """获取最新的聚合快照。"""
         if not self._initialized:
             return None
 
-        sql = "SELECT aggregate_id, aggregate_type, version, state, created_at FROM snapshots WHERE aggregate_id = $1 ORDER BY version DESC LIMIT 1"
+        sql = (
+            "SELECT aggregate_id, aggregate_type, version, state, created_at "
+            "FROM snapshots WHERE aggregate_id = $1 "
+            "ORDER BY version DESC LIMIT 1"
+        )
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, aggregate_id)
             if not row:
@@ -173,7 +181,11 @@ class EventStore:
             aggregate_type=d["aggregate_type"],
             version=d["version"],
             state=d["state"],
-            created_at=datetime.fromisoformat(d["created_at"]) if isinstance(d.get("created_at"), str) else d.get("created_at"),
+            created_at=(
+                datetime.fromisoformat(d["created_at"])
+                if isinstance(d.get("created_at"), str)
+                else d.get("created_at")
+            ),
         )
 
     async def _try_create_snapshot(self, aggregate_id: str, event: DomainEvent) -> bool:
@@ -188,7 +200,10 @@ class EventStore:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     sql,
-                    aggregate_id, event.aggregate_type, event.version, str(event.data),
+                    aggregate_id,
+                    event.aggregate_type,
+                    event.version,
+                    str(event.data),
                 )
             logger.debug("Snapshot created for %s at version %d", aggregate_id, event.version)
             return True

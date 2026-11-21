@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_pay_transfer
 
@@ -84,9 +83,7 @@ async def execute_peer_delivery_workflow(
 
         from obase.provider_registry import ProviderRegistry
 
-        payment_provider = ProviderRegistry.get().generic(
-            "payment", config.payment_provider
-        )
+        payment_provider = ProviderRegistry.get().generic("payment", config.payment_provider)
         auth_result = await payment_provider.authorize(
             amount=input_data.bounty_amount,
             currency=config.currency,

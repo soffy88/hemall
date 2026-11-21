@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api-client';
+import { errMessage } from '@/lib/errors';
 
 /** 用中心点 + 半径生成一个近似圆形的 GeoJSON Polygon（8 边形），比让果农手填
  * 原始坐标数组好用得多——真实场景应该是地图上画一个圈/多边形，这里没有接
@@ -51,10 +52,11 @@ export default function SupplierRegisterPage() {
         spatial_polygon: buildPolygon(latNum, lngNum, radiusNum),
         polygon_name: polygonName.trim() || undefined,
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '入驻失败');
-      setResult({ supplier_id: (res as any).supplier_id });
-    } catch (e: any) {
-      setError(e.message);
+      if (res.status === 'failed') throw new Error(res.error?.message || '入驻失败');
+      const supplierId = res.supplier_id;
+      setResult({ supplier_id: typeof supplierId === 'string' ? supplierId : '' });
+    } catch (e) {
+      setError(errMessage(e));
     } finally {
       setSubmitting(false);
     }

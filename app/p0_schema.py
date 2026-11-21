@@ -1,0 +1,255 @@
+"""P0 数据库约束与迁移。
+
+P0 的验收条件都依赖持久化约束，不能只靠 Python 进程内的状态或 Redis
+锁。这个模块只做幂等 DDL：业务写入仍由 payments/inventory/orders 服务负责。
+"""
+
+from __future__ import annotations
+
+from obase.persistence.pool import PgPool
+
+from .cangzhu import CANGZHU_DDL
+from .counter_closeout import COUNTER_CLOSEOUT_DDL
+from .counter_settlement_order import COUNTER_SETTLEMENT_ORDER_DDL
+from .counter_vision import COUNTER_VISION_DDL
+from .ext.spider_hygiene import OCR_GATE_DDL
+from .membership import MEMBERSHIP_DDL, MEMBERSHIP_FEE_DDL
+from .night_pintuan import NIGHT_PINTUAN_DDL
+from .supplier import SUPPLIER_DDL
+from .weigh import WEIGH_DDL
+
+P0_SCHEMA_DDL = """
+-- ── payment authority / outbox / refund idempotency ────────────────
+CREATE TABLE IF NOT EXISTS payment_intent (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id TEXT NOT NULL,
+    amount_cents BIGINT NOT NULL CHECK (amount_cents > 0),
+    currency TEXT NOT NULL CHECK (currency <> ''),
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'provider_pending', 'paid', 'failed',
+                          'partial_refund', 'refunded', 'cancelled')),
+    provider_intent_id TEXT,
+    provider_trade_no TEXT,
+    refund_amount_cents BIGINT NOT NULL DEFAULT 0 CHECK (refund_amount_cents >= 0),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_error TEXT,
+    version BIGINT NOT NULL DEFAULT 0 CHECK (version >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (order_id, provider)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_intent_provider_trade
+    ON payment_intent(provider, provider_trade_no)
+    WHERE provider_trade_no IS NOT NULL;
+ALTER TABLE payment_intent
+    ADD COLUMN IF NOT EXISTS refund_amount_cents BIGINT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_payment_intent_order ON payment_intent(order_id);
+CREATE INDEX IF NOT EXISTS idx_payment_intent_status ON payment_intent(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS payment_refund (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payment_intent_id UUID NOT NULL REFERENCES payment_intent(id),
+    idempotency_key TEXT NOT NULL,
+    amount_cents BIGINT NOT NULL CHECK (amount_cents > 0),
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'succeeded', 'failed')),
+    provider_refund_no TEXT,
+    provider_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_error TEXT,
+    version BIGINT NOT NULL DEFAULT 0 CHECK (version >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (payment_intent_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_payment_refund_status
+    ON payment_refund(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS payment_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payment_intent_id UUID NOT NULL REFERENCES payment_intent(id),
+    refund_id UUID REFERENCES payment_refund(id),
+    kind TEXT NOT NULL CHECK (kind IN ('prepay', 'refund', 'reconcile')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    locked_at TIMESTAMPTZ,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_payment_outbox_ready
+    ON payment_outbox(status, next_attempt_at, created_at);
+
+-- ── inventory reservation ledger ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS inventory_reservation (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id TEXT NOT NULL,
+    order_line_item_id TEXT,
+    product_id TEXT NOT NULL,
+    variant_id TEXT,
+    location_id UUID NOT NULL REFERENCES stock_location(id),
+    batch_id UUID NOT NULL REFERENCES inventory_batch(id),
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    consumed_qty INTEGER NOT NULL DEFAULT 0 CHECK (consumed_qty >= 0),
+    released_qty INTEGER NOT NULL DEFAULT 0 CHECK (released_qty >= 0),
+    status TEXT NOT NULL DEFAULT 'reserved'
+        CHECK (status IN ('reserved', 'consumed', 'released', 'partially_released')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (consumed_qty + released_qty <= quantity)
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_reservation_order
+    ON inventory_reservation(order_id, status);
+CREATE INDEX IF NOT EXISTS idx_inventory_reservation_batch
+    ON inventory_reservation(batch_id, status);
+
+-- ── versioned order transitions / exact wiring ──────────────────────
+ALTER TABLE customer_order
+    ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE customer_order
+    ADD COLUMN IF NOT EXISTS payment_verified_at TIMESTAMPTZ;
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS location_id UUID REFERENCES stock_location(id);
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS reservation_id UUID REFERENCES inventory_reservation(id);
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS fulfilled_qty INTEGER NOT NULL DEFAULT 0;
+
+-- fulfilled_qty CHECK 约束：独立幂等补齐（ADD COLUMN IF NOT EXISTS 不会补建约束）
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'order_line_item_fulfilled_qty_check'
+    ) THEN
+        ALTER TABLE order_line_item
+            ADD CONSTRAINT order_line_item_fulfilled_qty_check
+            CHECK (fulfilled_qty >= 0 AND fulfilled_qty <= quantity);
+    END IF;
+END $$;
+
+ALTER TABLE stock_movement ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movement_idempotency
+    ON stock_movement(idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+-- Existing checkout code inserts only batch_id. Populate the location from the
+-- authoritative batch row; no caller is allowed to supply a different location.
+CREATE OR REPLACE FUNCTION hemall_wire_order_line_item()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.location_id IS NULL THEN
+        SELECT location_id INTO NEW.location_id
+        FROM inventory_batch WHERE id = NEW.batch_id;
+    END IF;
+    IF NEW.reservation_id IS NULL THEN
+        SELECT id INTO NEW.reservation_id
+        FROM inventory_reservation
+        WHERE order_id = NEW.order_id::text
+          AND batch_id = NEW.batch_id
+          AND status IN ('reserved', 'partially_released')
+        ORDER BY created_at
+        LIMIT 1;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_hemall_wire_order_line_item ON order_line_item;
+CREATE TRIGGER trg_hemall_wire_order_line_item
+    BEFORE INSERT OR UPDATE OF batch_id, location_id, reservation_id
+    ON order_line_item
+    FOR EACH ROW EXECUTE FUNCTION hemall_wire_order_line_item();
+
+-- ── customer preorder / merchant reserve ──────────────────────────
+-- 客户预订: 无货也可下单。购物车行/订单行允许只绑变体不绑批次
+-- (batch_id 可空 + variant_id), 订单行用 preorder_qty 记未配货部分;
+-- 商家客户带 is_merchant 标记, 常购清单存 customer_reserve_list。
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE cart_line_item
+    ADD COLUMN IF NOT EXISTS variant_id UUID;
+-- 本行对批次 reserved_qty 计数器的占位量（仅 omodul 加购/改量产生，
+-- 预订回退行恒 0）；结算时按此转正，避免双重占位。
+ALTER TABLE cart_line_item
+    ADD COLUMN IF NOT EXISTS reserved_qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cart_line_item
+    ALTER COLUMN batch_id DROP NOT NULL;
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS variant_id UUID;
+ALTER TABLE order_line_item
+    ADD COLUMN IF NOT EXISTS preorder_qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE order_line_item
+    ALTER COLUMN batch_id DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS customer_reserve_list (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id UUID NOT NULL,
+    variant_id UUID NOT NULL,
+    default_qty INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_reserve_list_active
+    ON customer_reserve_list(customer_id, variant_id)
+    WHERE deleted_at IS NULL;
+
+-- ── 微信小程序登录 ──────────────────────────────────────────────
+-- 客户的微信身份绑定（小程序 jscode2session 换得）。openid 部分唯一：
+-- 一个微信号只能绑一个客户；unionid 仅记录、不强制唯一；未绑定行
+-- 为 NULL 不占唯一位。
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS wechat_openid TEXT;
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS wechat_unionid TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_wechat_openid
+    ON customer(wechat_openid)
+    WHERE wechat_openid IS NOT NULL;
+
+-- ── 蜘蛛填价 EXT 批次防重 (纵深防御) ────────────────────────────
+-- 蜘蛛填价段已用 advisory lock 按变体串行化 + 锁内复查 (见
+-- app/ext/oservi.py _price_one_locked), 本索引作跨进程兜底: 同一
+-- 变体只允许一个 active 的 EXT- 蜘蛛批次。正常库存批次 (人工/其它
+-- 来源) 同变体多批次是合法的, 故只约束 batch_no LIKE 'EXT-%' 的行。
+-- 注意: 建索引前必须先清理存量重复 EXT 批次, 否则 CREATE UNIQUE
+-- INDEX 会失败 (生产存量已于 2026-10-23 清理)。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_batch_spider_ext_variant
+    ON inventory_batch (variant_id)
+    WHERE batch_no LIKE 'EXT-%' AND status = 'active' AND deleted_at IS NULL;
+"""
+
+
+async def ensure_p0_schema(pool: PgPool) -> None:
+    """幂等创建 P0 所需表、列、索引和触发器。"""
+
+    async with pool.acquire() as conn:
+        await conn.execute(P0_SCHEMA_DDL)
+        # 仓主试点：推荐码/券账本/点货/邀请礼 DDL（幂等，见 app/cangzhu.py）。
+        await conn.execute(CANGZHU_DDL)
+        # 会员补齐（缺口 4）：等级/积分/储值 DDL（幂等，见 app/membership.py）。
+        await conn.execute(MEMBERSHIP_DDL)
+        # 会费账本（199 元/人，Soffy 2026-11-21 拍板新增；只记账，不设门禁）。
+        await conn.execute(MEMBERSHIP_FEE_DDL)
+        # 缺口 6（夜市+拼单）：清货标记 + 拼单表（幂等，见 app/night_pintuan.py）。
+        await conn.execute(NIGHT_PINTUAN_DDL)
+        # OCR 品牌门: inventory_batch.inspection_note 留痕列 (幂等, 见 spider_hygiene.py)。
+        await conn.execute(OCR_GATE_DDL)
+        # 柜台称重试点：hardware_event 账本列 + counter_ticket 单据头。
+        await conn.execute(WEIGH_DDL)
+        # 柜台收尾件：现金结算记录 + 交接班账本（幂等，见 app/counter_closeout.py）。
+        await conn.execute(COUNTER_CLOSEOUT_DDL)
+        # 柜台视觉识别接线：帧存档 + 识别评估账本（幂等，见 app/counter_vision.py）。
+        await conn.execute(COUNTER_VISION_DDL)
+        # counter-settlement-order: 柜台结算建单（渠道列 + 单据↔订单链 + 行项重量列）。
+        await conn.execute(COUNTER_SETTLEMENT_ORDER_DDL)
+        # 供应商管理（B 部分）：供应商/报价/周评分
+        # （幂等，见 app/supplier.py）。
+        await conn.execute(SUPPLIER_DDL)

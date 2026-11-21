@@ -7,13 +7,62 @@ test_integration_optional.py (无 TEST_PG_DSN 时跳过)。
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+
 import pytest
 from fastapi.testclient import TestClient
-
 from obase.crypto.util import CryptoUtil
+
+# 测试一律以 environment=test 跑：须在 import app.main (建 app、装限流中间件)
+# 之前置位，否则全局 app 的 /store/ 令牌桶在套件里仍生效 (见 main.py 注释)。
+# 只影响测试进程；生产默认配额一字不动。
+os.environ["HEMALL_ENVIRONMENT"] = "test"
 
 from app.deps import get_settings
 from app.main import app
+
+
+@pytest.fixture(scope="session")
+def test_redis_url() -> str:
+    """Redis URL for integration tests (points to test container on port 56379)."""
+    return os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:56379/0")
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _ensure_test_database_schema():
+    """在启用 TEST_PG_DSN 时用生产 bootstrap 初始化真实测试库。
+
+    各历史集成测试 fixture 只负责自己的 provider 和扩展表，但空的 CI
+    PostgreSQL 还没有共享 commerce 表；直接调用 ensure_ext_schema 会在
+    第一个 FK (stock_location) 处失败，并让后续 named pool setup 连锁报错。
+    这里复用生产 init_db，确保共享表、扩展表、P0 表和本地补丁列以同一套
+    DDL 建立；测试本身仍通过真实 asyncpg/PostgreSQL 事务执行。
+    """
+    test_dsn = os.environ.get("TEST_PG_DSN")
+    if not test_dsn:
+        yield
+        return
+
+    from app.bootstrap import init_db
+    from app.config import Settings
+
+    settings = Settings(
+        pg_dsn=test_dsn,
+        pg_pool_name="hemall_test_schema",
+        pg_pool_min=1,
+        pg_pool_max=5,
+        redis_url=os.environ.get("HEMALL_REDIS_URL", "redis://localhost:6379/0"),
+    )
+    pool, metrics_task = await init_db(settings)
+    try:
+        yield
+    finally:
+        metrics_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await metrics_task
+        await pool.close()
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +91,7 @@ def auth_token() -> str:
     """用当前配置密钥签发一个合法 JWT (主体 test-user)。"""
     s = get_settings()
     return CryptoUtil.jwt_sign(
-        payload={"sub": "test-user", "email": "t@t.com"},
+        payload={"sub": "test-user", "email": "t@t.com", "typ": "staff"},
         secret=s.jwt_secret,
         algorithm=s.jwt_algorithm,
     )

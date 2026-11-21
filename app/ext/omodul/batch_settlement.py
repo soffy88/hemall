@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_pay_transfer
 
@@ -63,9 +62,7 @@ async def batch_settlement(
 
     try:
         if pool is None:
-            raise ValueError(
-                "pool is required — batch_settlement always touches persisted stock"
-            )
+            raise ValueError("pool is required — batch_settlement always touches persisted stock")
 
         async with pool.acquire() as conn:
             batch = await conn.fetchrow(

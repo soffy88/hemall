@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel, ConfigDict
 
 from ..oprim import cv_parse_retail_receipt
 from ..oskill import normalize_sku_price
@@ -80,7 +79,8 @@ async def reward_crowdsourced_benchmark_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — reward_crowdsourced_benchmark_workflow always touches persisted stock"
+                "pool is required — reward_crowdsourced_benchmark_workflow "
+                "always touches persisted stock"
             )
 
         items = await cv_parse_retail_receipt(
@@ -112,8 +112,7 @@ async def reward_crowdsourced_benchmark_workflow(
                 for row in candidates:
                     product_name_lower = row["product_name"].lower()
                     if name_lower and (
-                        name_lower in product_name_lower
-                        or product_name_lower in name_lower
+                        name_lower in product_name_lower or product_name_lower in name_lower
                     ):
                         matched_variant_id = row["variant_id"]
                         break

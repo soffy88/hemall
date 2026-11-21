@@ -4,3 +4,8 @@ out
 *.tsbuildinfo
 next-env.d.ts.bak
 .env*.local
+# Playwright 运行产物
+test-results
+playwright-report
+blob-report
+.playwright

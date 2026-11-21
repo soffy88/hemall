@@ -20,7 +20,14 @@ import logging
 from typing import Any
 
 from ..config import Settings
-from .models import DeviceToken, PushBatchResponse, PushNotification, PushPlatform, PushResult
+from .models import (
+    DeviceToken,
+    PushBatchResponse,
+    PushNotification,
+    PushPlatform,
+    PushPriority,
+    PushResult,
+)
 from .providers import APNSClient, FCMClient
 
 logger = logging.getLogger("hemall.push.manager")
@@ -66,9 +73,11 @@ class PushManager:
         self._apns_client = APNSClient(self._settings)
         await self._apns_client.initialize()
         self._register_templates()
-        logger.info("PushManager initialized (FCM=%s, APNs=%s)",
-                     "ready" if self._fcm_client else "disabled",
-                     "ready" if self._apns_client else "disabled")
+        logger.info(
+            "PushManager initialized (FCM=%s, APNs=%s)",
+            "ready" if self._fcm_client else "disabled",
+            "ready" if self._apns_client else "disabled",
+        )
 
     # ── 模板注册 ────────────────────────────────────────────────
 
@@ -97,9 +106,7 @@ class PushManager:
             },
         }
 
-    def register_template(
-        self, template_id: str, title_template: str, body_template: str
-    ) -> None:
+    def register_template(self, template_id: str, title_template: str, body_template: str) -> None:
         """动态注册自定义模板。"""
         self._templates[template_id] = {
             "title_template": title_template,
@@ -123,14 +130,25 @@ class PushManager:
     # ── 设备管理 ────────────────────────────────────────────────
 
     async def register_device(self, device_token: DeviceToken) -> bool:
-        """注册/更新设备 token。"""
-        if device_token.user_id not in self._device_tokens:
-            self._device_tokens[device_token.user_id] = []
-        
-        # 移除旧 token (同一平台)
+        """注册/更新设备 token。
+
+        原来下面三行用的是 `user_id`——这个函数根本没有这个局部变量（形参是
+        device_token，用户 id 在 device_token.user_id 上）。NameError 让"注册设备"
+        这条路径 100% 失败，任何推送都发不出去。
+        """
+        user_id = device_token.user_id
+        if user_id not in self._device_tokens:
+            self._device_tokens[user_id] = []
+
+        # 去重: 同一 platform + 同一 device_token 只留一条 (重复注册幂等)。
+        # 同一 platform 下**不同** device_token 是不同设备 (用户可以有多个),
+        # 全部保留——所以这里不是"同平台换 token"。
         self._device_tokens[user_id] = [
-            d for d in self._device_tokens[user_id]
-            if not (d.platform == device_token.platform and d.device_token == device_token.device_token)
+            d
+            for d in self._device_tokens[user_id]
+            if not (
+                d.platform == device_token.platform and d.device_token == device_token.device_token
+            )
         ]
         self._device_tokens[user_id].append(device_token)
         return True
@@ -139,21 +157,18 @@ class PushManager:
         """注销指定平台的设备。"""
         if user_id in self._device_tokens:
             self._device_tokens[user_id] = [
-                d for d in self._device_tokens[user_id]
-                if d.platform != platform
+                d for d in self._device_tokens[user_id] if d.platform != platform
             ]
             return True
         return False
 
-    def get_user_tokens(
-        self, user_id: str, platform: PushPlatform | None = None
-    ) -> list[str]:
+    def get_user_tokens(self, user_id: str, platform: PushPlatform | None = None) -> list[str]:
         """获取用户的所有有效设备 token。"""
-        tokens = self._device_tokens.get(user_id, [])
+        stored = self._device_tokens.get(user_id, [])
         if platform:
-            tokens = [t.device_token for t in tokens if t.platform == platform]
+            tokens = [t.device_token for t in stored if t.platform == platform]
         else:
-            tokens = [t.device_token for t in tokens]
+            tokens = [t.device_token for t in stored]
         return tokens
 
     # ── 推送发送 ────────────────────────────────────────────────
@@ -180,13 +195,22 @@ class PushManager:
             logger.warning("No tokens found for user %s", user_id)
             return PushBatchResponse(total=0, success=0, failed=0)
 
+        # PushNotification.priority 是 PushPriority 枚举；调用方传的是字符串。
+        # 直接透传会导致下游 priority_map.get(notification.priority) 永远 miss、
+        # 优先级被静默忽略——此处做显式转换，无效值回退为 NORMAL（与原先行为一致）。
+        try:
+            priority_enum = PushPriority(priority)
+        except ValueError:
+            logger.warning("未知推送优先级 %r，回退为 normal", priority)
+            priority_enum = PushPriority.NORMAL
+
         notifications = [
             PushNotification(
                 title=title,
                 body=body,
                 target_device_ids=[token],
                 data=data,
-                priority=priority,
+                priority=priority_enum,
             )
             for token in tokens[:3]  # 限制最多 3 台设备
         ]
@@ -229,7 +253,7 @@ class PushManager:
             # FCM topic 推送
             payload = self._fcm_client._build_v1_payload(notification, f"topic:{topic}")
             # 实际执行 HTTP 请求...
-            logger.info("[SANDBOX] Topic push to %s: %s", topic, title)
+            logger.info("[SANDBOX] Topic push to %s: %s", topic, payload)
             return {"total": 0, "success": 0, "failed": 0}
         except Exception as exc:
             logger.error("Topic push failed: %s", exc)
@@ -249,7 +273,9 @@ class PushManager:
         else:
             logger.warning("No provider available for platform %s", platform)
             return PushResult(
-                device_token=notification.target_device_ids[0] if notification.target_device_ids else "",
+                device_token=(
+                    notification.target_device_ids[0] if notification.target_device_ids else ""
+                ),
                 success=False,
                 error_code=503,
                 error_message=f"No provider for {platform.value}",

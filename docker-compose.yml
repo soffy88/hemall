@@ -21,6 +21,10 @@ services:
       HEMALL_PG_POOL_MAX: 10
       # Redis
       HEMALL_REDIS_URL: redis://redis:6379/0
+      # 开发环境默认 0: 无前置反代, 直连 8000, ASGI 对端即真实客户端; 开启
+      # 反而会让客户端伪造的 XFF 生效。若本机另套了 nginx/Caddy 再改成 1。
+      # 生产/预发 (docker-compose.prod.yml / mall-sxueji) 前置一层反代, 故为 1。
+      HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS: ${HEMALL_RATELIMIT_TRUSTED_PROXY_HOPS:-0}
       # JWT
       HEMALL_JWT_SECRET: dev-secret-change-in-production
       HEMALL_JWT_ALGORITHM: HS256
@@ -51,7 +55,7 @@ services:
 
   # ── PostgreSQL ────────────────────────────────────────────────────────
   db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     ports:
       - "5432:5432"
     environment:
@@ -69,7 +73,7 @@ services:
 
   # ── Redis ─────────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     ports:
       - "6379:6379"
     volumes:
@@ -83,7 +87,7 @@ services:
 
   # ── Jaeger (链路追踪) ─────────────────────────────────────────────────
   jaeger:
-    image: jaegertracing/all-in-one:1.53
+    image: jaegertracing/all-in-one:1.53@sha256:60e65bfffe1f66aee96d6fc8b6bf65afd42016be5dcc09d2e15d8462f7d9409c
     ports:
       - "16686:16686"  # UI
       - "4317:4317"    # OTLP gRPC
@@ -94,16 +98,40 @@ services:
 
   # ── Prometheus (指标采集) ─────────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:v2.48.0
+    image: prom/prometheus:v2.48.0@sha256:b440bc0e8aa5bab44a782952c09516b6a50f9d7b2325c1ffafac7bc833298e2e
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.dev.yml:/etc/prometheus/prometheus.yml
+      # audit P1-6: rule_files 是 glob，文件缺失时 Prometheus 不报错也不加载
+      # → 0 条告警。必须挂载。
+      - ./prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # ── Alertmanager (告警收件人, audit P1-6) ────────────────────────────
+  # 此前全仓库无收件人，prometheus.rules.yml 的生死告警只停在 UI 页面。
+  # 入口脚本渲染 ${...} 占位符；任一缺失即拒绝启动（fail-closed），
+  # 避免"跑着但没人收"的静默失联。
+  alertmanager:
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+    environment:
+      # 收件地址 (企业微信 / 钉钉 / Slack / 飞书 incoming webhook 任选)。
+      # 镜像内无 envsubst，渲染由 entrypoint.sh 用 sed 完成。
+      HEMALL_ALERT_WEBHOOK_URL: ${HEMALL_ALERT_WEBHOOK_URL:?set an alert receiver webhook URL}
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/entrypoint.sh:/alertmanager/entrypoint.sh:ro
+      - alertmanager_data:/alertmanager
+    entrypoint: ["/bin/sh", "/alertmanager/entrypoint.sh"]
+    ports:
+      - "127.0.0.1:9093:9093"
+    depends_on:
+      - prometheus
     restart: unless-stopped
 
   # ── Grafana (可视化) ──────────────────────────────────────────────────
@@ -122,9 +150,40 @@ services:
       - prometheus
     restart: unless-stopped
 
+# ── PostgreSQL 自动备份 (audit P2-4) ───────────────────────────────────
+#   每天凌晨 3 点执行 pg_dump，保留 30 天，可选上传到 S3 兼容存储
+#   恢复: docker compose exec backup /backup/restore.sh latest
+  backup:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: hemall
+      BACKUP_DIR: /backups
+      BACKUP_SCHEDULE: "0 3 * * *"
+      BACKUP_RETENTION_DAYS: "30"
+      # 可选: 异地备份到 S3 兼容存储
+      # S3_ENDPOINT: https://s3.example.com
+      # S3_BUCKET: hemall-backups
+      # S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      # S3_SECRET_KEY: ${S3_SECRET_KEY}
+      # S3_REGION: us-east-1
+    volumes:
+      - backup_data:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 # ── 数据卷 ──────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
   redis_data:
   prometheus_data:
   grafana_data:
+  alertmanager_data:
+  backup_data:

@@ -9,9 +9,10 @@ omodul_endpoint 工厂; 本文件只做"登记 + 个别端点的旁路接线"。
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
@@ -20,23 +21,30 @@ from pydantic import BaseModel
 
 from . import queries
 from .auth import router as auth_router
-from .deps import get_current_customer, get_current_user
+from .db_recovery import kick_pool_recovery
+from .deps import (
+    assert_staff_role,
+    get_current_customer,
+    get_current_user,
+    require_staff_role,
+)
 from .events import fire_event
-from .ext.registry import all_endpoint_specs as ext_endpoint_specs
-from .ext.feed_quant import build_feed_item, normalize_velocity
 from .ext.agent_gateway import (
     discover_tools,
     execute_tool,
     ingest_media,
 )
+from .ext.feed_quant import build_feed_item, normalize_velocity
 from .ext.hardware_webhook import router as hardware_webhook_router
 from .ext.oskill import (
     compute_batch_affinity_scores,
     find_nearest_location,
     rerank_feed_by_affinity,
 )
+from .ext.registry import all_endpoint_specs as ext_endpoint_specs
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
+from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
 from .storefront import _owns_order
 from .storefront import router as storefront_router
 
@@ -60,9 +68,7 @@ _POST_HOOKS: dict[str, Callable[[dict, Request], Any]] = {
 }
 
 
-async def _fire_demand_aggregator_signal(
-    result: dict[str, Any], request: Request
-) -> None:
+async def _fire_demand_aggregator_signal(result: dict[str, Any], request: Request) -> None:
     """create_crowd_intent 达到阈值后的旁路: 拉起 demand_aggregator_engine 的
     信号扇出 (SPEC §5.1: "触发向下游产地的规模化采购 PO 通知")。
     """
@@ -80,9 +86,7 @@ async def _fire_demand_aggregator_signal(
     )
 
 
-async def _fire_batch_broadcast_signal(
-    result: dict[str, Any], request: Request
-) -> None:
+async def _fire_batch_broadcast_signal(result: dict[str, Any], request: Request) -> None:
     """create_inventory_batch 入库成功后的旁路: 拉起 batch_broadcast_engine
     推送底价实录 (SPEC §5.2: "批次视频上架"触发广播)。
     """
@@ -108,30 +112,63 @@ _EXT_POST_HOOKS: dict[str, Callable[[dict, Request], Any]] = {
 }
 
 
-def _require_admin(request: Request) -> None:
-    """轻量鉴权：要求 Authorization: Bearer <token> 头。复用 obase JWT 校验。"""
-    from obase.crypto.util import CryptoUtil
+#: /admin/* 读端点的角色分层（白名单）。
+#:
+#: 历史实现只判 "typ != customer"，等于**黑名单**：访客购物车令牌 (typ=cart)、
+#: 收据令牌 (typ=receipt)、取货码 (typ=pickup)、以及任何没有 typ 的裸令牌
+#: （staff 登录之前的老令牌全是裸的）都能读全部 30 个后台读端点。
+#: 现在改成两道闸：先走 get_current_user 白名单（只认 typ=staff 且必须有主体），
+#: 再按端点敏感度用角色白名单卡第二道。
+ADMIN_STAFF_ROLES = frozenset({"admin", "support", "staff"})
 
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(401, "missing token")
-    token = auth_header.removeprefix("Bearer ")
-    cfg = request.app.state.config
-    try:
-        payload = CryptoUtil.jwt_decode(
-            token=token, secret=cfg.jwt_secret, algorithm=cfg.jwt_algorithm
-        )
-    except Exception:
-        raise HTTPException(401, "invalid token")
-    if payload.get("typ") == "customer":
-        # 顾客 token 不能当管理员主体使用 (跟 get_current_user 同一道校验，
-        # 防止任何登录顾客的 token 越权访问 /admin/* 读端点)。
-        raise HTTPException(401, "customer token not valid for admin endpoints")
+#: 含顾客/员工 PII 或可兑付凭证的读端点——最低要 support 角色，普通 staff 不放行。
+ADMIN_PII_ROLES = frozenset({"admin", "support"})
+
+#: 命中前缀即按 PII 敏感度处理（取最长前缀匹配，覆盖 /admin/customers/{id}/addresses
+#: 这类子路径）。其余 /admin/* 读端点按 ADMIN_STAFF_ROLES 放行。
+ADMIN_PII_PATH_PREFIXES: tuple[str, ...] = (
+    "/admin/orders",
+    "/admin/customers",
+    "/admin/users",
+    "/admin/customer-groups",
+    "/admin/gift-cards",
+    "/admin/returns",
+    "/admin/swaps",
+    "/admin/claims",
+    "/admin/aftersales",
+    "/admin/growth/affiliate-contracts",
+)
+
+
+def admin_roles_for_path(path: str) -> frozenset[str]:
+    """按路径敏感度返回允许的角色集合。未知路径默认收严到 admin。"""
+    if any(path == prefix or path.startswith(prefix + "/") for prefix in ADMIN_PII_PATH_PREFIXES):
+        return ADMIN_PII_ROLES
+    if path == "/admin" or path.startswith("/admin/"):
+        return ADMIN_STAFF_ROLES
+    # 不在 /admin/* 下却复用了本守卫的端点 (ext_bespoke) —— 同样按 PII 标准收。
+    return ADMIN_PII_ROLES
+
+
+def _require_admin(
+    request: Request, principal: dict[str, Any] = Depends(get_current_user)
+) -> dict[str, Any]:
+    """后台端点鉴权：typ=staff 主体 + 角色白名单，两道都过才放行。
+
+    第一道 (get_current_user)：只认 typ=staff 的令牌，访客购物车令牌/收据令牌/
+    取货码/顾客令牌/无 typ 令牌全部 401。
+    第二道 (角色白名单)：按路径敏感度要求 admin/support，普通 staff 或
+    无 role claim 的令牌 403。
+    """
+    return assert_staff_role(principal, admin_roles_for_path(request.url.path))
 
 
 def _pool(request: Request) -> Any:
     pool = getattr(request.app.state, "pool", None)
     if pool is None:
+        # 池缺失: 立刻唤醒后台退避重试 (笔记本休眠唤醒后 PG 才起来), 别让
+        # 这个 worker 在下一次退避窗口之前一直 503。见 app/db_recovery.py。
+        kick_pool_recovery(request.app)
         raise HTTPException(503, "database not ready")
     return pool
 
@@ -156,9 +193,7 @@ async def admin_list_products(
 
 
 @admin_read_router.get("/products/{product_id}")
-async def admin_get_product(
-    product_id: str, request: Request, _=Depends(_require_admin)
-):
+async def admin_get_product(product_id: str, request: Request, _=Depends(_require_admin)):
     product = await queries.get_product(_pool(request), product_id)
     if product is None:
         raise HTTPException(404, "product not found")
@@ -173,9 +208,7 @@ async def admin_list_orders(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    return await queries.list_orders(
-        _pool(request), status=status, limit=limit, offset=offset
-    )
+    return await queries.list_orders(_pool(request), status=status, limit=limit, offset=offset)
 
 
 @admin_read_router.get("/orders/{order_id}")
@@ -196,15 +229,66 @@ async def admin_list_customers(
     return await queries.list_customers(_pool(request), limit=limit, offset=offset)
 
 
+class SetMerchantRequest(BaseModel):
+    is_merchant: bool
+
+
+@admin_read_router.patch("/customers/{customer_id}/merchant")
+async def admin_set_customer_merchant(
+    customer_id: str,
+    body: SetMerchantRequest,
+    request: Request,
+    _=Depends(_require_admin),
+):
+    """开通/关闭客户的商家身份（商家预订清单与一键预订的门禁标记）。"""
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE "customer" SET is_merchant = $1, updated_at = NOW()
+            WHERE id = $2 AND deleted_at IS NULL
+            RETURNING id, is_merchant
+            """,
+            body.is_merchant,
+            customer_id,
+        )
+    if row is None:
+        raise HTTPException(404, "customer not found")
+    return {"id": str(row["id"]), "is_merchant": bool(row["is_merchant"])}
+
+
+@admin_read_router.get("/preorders")
+async def admin_list_preorders(
+    request: Request,
+    _=Depends(_require_admin),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """配货队列：preorder_qty > 0 的订单行，最早优先。"""
+    return await queries.list_admin_preorders(_pool(request), limit=limit)
+
+
+@admin_read_router.post("/preorders/{line_id}/allocate")
+async def admin_allocate_preorder(
+    line_id: str,
+    request: Request,
+    _=Depends(_require_admin),
+):
+    """给一行预订配货：从现有可用库存锁定，扣减 preorder_qty。"""
+    from .storefront import allocate_preorder_line
+
+    result = await allocate_preorder_line(_pool(request), line_id)
+    if result is None:
+        raise HTTPException(404, "order line not found")
+    return result
+
+
 @admin_read_router.get("/dashboard/kpis")
 async def admin_dashboard_kpis(request: Request, _=Depends(_require_admin)):
     return await queries.get_dashboard_kpis(_pool(request))
 
 
 @admin_read_router.get("/orders/{order_id}/fulfillments")
-async def admin_list_fulfillments(
-    order_id: str, request: Request, _=Depends(_require_admin)
-):
+async def admin_list_fulfillments(order_id: str, request: Request, _=Depends(_require_admin)):
     return await queries.list_fulfillments(_pool(request), order_id)
 
 
@@ -324,9 +408,7 @@ async def admin_list_ext_probe_logs(request: Request, _=Depends(_require_admin))
 
 
 @admin_read_router.get("/growth/affiliate-contracts")
-async def admin_list_ext_affiliate_contracts(
-    request: Request, _=Depends(_require_admin)
-):
+async def admin_list_ext_affiliate_contracts(request: Request, _=Depends(_require_admin)):
     return await queries.list_ext_affiliate_contracts(_pool(request))
 
 
@@ -547,9 +629,7 @@ async def get_nearby_feed(
             "batches": [],
         }
 
-    loc_list = [
-        (str(row["id"]), float(row["lat"]), float(row["lng"])) for row in locations
-    ]
+    loc_list = [(str(row["id"]), float(row["lat"]), float(row["lng"])) for row in locations]
     nearest_id, distance_km = find_nearest_location(loc_list, lat=lat, lon=lon)
     nearest_row = next((r for r in locations if str(r["id"]) == nearest_id), None)
 
@@ -563,9 +643,7 @@ async def get_nearby_feed(
             )
             user_system_balance = int(bal_row or 0)
 
-    safety_cutoff = datetime.now(UTC) + timedelta(
-        hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS
-    )
+    safety_cutoff = datetime.now(UTC) + timedelta(hours=_NEARBY_FEED_SAFETY_MARGIN_HOURS)
     async with pool.acquire() as conn:
         batches = await conn.fetch(
             "SELECT b.id, b.variant_id, b.retail_price_cents, b.stock_qty, "
@@ -637,8 +715,7 @@ async def get_nearby_feed(
                     _NEARBY_FEED_COOCCURRENCE_ORDER_CAP,
                 )
                 cooccurrence = {
-                    (str(r["left_id"]), str(r["right_id"])): r["n"]
-                    for r in cooccurrence_rows
+                    (str(r["left_id"]), str(r["right_id"])): r["n"] for r in cooccurrence_rows
                 }
                 user_ids = [str(r["product_id"]) for r in user_products]
                 candidate_ids = [str(r["product_id"]) for r in batch_rows]
@@ -661,9 +738,7 @@ async def get_nearby_feed(
             velocity_by_batch.get(str(enriched["id"]), 0)
         )
         # 可用量 = 物理库存 - 结算期硬锁
-        available = int(enriched.get("stock_qty") or 0) - int(
-            enriched.get("reserved_qty") or 0
-        )
+        available = int(enriched.get("stock_qty") or 0) - int(enriched.get("reserved_qty") or 0)
         enriched["stock_qty"] = max(0, available)
         feed_items.append(build_feed_item(enriched))
 
@@ -687,13 +762,9 @@ async def get_nearby_feed(
                 "title": row["title"],
                 "sku_code": row["sku_code"],
                 "retail_price_cents": row["retail_price_cents"],
-                "stock_qty": max(
-                    0, int(row["stock_qty"]) - int(row.get("reserved_qty") or 0)
-                ),
+                "stock_qty": max(0, int(row["stock_qty"]) - int(row.get("reserved_qty") or 0)),
                 "expiration_time": (
-                    row["expiration_time"].isoformat()
-                    if row["expiration_time"]
-                    else None
+                    row["expiration_time"].isoformat() if row["expiration_time"] else None
                 ),
                 "video_url": row["video_url"],
                 "location_name": row["location_name"],
@@ -801,7 +872,11 @@ class _PickupTicketRequest(BaseModel):
 
 
 @ext_bespoke_router.post("/store/pickup-ticket")
-async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
+async def issue_pickup_ticket(
+    body: _PickupTicketRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
     """签发加密 JWT 提货码 (Phase 9 SPEC §5 弱网离线核销凭证)。
 
     支付成功回调后调用：后端校验订单已支付，签发带过期时间的 JWT，
@@ -811,15 +886,22 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
     JWT payload: { order_id, node_name, typ: "pickup" }
     有效期: 24 小时。
 
-    公开端点 (持提货码即可核销，无需登录)，纳入限流防刷。
+    安全基线 (与报案入口一致)：要求顾客 JWT，且 order_id 必须归属当前
+    顾客——否则枚举任意已支付 order_id 即可冒领他人提货码。核销侧
+    (扫码枪离线验 JWT) 仍无需登录。
     """
-    from obase.crypto.util import CryptoUtil
-
     pool = _pool(request)
+    customer_id = principal["customer_id"]
+    if not await _owns_order(pool, customer_id, body.order_id):
+        raise HTTPException(404, "order not found")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT o.id, o.status, o.grand_total_cents "
+            "SELECT o.id, o.status, o.currency, o.grand_total_cents, "
+            "o.payment_verified_at, o.shipping_address, "
+            "p.status AS payment_status, p.amount_cents AS payment_amount_cents, "
+            "p.currency AS payment_currency "
             'FROM "customer_order" o '
+            "LEFT JOIN payment_intent p ON p.id::text = o.payment_intent_id "
             "WHERE o.id = $1",
             body.order_id,
         )
@@ -827,27 +909,43 @@ async def issue_pickup_ticket(body: _PickupTicketRequest, request: Request):
         raise HTTPException(404, "order not found")
 
     # 只对已支付订单签发提货码
-    paid_statuses = {"confirmed", "paid", "fulfilled", "completed"}
-    if str(row["status"]) not in paid_statuses:
+    paid_statuses = {
+        "confirmed",
+        "processing",
+        "packed",
+        "shipped",
+        "delivered",
+        "completed",
+    }
+    payment_verified = (
+        str(row["status"]) in paid_statuses
+        and row["payment_status"] == "paid"
+        and row["payment_verified_at"] is not None
+        and int(row["payment_amount_cents"] or -1) == int(row["grand_total_cents"] or 0)
+        and str(row["payment_currency"] or "").upper() == str(row["currency"] or "").upper()
+    )
+    if not payment_verified:
         raise HTTPException(
-            409, f"order not paid (status={row['status']}), cannot issue pickup ticket"
+            409,
+            "payment is not verified PAID for this order; cannot issue pickup ticket",
         )
 
     # 取货点: 优先从订单 shipping_address 的 node_name 取，缺失回退默认
     node_name = "附近节点"
-    if row.get("node_name"):
-        node_name = row["node_name"]
+    shipping_address = row["shipping_address"] or {}
+    if isinstance(shipping_address, dict) and shipping_address.get("node_name"):
+        node_name = shipping_address["node_name"]
 
     cfg_store = request.app.state.config
-    pickup_code = CryptoUtil.jwt_sign(
-        payload={
+    pickup_code = sign_token(
+        {
             "order_id": body.order_id,
             "node_name": node_name,
-            "typ": "pickup",
         },
+        typ=TOKEN_TYPE_PICKUP,
         secret=cfg_store.jwt_secret,
-        expires_in_minutes=PICKUP_TICKET_TTL_HOURS * 60,
         algorithm=cfg_store.jwt_algorithm,
+        expires_in_minutes=PICKUP_TICKET_TTL_HOURS * 60,
     )
     expires_at = datetime.now(UTC) + timedelta(hours=PICKUP_TICKET_TTL_HOURS)
 
@@ -897,7 +995,7 @@ async def agent_list_tools(
 async def agent_execute(
     body: _AgentExecuteRequest,
     request: Request,
-    principal: dict[str, Any] = Depends(get_current_user),
+    principal: dict[str, Any] = Depends(require_staff_role("admin")),
 ):
     """工具执行 (JSON-RPC 风格): {tool, args} → omodul 结果。
 
@@ -951,8 +1049,10 @@ async def agent_ingest(
 ):
     """视频/图片传货: 手机实拍 → 自动上架。
 
-    multipart/form-data: file=视频文件, 可选 location_id/retail_price_cents/
-    stock_qty/category_slug。文件名清洗成商品名，媒体文件即商品图/视频。
+    multipart/form-data: file=图片/视频文件, 可选 location_id/
+    retail_price_cents/stock_qty/category_slug。图片先经 VLM 识货 (识别名/
+    品类; 命中已有商品则以图更新、只补新批次), 识别不可用时降级为文件名
+    清洗成商品名; 媒体文件即商品图/视频。
     """
 
     return await ingest_media(
@@ -976,9 +1076,7 @@ class _DouyinCallbackRequest(BaseModel):
 
 
 @ext_bespoke_router.post("/growth/douyin_callback")
-async def ext_douyin_callback(
-    body: _DouyinCallbackRequest, request: Request
-) -> JSONResponse:
+async def ext_douyin_callback(body: _DouyinCallbackRequest, request: Request) -> JSONResponse:
     """抖音开放平台转化回调入口 (补天计划 Task 1.1)。
 
     签名校验由 WebhookSignatureMiddleware 在 ASGI 层强制完成 (非法请求 403
@@ -996,9 +1094,7 @@ async def ext_douyin_callback(
 
     result = await record_douyin_conversion_workflow(
         RecordDouyinConversionWorkflowConfig(),
-        RecordDouyinConversionWorkflowInput(
-            order_id=body.order_id, douyin_uid=body.douyin_uid
-        ),
+        RecordDouyinConversionWorkflowInput(order_id=body.order_id, douyin_uid=body.douyin_uid),
         _ext_bespoke_output_dir(request, "record_douyin_conversion_workflow"),
         pool=_pool(request),
     )
@@ -1036,7 +1132,6 @@ _EXT_BESPOKE_PUBLIC_PATHS = {
     "/supply-chain/suppliers/lookup",
     "/store/nearby-feed",
     "/store/cart/lock",
-    "/store/pickup-ticket",
     "/growth/douyin_callback",
     "/store/batches/{batch_id}/battle-reports",
     # Phase 10: IoT 边桥防腐层端点 (自带 HARDWARE_SECRET Bearer 鉴权，
@@ -1079,6 +1174,7 @@ def build_router() -> APIRouter:
                 success_status=spec.success_status,
                 require_auth=spec.require_auth,
                 post_hook=_POST_HOOKS.get(spec.name),
+                op_name=f"{spec.domain}/{spec.name}",
             ),
             methods=["POST"],
             name=spec.name,
@@ -1095,6 +1191,7 @@ def build_router() -> APIRouter:
                 success_status=spec.success_status,
                 require_auth=spec.require_auth,
                 post_hook=_EXT_POST_HOOKS.get(spec.name),
+                op_name=f"{spec.domain}/{spec.name}",
             ),
             methods=["POST"],
             name=f"ext_{spec.name}",

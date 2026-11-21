@@ -25,15 +25,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from oservi.engines.cron_scheduler_engine import CronSchedulerEngine
-from oservi.engines.event_webhook_dispatcher import EventWebhookDispatcherEngine
-
 from ..config import Settings
 from ..middleware.metrics import (
     DB_DEADLOCK_ERRORS_TOTAL,
     ENGINE_FAILURE_TOTAL,
     ENGINE_TICK_LAST_SECONDS,
 )
+from .oservi import UNCONFIGURED_TOKEN as _UNCONFIGURED_TOKEN
 from .oservi import (
     build_affiliate_settlement_engine,
     build_autonomous_triage_engine,
@@ -51,10 +49,12 @@ from .oservi import (
     build_sla_promise_engine,
     build_social_broadcast_engine,
     build_spatial_fomo_engine,
+    build_spider_listing_engine,
     build_tote_balancing_engine,
     build_weather_arbitrage_engine,
     build_wechat_cert_rotation_engine,
 )
+from .oservi_compat import CronSchedulerEngine, EventWebhookDispatcherEngine
 from .oservi_ghost_engine import build_ghost_ignition_engine
 
 logger = logging.getLogger("hemall.ext.oservi_lifecycle")
@@ -101,6 +101,7 @@ class ExtOservi:
     affiliate_settlement: CronSchedulerEngine
     inventory_decay: CronSchedulerEngine
     competitor_spider: CronSchedulerEngine
+    spider_listing: CronSchedulerEngine
     sla_promise: CronSchedulerEngine
     sla_compensation: CronSchedulerEngine
     wechat_cert_rotation: CronSchedulerEngine
@@ -121,6 +122,7 @@ class ExtOservi:
             self.affiliate_settlement,
             self.inventory_decay,
             self.competitor_spider,
+            self.spider_listing,
             self.sla_promise,
             self.sla_compensation,
             self.wechat_cert_rotation,
@@ -134,9 +136,7 @@ class ExtOservi:
         """
         for engine in self._cron_engines():
             interval = float(engine.config.get("interval_seconds", 3600))
-            task = asyncio.create_task(
-                _run_cron_loop(engine, interval), name=engine.name
-            )
+            task = asyncio.create_task(_run_cron_loop(engine, interval), name=engine.name)
             self._tasks.append(task)
         logger.info("started %d ext cron engine tasks", len(self._tasks))
 
@@ -144,6 +144,17 @@ class ExtOservi:
         """取消全部后台调度 task (标准 asyncio 取消语义，sleep 中会被正确打断)。"""
         for task in self._tasks:
             task.cancel()
+
+
+def _disabled_engine(name: str) -> CronSchedulerEngine:
+    """引擎开关关闭时的空任务占位: 保持 ExtOservi 字段类型与
+    start/stop/health/run_once 接口不变, run_once 恒返回 [], 不跑业务 tick。"""
+    return CronSchedulerEngine(
+        tasks=[],
+        trigger={},
+        config={"interval_seconds": 3600, "disabled": True},
+        name=name,
+    )
 
 
 def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
@@ -156,14 +167,15 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
     demand_aggregator = build_demand_aggregator_engine(
         notification_provider=settings.default_notification_provider
     )
-    weather_arbitrage = build_weather_arbitrage_engine(
-        pool, broadcast_engine=batch_broadcast
-    )
+    weather_arbitrage = build_weather_arbitrage_engine(pool, broadcast_engine=batch_broadcast)
     inventory_reaper = build_inventory_reaper_engine(pool, settings=settings)
     delivery_wave = build_delivery_wave_engine(pool)
     node_host_settlement = build_node_host_settlement_engine(pool, settings=settings)
     autonomous_triage = build_autonomous_triage_engine(pool, settings=settings)
     market_maker = build_market_maker_engine(pool, broadcast_engine=batch_broadcast)
+    if not settings.engine_market_maker_enabled:
+        # 开关关闭: 只把 ExtOservi 里的字段换成空任务占位, builder 本身不动
+        market_maker = _disabled_engine("ext-market-maker")
     tote_balancing = build_tote_balancing_engine(
         pool, notification_provider=settings.default_notification_provider
     )
@@ -172,12 +184,25 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         settings=settings,
         notification_provider=settings.default_notification_provider,
     )
-    social_broadcast = build_social_broadcast_engine(pool, settings=settings)
+    social_broadcast = build_social_broadcast_engine(
+        pool,
+        settings=settings,
+        # 显式解析，不靠函数签名里的硬编码占位符；未接入时用显式占位值并在
+        # 引擎内标记"未接入"（见 _reject_mock_access_token 的说明）。
+        access_token=settings.wechat_channel_access_token or _UNCONFIGURED_TOKEN,
+    )
     market_maker_probe = build_market_maker_probe_engine(pool)
     mercenary_routing = build_mercenary_routing_engine(pool)
     affiliate_settlement = build_affiliate_settlement_engine(pool)
     inventory_decay = build_inventory_decay_engine(pool, settings=settings)
     competitor_spider = build_competitor_spider_engine(pool)
+    if not settings.engine_spider_enabled:
+        # 开关关闭: 同 market_maker, 空任务占位
+        competitor_spider = _disabled_engine("ext-competitor-spider")
+    spider_listing = build_spider_listing_engine(pool, settings=settings)
+    if not settings.engine_spider_listing_enabled:
+        # 开关关闭: 同 competitor_spider, 空任务占位
+        spider_listing = _disabled_engine("ext-spider-listing")
     sla_promise = build_sla_promise_engine(pool, settings=settings)
     sla_compensation = build_sla_compensation_engine(pool, settings=settings)
     wechat_cert_rotation = build_wechat_cert_rotation_engine(pool, settings=settings)
@@ -202,6 +227,7 @@ def build_ext_oservi(pool: Any, settings: Settings) -> ExtOservi:
         affiliate_settlement=affiliate_settlement,
         inventory_decay=inventory_decay,
         competitor_spider=competitor_spider,
+        spider_listing=spider_listing,
         sla_promise=sla_promise,
         sla_compensation=sla_compensation,
         wechat_cert_rotation=wechat_cert_rotation,

@@ -7,9 +7,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import asyncpg
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 from ..oprim import ext_llm_generate_text, ext_wechat_channel_publish
 from ..oskill import build_fomo_system_prompt, construct_fomo_user_prompt
@@ -77,7 +76,8 @@ async def execute_channel_broadcast_workflow(
     try:
         if pool is None:
             raise ValueError(
-                "pool is required — execute_channel_broadcast_workflow always touches persisted stock"
+                "pool is required — execute_channel_broadcast_workflow "
+                "always touches persisted stock"
             )
         if input_data.broadcast_type not in ("fresh_arrival", "clearance"):
             raise ValueError(
@@ -109,15 +109,11 @@ async def execute_channel_broadcast_workflow(
         )
 
         batch_info = dict(batch)
-        batch_info["supplier_polygon_name"] = (
-            batch_info["supplier_polygon_name"] or "溯源信息保密"
-        )
+        batch_info["supplier_polygon_name"] = batch_info["supplier_polygon_name"] or "溯源信息保密"
         batch_info["broadcast_type"] = input_data.broadcast_type
 
         sys_prompt = build_fomo_system_prompt()
-        usr_prompt = construct_fomo_user_prompt(
-            batch_info, market_price=input_data.market_price
-        )
+        usr_prompt = construct_fomo_user_prompt(batch_info, market_price=input_data.market_price)
 
         try:
             copywriting = await ext_llm_generate_text(

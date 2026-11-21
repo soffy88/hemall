@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-from .llm_provider import LLMMessage, LLMProvider, LLMResponse, create_llm_provider
+from .knowledge import KnowledgeBase
+from .llm_provider import LLMMessage, LLMProvider, create_llm_provider
 from .models import (
     AIConfig,
     AIResponse,
@@ -22,7 +22,6 @@ from .models import (
     UserIntent,
 )
 from .rag_engine import RAGEngine
-from .knowledge import KnowledgeBase
 
 logger = logging.getLogger("hemall.ai.service")
 
@@ -53,6 +52,7 @@ class AIAssistantService:
         if self._knowledge is not None:
             try:
                 from . import router as _router
+
                 _router.set_knowledge_base(self._knowledge)
             except Exception:  # noqa: BLE001
                 pass
@@ -68,13 +68,15 @@ class AIAssistantService:
         self._set_local_router_kb()
 
         # 创建 LLM Provider
-        self._llm = create_llm_provider({
-            "provider": self._config.provider,
-            "api_key": self._config.api_key,
-            "model_name": self._config.model_name,
-            "api_base": self._config.api_base,
-            "timeout": self._config.timeout_seconds,
-        })
+        self._llm = create_llm_provider(
+            {
+                "provider": self._config.provider,
+                "api_key": self._config.api_key,
+                "model_name": self._config.model_name,
+                "api_base": self._config.api_base,
+                "timeout": self._config.timeout_seconds,
+            }
+        )
 
         # 创建 RAG 引擎
         self._rag = RAGEngine(
@@ -88,8 +90,11 @@ class AIAssistantService:
             await self._rag.initialize(self._pool)
 
         self._initialized = True
-        logger.info("AIAssistantService initialized (provider=%s, model=%s)",
-                     self._config.provider, self._config.model_name)
+        logger.info(
+            "AIAssistantService initialized (provider=%s, model=%s)",
+            self._config.provider,
+            self._config.model_name,
+        )
 
     async def close(self) -> None:
         """关闭服务。"""
@@ -100,15 +105,73 @@ class AIAssistantService:
 
     # ── 对话管理 ────────────────────────────────────────────────
 
-    def _get_or_create_session(self, session_id: str | None, user_id: str | None) -> Conversation:
-        """获取或创建对话会话。"""
+    def get_or_create_session(
+        self,
+        session_id: str | None,
+        *,
+        owner_id: str,
+        claimed_user_id: str | None = None,
+    ) -> Conversation:
+        """获取或创建对话会话 —— 归属强制绑定到已认证主体。
+
+        owner_id 来自 staff JWT 的 sub，服务端取。请求体里的 user_id 只当作
+        "这段对话在谈哪个顾客"的业务标注存下来（claimed_user_id），**永远
+        不参与授权**——否则任何员工都能把会话挂到别人名下。
+        """
         if session_id and session_id in self._sessions:
-            return self._sessions[session_id]
+            existing = self._sessions[session_id]
+            if existing.owner_id is not None and existing.owner_id != owner_id:
+                raise PermissionError("session belongs to another principal")
+            return existing
 
         new_session_id = session_id or str(uuid.uuid4())
-        conversation = Conversation(session_id=new_session_id, user_id=user_id)
+        conversation = Conversation(
+            session_id=new_session_id,
+            user_id=claimed_user_id,
+            owner_id=owner_id,
+        )
+        self._evict_if_needed()
         self._sessions[new_session_id] = conversation
         return conversation
+
+    def _evict_if_needed(self) -> None:
+        """会话表只增不减会慢慢吃光内存——满了就丢最久没动的一条。"""
+        from app.config import Settings
+
+        limit = Settings().ai_max_sessions
+        if limit <= 0 or len(self._sessions) < limit:
+            return
+        oldest = min(
+            self._sessions.values(),
+            key=lambda c: c.updated_at,
+            default=None,
+        )
+        if oldest is not None:
+            self._sessions.pop(oldest.session_id, None)
+
+    def sessions_for_owner(self, owner_id: str) -> list[dict[str, Any]]:
+        """只返回该主体自己的会话摘要（不含消息正文）。"""
+        return [
+            {
+                "session_id": s.session_id,
+                "user_id": s.user_id,
+                "message_count": len(s.messages),
+                "created_at": s.created_at.isoformat(),
+                "updated_at": s.updated_at.isoformat(),
+            }
+            for s in self._sessions.values()
+            if s.owner_id == owner_id
+        ]
+
+    def delete_session_owned(self, session_id: str, *, owner_id: str) -> bool:
+        """删除会话；不是自己的会话抛 PermissionError（而不是静默成功）。"""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        if session.owner_id is not None and session.owner_id != owner_id:
+            raise PermissionError("session belongs to another principal")
+        del self._sessions[session_id]
+        return True
 
     async def chat(self, request: ChatRequest) -> AIResponse:
         """处理聊天请求 (完整流程)。
@@ -123,8 +186,12 @@ class AIAssistantService:
         if not self._initialized:
             await self.initialize()
 
-        # 获取会话
-        session = self._get_or_create_session(request.session_id, request.user_id)
+        # 获取会话 —— 归属取自已认证主体；请求体里的 user_id 只是业务标注。
+        session = self.get_or_create_session(
+            request.session_id,
+            owner_id=request.owner_id or "",
+            claimed_user_id=request.user_id,
+        )
 
         # 添加用户消息
         session.add_message("user", request.message)
@@ -146,12 +213,16 @@ class AIAssistantService:
         )
 
         # 保存助手回复
-        session.add_message("assistant", response.content, {
-            "intent": intent.value,
-            "confidence": confidence,
-            "model": response.model,
-            "latency_ms": response.latency_ms,
-        })
+        session.add_message(
+            "assistant",
+            response.content,
+            {
+                "intent": intent.value,
+                "confidence": confidence,
+                "model": response.model,
+                "latency_ms": response.latency_ms,
+            },
+        )
 
         # 提取推荐商品
         suggested_products = self._extract_product_ids(response.content, context_docs)
@@ -175,7 +246,11 @@ class AIAssistantService:
         if not self._initialized:
             await self.initialize()
 
-        session = self._get_or_create_session(request.session_id, request.user_id)
+        session = self.get_or_create_session(
+            request.session_id,
+            owner_id=request.owner_id or "",
+            claimed_user_id=request.user_id,
+        )
         session.add_message("user", request.message)
 
         context_docs = await self._rag.retrieve_context(request.message)
@@ -211,10 +286,9 @@ class AIAssistantService:
 
         if context_docs:
             context_text = "\n\n".join(context_docs)
-            messages.append(LLMMessage(
-                role="system",
-                content=f"以下是相关商品信息:\n{context_text}"
-            ))
+            messages.append(
+                LLMMessage(role="system", content=f"以下是相关商品信息:\n{context_text}")
+            )
 
         messages.append(LLMMessage(role="user", content=request.question))
 
@@ -231,7 +305,9 @@ class AIAssistantService:
 
     # ── 商品描述生成 ────────────────────────────────────────────
 
-    async def generate_product_description(self, request: ProductDescriptionRequest) -> dict[str, Any]:
+    async def generate_product_description(
+        self, request: ProductDescriptionRequest
+    ) -> dict[str, Any]:
         """AI 生成商品描述 (SEO 优化)。"""
         if not self._initialized:
             await self.initialize()
@@ -246,17 +322,23 @@ class AIAssistantService:
         style_guide = style_prompts.get(request.style, style_prompts["professional"])
 
         messages = [
-            LLMMessage(role="system", content=f"""You are an expert e-commerce copywriter.
+            LLMMessage(
+                role="system",
+                content=f"""You are an expert e-commerce copywriter.
 {style_guide}
 Target audience: {request.target_audience}
-Include SEO keywords: {', '.join(request.keywords) if request.keywords else 'auto-detect'}
+Include SEO keywords: {", ".join(request.keywords) if request.keywords else "auto-detect"}
 Generate:
 1. A compelling headline (1 line)
 2. A short description (2-3 sentences)
 3. Key features (bullet points, 3-5 items)
 4. SEO meta description (150-160 characters)
-Return in JSON format."""),
-            LLMMessage(role="user", content=f"Product ID: {request.product_id}\nGenerate a product description."),
+Return in JSON format.""",
+            ),
+            LLMMessage(
+                role="user",
+                content=f"Product ID: {request.product_id}\nGenerate a product description.",
+            ),
         ]
 
         response = await self._llm.chat(messages, temperature=0.8, max_tokens=1000)
@@ -276,12 +358,15 @@ Return in JSON format."""),
             await self.initialize()
 
         messages = [
-            LLMMessage(role="system", content="""Analyze the sentiment of the following text.
+            LLMMessage(
+                role="system",
+                content="""Analyze the sentiment of the following text.
 Return JSON with:
 - sentiment: positive/negative/neutral/mixed
 - confidence: 0.0-1.0
 - keywords: list of key sentiment words
-- aspects: dict of aspect -> sentiment (e.g., {"price": "negative", "quality": "positive"})"""),
+- aspects: dict of aspect -> sentiment (e.g., {"price": "negative", "quality": "positive"})""",
+            ),
             LLMMessage(role="user", content=text),
         ]
 
@@ -295,6 +380,7 @@ Return JSON with:
 
         try:
             import json
+
             data = json.loads(response.content)
             sentiment = SentimentType(data.get("sentiment", "neutral"))
             confidence = data.get("confidence", 0.5)
@@ -317,13 +403,19 @@ Return JSON with:
             keywords=keywords,
         )
 
-    async def analyze_review(self, product_id: str, review_id: str, review_text: str) -> ReviewAnalysis:
+    async def analyze_review(
+        self, product_id: str, review_id: str, review_text: str
+    ) -> ReviewAnalysis:
         """分析商品评论。"""
         sentiment = await self.analyze_sentiment(review_text)
 
         # 生成摘要
         messages = [
-            LLMMessage(role="system", content="Summarize this product review in 1-2 sentences. Highlight key points and any issues."),
+            LLMMessage(
+                role="system",
+                content="Summarize this product review in 1-2 sentences. "
+                "Highlight key points and any issues.",
+            ),
             LLMMessage(role="user", content=review_text),
         ]
 
@@ -347,10 +439,9 @@ Return JSON with:
         # 添加检索到的上下文
         if context_docs:
             context_text = "\n\n---\n\n".join(context_docs)
-            messages.append(LLMMessage(
-                role="system",
-                content=f"Relevant product information:\n{context_text}"
-            ))
+            messages.append(
+                LLMMessage(role="system", content=f"Relevant product information:\n{context_text}")
+            )
 
         # 添加对话历史
         for msg in session.get_history(self._config.max_history_turns):
@@ -367,7 +458,9 @@ Return JSON with:
             return UserIntent.REFUND_REQUEST, 0.9
         if any(word in message_lower for word in ["投诉", "complaint", "problem", "issue"]):
             return UserIntent.COMPLAINT, 0.85
-        if any(word in message_lower for word in ["物流", "快递", "shipping", "delivery", "tracking"]):
+        if any(
+            word in message_lower for word in ["物流", "快递", "shipping", "delivery", "tracking"]
+        ):
             return UserIntent.SHIPPING_INQUIRY, 0.9
         if any(word in message_lower for word in ["推荐", "recommend", "suggest", "which"]):
             return UserIntent.RECOMMENDATION, 0.8
@@ -378,10 +471,13 @@ Return JSON with:
 
         # LLM 意图识别 (复杂场景)
         messages = [
-            LLMMessage(role="system", content="""Classify the user's intent into one of:
-product_inquiry, purchase_intent, complaint, refund_request, shipping_inquiry, 
+            LLMMessage(
+                role="system",
+                content="""Classify the user's intent into one of:
+product_inquiry, purchase_intent, complaint, refund_request, shipping_inquiry,
 general_question, recommendation, comparison, unknown
-Return only the intent name and confidence (0.0-1.0), separated by comma."""),
+Return only the intent name and confidence (0.0-1.0), separated by comma.""",
+            ),
             LLMMessage(role="user", content=message),
         ]
 
@@ -406,7 +502,17 @@ Return only the intent name and confidence (0.0-1.0), separated by comma."""),
     def _extract_highlights(self, text: str) -> list[str]:
         """提取评论亮点。"""
         highlights = []
-        positive_keywords = ["good", "great", "excellent", "love", "amazing", "perfect", "好", "优秀", "完美"]
+        positive_keywords = [
+            "good",
+            "great",
+            "excellent",
+            "love",
+            "amazing",
+            "perfect",
+            "好",
+            "优秀",
+            "完美",
+        ]
         for keyword in positive_keywords:
             if keyword in text.lower():
                 # 提取包含关键词的句子
@@ -420,7 +526,17 @@ Return only the intent name and confidence (0.0-1.0), separated by comma."""),
     def _extract_issues(self, text: str) -> list[str]:
         """提取评论问题。"""
         issues = []
-        negative_keywords = ["bad", "terrible", "awful", "problem", "issue", "broken", "差", "问题", "坏"]
+        negative_keywords = [
+            "bad",
+            "terrible",
+            "awful",
+            "problem",
+            "issue",
+            "broken",
+            "差",
+            "问题",
+            "坏",
+        ]
         for keyword in negative_keywords:
             if keyword in text.lower():
                 sentences = text.split(".")

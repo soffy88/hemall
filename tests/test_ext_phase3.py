@@ -18,9 +18,7 @@ import pytest
 
 TEST_DSN = os.environ.get("TEST_PG_DSN")
 
-pytestmark = pytest.mark.skipif(
-    not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration"
-)
+pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
 
 @pytest.fixture
@@ -37,9 +35,7 @@ async def cn_pool():
     vlm = ManualVLMProvider()
     reg.register_generic("vlm", "manual", vlm, replace=True)
 
-    pool = await PgPool.create(
-        name="hemall_phase3_test", dsn=TEST_DSN, min_size=1, max_size=5
-    )
+    pool = await PgPool.create(name="hemall_phase3_test", dsn=TEST_DSN, min_size=1, max_size=5)
     await ensure_ext_schema(pool)
     pool._test_vlm = vlm  # type: ignore[attr-defined]
     yield pool
@@ -47,7 +43,7 @@ async def cn_pool():
 
 
 async def _make_order(
-    pool, *, supplier_id: str | None = None, retail_price: int = 3900
+    pool, *, supplier_id: str | None = None, retail_price: int = 3900, test_redis_url: str
 ) -> tuple[str, str, str]:
     """建齐门店/商品/批次，走共享 omodul 的建车->加车->授权支付->结账链路拿到一笔真实订单。
 
@@ -87,12 +83,19 @@ async def _make_order(
     video_url = "https://video.example/origin.mp4"
     async with pool.acquire() as conn:
         loc_id = await conn.fetchval(
-            "INSERT INTO stock_location (id, name, region_code, host_id, address, lat, lng, status) "
-            "VALUES ($1,'p3_loc','cn-east','host_p3','测试车库',31.0,121.0,'active') RETURNING id",
+            (
+                "INSERT INTO stock_location "
+                "(id, name, region_code, host_id, address, lat, lng, status) "
+                "VALUES ($1,'p3_loc','cn-east','host_p3','测试车库',31.0,121.0,'active') "
+                "RETURNING id"
+            ),
             uuid7(),
         )
         prod_id = await conn.fetchval(
-            "INSERT INTO product (id, title, slug, status) VALUES ($1,'土鸡蛋',$2,'active') RETURNING id",
+            (
+                "INSERT INTO product (id, title, slug, status) "
+                "VALUES ($1,'土鸡蛋',$2,'active') RETURNING id"
+            ),
             uuid7(),
             f"p3-slug-{uuid7()}",
         )
@@ -119,14 +122,12 @@ async def _make_order(
     batch_id = str(batch_id)
 
     tmp_path = Path("/tmp")
-    cart_result = await create_cart(
-        CreateCartConfig(), CreateCartInput(), tmp_path, pool=pool
-    )
+    cart_result = await create_cart(CreateCartConfig(), CreateCartInput(), tmp_path, pool=pool)
     assert cart_result["status"] == "completed", cart_result
     cart_id = cart_result["cart_id"]
 
     add_result = await add_line_item_to_cart(
-        AddLineItemConfig(),
+        AddLineItemConfig(redis_url=test_redis_url),
         AddLineItemInput(cart_id=cart_id, batch_id=batch_id, quantity=1),
         tmp_path,
         pool=pool,
@@ -158,7 +159,7 @@ async def _make_order(
     assert authorize_result["status"] == "completed", authorize_result
 
     checkout_result = await complete_checkout(
-        CompleteCheckoutConfig(),
+        CompleteCheckoutConfig(redis_url=test_redis_url),
         CompleteCheckoutInput(cart_id=cart_id),
         tmp_path,
         pool=pool,
@@ -200,7 +201,7 @@ async def _make_customer(pool) -> str:
 
 
 @pytest.mark.asyncio
-async def test_liability_routing_instant_refund_supplier_liable(cn_pool, tmp_path):
+async def test_liability_routing_instant_refund_supplier_liable(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.execute_liability_routing_workflow import (
         ExecuteLiabilityRoutingWorkflowConfig,
         ExecuteLiabilityRoutingWorkflowInput,
@@ -208,7 +209,9 @@ async def test_liability_routing_instant_refund_supplier_liable(cn_pool, tmp_pat
     )
 
     supplier_id = await _make_supplier(cn_pool, escrow_balance=100_000)
-    order_id, batch_id, _ = await _make_order(cn_pool, supplier_id=supplier_id)
+    order_id, batch_id, _ = await _make_order(
+        cn_pool, supplier_id=supplier_id, test_redis_url=test_redis_url
+    )
     user_id = await _make_customer(cn_pool)
 
     result = await execute_liability_routing_workflow(
@@ -247,7 +250,7 @@ async def test_liability_routing_instant_refund_supplier_liable(cn_pool, tmp_pat
 
 @pytest.mark.asyncio
 async def test_liability_routing_instant_refund_location_liable_no_supplier_debit(
-    cn_pool, tmp_path
+    cn_pool, tmp_path, test_redis_url
 ):
     from app.ext.omodul.execute_liability_routing_workflow import (
         ExecuteLiabilityRoutingWorkflowConfig,
@@ -256,7 +259,9 @@ async def test_liability_routing_instant_refund_location_liable_no_supplier_debi
     )
 
     supplier_id = await _make_supplier(cn_pool, escrow_balance=100_000)
-    order_id, batch_id, _ = await _make_order(cn_pool, supplier_id=supplier_id)
+    order_id, batch_id, _ = await _make_order(
+        cn_pool, supplier_id=supplier_id, test_redis_url=test_redis_url
+    )
     user_id = await _make_customer(cn_pool)
 
     result = await execute_liability_routing_workflow(
@@ -286,14 +291,14 @@ async def test_liability_routing_instant_refund_location_liable_no_supplier_debi
 
 
 @pytest.mark.asyncio
-async def test_liability_routing_honeypot_pending_no_refund(cn_pool, tmp_path):
+async def test_liability_routing_honeypot_pending_no_refund(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.execute_liability_routing_workflow import (
         ExecuteLiabilityRoutingWorkflowConfig,
         ExecuteLiabilityRoutingWorkflowInput,
         execute_liability_routing_workflow,
     )
 
-    order_id, batch_id, _ = await _make_order(cn_pool)
+    order_id, batch_id, _ = await _make_order(cn_pool, test_redis_url=test_redis_url)
     user_id = await _make_customer(cn_pool)
 
     result = await execute_liability_routing_workflow(
@@ -318,14 +323,14 @@ async def test_liability_routing_honeypot_pending_no_refund(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_liability_routing_rejected_fraud_suspected(cn_pool, tmp_path):
+async def test_liability_routing_rejected_fraud_suspected(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.execute_liability_routing_workflow import (
         ExecuteLiabilityRoutingWorkflowConfig,
         ExecuteLiabilityRoutingWorkflowInput,
         execute_liability_routing_workflow,
     )
 
-    order_id, batch_id, _ = await _make_order(cn_pool)
+    order_id, batch_id, _ = await _make_order(cn_pool, test_redis_url=test_redis_url)
     user_id = await _make_customer(cn_pool)
 
     result = await execute_liability_routing_workflow(
@@ -350,14 +355,14 @@ async def test_liability_routing_rejected_fraud_suspected(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_liability_routing_rejected_no_material_damage(cn_pool, tmp_path):
+async def test_liability_routing_rejected_no_material_damage(cn_pool, tmp_path, test_redis_url):
     from app.ext.omodul.execute_liability_routing_workflow import (
         ExecuteLiabilityRoutingWorkflowConfig,
         ExecuteLiabilityRoutingWorkflowInput,
         execute_liability_routing_workflow,
     )
 
-    order_id, batch_id, _ = await _make_order(cn_pool)
+    order_id, batch_id, _ = await _make_order(cn_pool, test_redis_url=test_redis_url)
     user_id = await _make_customer(cn_pool)
 
     result = await execute_liability_routing_workflow(
@@ -383,12 +388,14 @@ async def test_liability_routing_rejected_no_material_damage(cn_pool, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_autonomous_triage_engine_full_chain(cn_pool, tmp_path):
-    from app.ext.oservi import build_autonomous_triage_engine
+async def test_autonomous_triage_engine_full_chain(cn_pool, tmp_path, test_redis_url):
     from app.config import Settings
+    from app.ext.oservi import build_autonomous_triage_engine
 
     supplier_id = await _make_supplier(cn_pool, escrow_balance=100_000)
-    order_id, batch_id, video_url = await _make_order(cn_pool, supplier_id=supplier_id)
+    order_id, batch_id, video_url = await _make_order(
+        cn_pool, supplier_id=supplier_id, test_redis_url=test_redis_url
+    )
     user_id = await _make_customer(cn_pool)
 
     evidence_url = "https://evidence.example/triage.jpg"
@@ -399,9 +406,7 @@ async def test_autonomous_triage_engine_full_chain(cn_pool, tmp_path):
         fraud_probability=0.05,
     )
 
-    engine = build_autonomous_triage_engine(
-        cn_pool, settings=Settings(output_root=tmp_path)
-    )
+    engine = build_autonomous_triage_engine(cn_pool, settings=Settings(output_root=tmp_path))
     dispatch_result = await engine.dispatch(
         "rma.claim_submitted",
         {

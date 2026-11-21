@@ -18,20 +18,17 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..config import Settings
-from ..deps import get_current_user, get_settings
-from .client import ElasticsearchClient
+from ..deps import get_current_user, get_pool, get_settings
 from .models import SearchQueryParams
 from .service import SearchService
 
 # 后台搜索运维 API：重建索引 (sync)、删索引、看内部统计。顾客商城搜索走
 # /store/products，不经此处，故一律要求员工 JWT。
-router = APIRouter(
-    prefix="/search", tags=["search"], dependencies=[Depends(get_current_user)]
-)
+router = APIRouter(prefix="/search", tags=["search"], dependencies=[Depends(get_current_user)])
 logger = logging.getLogger("hemall.search.router")
 
 
-def get_search_service(
+async def get_search_service(
     settings: Settings = Depends(get_settings),
 ) -> SearchService:
     """获取搜索服务实例 (懒初始化)。"""
@@ -39,13 +36,13 @@ def get_search_service(
 
     # 从应用状态获取已初始化的客户端
     app_state = get_app_state()
-    if not hasattr(app_state, "search_client") or app_state.search_client is None:
+    if app_state.search_client is None:
         raise HTTPException(status_code=503, detail="Elasticsearch not initialized")
 
-    if not hasattr(app_state, "search_service") or app_state.search_service is None:
-        app_state.search_service = SearchService.create(
-            app_state.search_client, settings
-        )
+    if app_state.search_service is None:
+        # SearchService.create 是 async classmethod，必须 await；
+        # 原先漏掉 await 会把 coroutine 存进 app_state，导致全部搜索接口 500。
+        app_state.search_service = await SearchService.create(app_state.search_client, settings)
 
     return app_state.search_service
 
@@ -62,9 +59,7 @@ async def search_products(
     price_max: int | None = Query(None, ge=0, description="最高价格 (分)"),
     min_rating: float | None = Query(None, ge=0, le=5, description="最低评分"),
     in_stock_only: bool = Query(False, description="仅显示有货"),
-    sort_by: str = Query(
-        "relevance", pattern="^(relevance|price_newest|sold_desc|rating)$"
-    ),
+    sort_by: str = Query("relevance", pattern="^(relevance|price_newest|sold_desc|rating)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, description="每页条数"),
@@ -116,9 +111,29 @@ async def autocomplete(
 async def sync_product_index(
     product_id: str = Query(..., description="商品 ID"),
     svc: SearchService = Depends(get_search_service),
+    pool: Any = Depends(get_pool),
 ) -> dict[str, Any]:
     """手动触发单个商品同步到 ES。"""
-    success = await svc.sync_product(product_id)
+    # NOTE(真 bug)：原先直接把 product_id(str) 传给 sync_product(ProductDocument)，
+    # index_product 内取 doc.product_id 会 AttributeError（被吞掉后永远返回 failed）。
+    # 此处先从 DB 取商品并组装成 ProductDocument 再同步。
+    from ..queries import get_product
+    from .models import ProductDocument
+
+    product = await get_product(pool, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="product not found")
+    doc = ProductDocument(
+        product_id=str(product["id"]),
+        name=str(product["title"]),
+        description=product.get("description"),
+        category_id=product.get("category_id"),
+        selling_price_cents=product.get("min_price_cents"),
+        total_stock=int(product.get("total_stock") or 0),
+        skus=product.get("variants") or [],
+        is_active=(product.get("status") == "published"),
+    )
+    success = await svc.sync_product(doc)
     return {"status": "synced" if success else "failed", "product_id": product_id}
 
 

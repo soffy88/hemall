@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
-
 from omodul._base import BaseConfig, Trail, build_result, compute_fingerprint
+from pydantic import BaseModel
 
 _DEPOSIT_AMOUNT_CENTS = 1000  # 10 元押金 (SPEC 明确写死的金额)
 
@@ -54,9 +53,7 @@ async def tote_deposit_and_refund(
         标准 omodul 返回 dict；completed 时含 tote_id / action / amount。
     """
     trail = Trail()
-    fp = compute_fingerprint(
-        {"tote_id": input_data.tote_id, "action": input_data.action}
-    )
+    fp = compute_fingerprint({"tote_id": input_data.tote_id, "action": input_data.action})
 
     try:
         if pool is None:
@@ -64,9 +61,7 @@ async def tote_deposit_and_refund(
                 "pool is required — tote_deposit_and_refund always touches persisted stock"
             )
         if input_data.action not in ("charge", "refund"):
-            raise ValueError(
-                f"action must be 'charge' or 'refund', got {input_data.action!r}"
-            )
+            raise ValueError(f"action must be 'charge' or 'refund', got {input_data.action!r}")
 
         from obase.provider_registry import ProviderRegistry
 
@@ -80,9 +75,7 @@ async def tote_deposit_and_refund(
             if tote is None:
                 raise ValueError(f"tote {input_data.tote_id!r} not found")
             if tote["status"] == "with_customer":
-                raise ValueError(
-                    f"tote {input_data.tote_id!r} already has an active deposit"
-                )
+                raise ValueError(f"tote {input_data.tote_id!r} already has an active deposit")
 
             auth_result = await provider.authorize(
                 amount=_DEPOSIT_AMOUNT_CENTS,
@@ -137,6 +130,7 @@ async def tote_deposit_and_refund(
                 event="deposit_refunded",
                 intent_id=deposit["intent_id"],
                 amount=deposit["amount_cents"],
+                provider_status=refund_result.get("status"),
             )
 
             async with pool.acquire() as conn:

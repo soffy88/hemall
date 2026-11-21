@@ -13,14 +13,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api-client';
+import { isAssortmentProduct } from '@/lib/storefront-assortment';
 import { productIcon, productGradient } from '@/lib/product-visual';
+import { productImage } from '@/lib/product-image';
 import { useToast } from '@/components/Toast';
 import type { GroceryCategory, StorefrontProduct } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 // 分类图标映射 (后端只存 name/slug，图标前端映射)
 const CATEGORY_ICONS: Record<string, string> = {
   vegetables: '🥬', fruits: '🍎', 'meat-eggs': '🥩', 'grain-oil': '🌾',
   'dairy-bakery': '🥛', frozen: '🧊', snacks: '🍫', drinks: '🥤', daily: '🧻',
+  seafood: '🦐', electronics: '📱',
 };
 
 export default function ShopPage() {
@@ -29,25 +33,43 @@ export default function ShopPage() {
   const [loading, setLoading] = useState(true);
   const [activeCat, setActiveCat] = useState<string>('all');
   const [search, setSearch] = useState('');
+  // 图片加载失败的 product id — 回落占位图而不是隐藏 (缺图不再留白块)
+  const [brokenImgs, setBrokenImgs] = useState<Set<string>>(new Set());
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await api.storeProducts({ limit: 200 });
-      setProducts(data);
-    } catch (e: any) {
-      showToast(e.message || '加载失败');
-    } finally {
-      setLoading(false);
-    }
+  // 社区小超市模型: 只显示模型内品类的商品, 其余仅前台隐藏 (数据保留)。
+  const visibleProducts = useMemo(
+    () => products.filter(isAssortmentProduct),
+    [products],
+  );
+
+  function load() {
+    api.storeProducts({ limit: 500 })
+      .then((data) => {
+        setProducts(data);
+        // 菜单栏分类下拉带 ?cat= 进来: 非法分类回落全部。
+        const cat = new URLSearchParams(window.location.search).get('cat');
+        if (cat && cat !== 'all' && !data.some((p) => p.category_id === cat && isAssortmentProduct(p))) {
+          setActiveCat('all');
+        }
+      })
+      .catch((e) => {
+        showToast(errMessage(e) || '加载失败');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const cat = new URLSearchParams(window.location.search).get('cat');
+    if (cat) setActiveCat(cat);
+    load();
+  }, []);
 
   // 聚合分类 (按 category_id + 后端返回的分类名/图标映射)
   const categories: GroceryCategory[] = useMemo(() => {
     const map = new Map<string, GroceryCategory>();
-    for (const p of products) {
+    for (const p of visibleProducts) {
       if (!p.category_id) continue;
       if (!map.has(p.category_id)) {
         const slug = p.category_slug ?? p.category_id;
@@ -61,7 +83,7 @@ export default function ShopPage() {
       }
       map.get(p.category_id)!.count++;
     }
-    // 保持 9 大分类的展示顺序
+    // 保持模型内 5 个分类的展示顺序
     const order = Object.keys(CATEGORY_ICONS);
     return Array.from(map.values()).sort((a, b) => {
       const ia = order.indexOf(a.slug);
@@ -71,11 +93,11 @@ export default function ShopPage() {
       if (ib === -1) return -1;
       return ia - ib;
     });
-  }, [products]);
+  }, [visibleProducts]);
 
   const filtered = useMemo(() => {
-    // 整个 shop 就是生鲜日用: 只显示有分类的商品 (数码等无分类不进超市视图)
-    let list = products.filter((p) => p.category_id);
+    // 整个 shop 就是社区小超市模型: 只显示模型内品类 (其余仅前台隐藏)
+    let list = visibleProducts.filter((p) => p.category_id);
     if (activeCat !== 'all') {
       list = list.filter((p) => p.category_id === activeCat);
     }
@@ -84,16 +106,7 @@ export default function ShopPage() {
       list = list.filter((p) => p.title.toLowerCase().includes(q));
     }
     return [...list].sort((a, b) => (a.min_price_cents ?? 0) - (b.min_price_cents ?? 0));
-  }, [products, activeCat, search]);
-
-  // 取商品首图 (batch.shelf_image_url → 第一个 media_assets → 兜底 emoji)
-  function productImage(p: StorefrontProduct): string | null {
-    const v = p.variants?.[0];
-    const b = v?.batches?.[0];
-    if (b?.shelf_image_url) return b.shelf_image_url;
-    if (b?.media_assets?.length) return b.media_assets[0];
-    return null;
-  }
+  }, [visibleProducts, activeCat, search]);
 
   // 取商品划线价 (variant.reference_price_cents 优先)
   function referencePrice(p: StorefrontProduct): number | null {
@@ -111,6 +124,10 @@ export default function ShopPage() {
   }
 
   function addToCart(p: StorefrontProduct) {
+    if ((p.total_stock ?? 0) === 0) {
+      showToast(`可预订（缺货）: ${p.title}，点开详情即可预订`);
+      return;
+    }
     showToast(`已加入购物车: ${p.title}`);
   }
 
@@ -179,7 +196,7 @@ export default function ShopPage() {
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
             {filtered.map((p) => {
-              const img = productImage(p);
+              const img = brokenImgs.has(p.id) ? null : productImage(p);
               const ref = referencePrice(p);
               const retail = p.min_price_cents ?? 0;
               const stock = p.total_stock ?? 0;
@@ -187,20 +204,20 @@ export default function ShopPage() {
               return (
                 <div
                   key={p.id}
-                  className="group overflow-hidden rounded-2xl bg-white shadow-sm transition hover:shadow-md"
+                  className="group overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm transition hover:shadow-md"
                 >
                   {/* 图片区 */}
                   <Link href={`/shop/products/${p.id}`} className="block">
-                    <div className="relative aspect-square w-full overflow-hidden">
+                    <div className="relative aspect-square w-full overflow-hidden bg-white">
                       {img ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={img}
                           alt={p.title}
                           loading="lazy"
-                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
+                          className="h-full w-full object-contain p-2 transition-transform group-hover:scale-105"
+                          onError={() => {
+                            setBrokenImgs((prev) => new Set(prev).add(p.id));
                           }}
                         />
                       ) : (
@@ -214,9 +231,9 @@ export default function ShopPage() {
                         </span>
                       )}
                       {stock === 0 && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-sm font-black text-white">
-                          售罄
-                        </div>
+                        <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-black text-white">
+                          缺货可预订
+                        </span>
                       )}
                     </div>
                   </Link>
@@ -244,10 +261,11 @@ export default function ShopPage() {
                     <button
                       type="button"
                       onClick={() => addToCart(p)}
-                      disabled={stock === 0}
-                      className="mt-1.5 w-full rounded-lg bg-emerald-600 py-1.5 text-[13px] font-bold text-white transition active:scale-95 disabled:bg-gray-200 disabled:text-gray-400"
+                      className={`mt-1.5 w-full rounded-lg py-1.5 text-[13px] font-bold text-white transition active:scale-95 ${
+                        stock === 0 ? 'bg-amber-500' : 'bg-emerald-600'
+                      }`}
                     >
-                      {stock === 0 ? '已售罄' : '+ 加购'}
+                      {stock === 0 ? '预订' : '+ 加购'}
                     </button>
                   </div>
                 </div>

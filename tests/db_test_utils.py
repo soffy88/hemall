@@ -76,9 +76,7 @@ async def cleanup_db_test_rows(pool: Any) -> None:
             "hardware_shelf",
             f"WHERE batch_id IN ({batches}) OR node_id LIKE 'n-iot-%'",
         )
-        await _delete(
-            conn, "hardware_gate", "WHERE node_id LIKE 'n-iot-%' OR gate_id LIKE 'g-%'"
-        )
+        await _delete(conn, "hardware_gate", "WHERE node_id LIKE 'n-iot-%' OR gate_id LIKE 'g-%'")
 
         # 1. 批次/订单/顾客/变体/商品的直接子表 (先子后父)
         await _delete(
@@ -131,16 +129,10 @@ async def cleanup_db_test_rows(pool: Any) -> None:
             f"WHERE tote_id IN (SELECT id FROM tote WHERE current_location_id IN ({locations}))",
         )
         await _delete(conn, "tote", f"WHERE current_location_id IN ({locations})")
-        await _delete(
-            conn, "host_dividend_ledger", f"WHERE location_id IN ({locations})"
-        )
+        await _delete(conn, "host_dividend_ledger", f"WHERE location_id IN ({locations})")
         await _delete(conn, "bounty_post", f"WHERE target_location_id IN ({locations})")
-        await _delete(
-            conn, "digital_lord_contract", f"WHERE location_id IN ({locations})"
-        )
-        await _delete(
-            conn, "product_safety_stock", f"WHERE location_id IN ({locations})"
-        )
+        await _delete(conn, "digital_lord_contract", f"WHERE location_id IN ({locations})")
+        await _delete(conn, "product_safety_stock", f"WHERE location_id IN ({locations})")
 
         # 3. 变体/商品/顾客子表
         await _delete(conn, "price_list_item", f"WHERE variant_id IN ({variants})")
@@ -164,12 +156,8 @@ async def cleanup_db_test_rows(pool: Any) -> None:
         await _delete(conn, "membership", f"WHERE customer_id IN ({customers})")
         await _delete(conn, "customer_address", f"WHERE customer_id IN ({customers})")
         await _delete(conn, "product_option", f"WHERE product_id IN ({products})")
-        await _delete(
-            conn, "product_collection_item", f"WHERE product_id IN ({products})"
-        )
-        await _delete(
-            conn, "sales_channel_product", f"WHERE product_id IN ({products})"
-        )
+        await _delete(conn, "product_collection_item", f"WHERE product_id IN ({products})")
+        await _delete(conn, "sales_channel_product", f"WHERE product_id IN ({products})")
 
         # 4. 主表
         await _delete(

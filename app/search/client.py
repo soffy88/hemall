@@ -9,12 +9,12 @@ Phase 2: 为 hemall 提供高性能商品全文检索能力。
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import Any
 
-from elasticsearch import AsyncElasticsearch, exceptions as es_exceptions
+from elasticsearch import AsyncElasticsearch
+from elasticsearch import exceptions as es_exceptions
 
 from ..config import Settings
 from .models import ProductDocument
@@ -65,12 +65,22 @@ class ElasticsearchClient:
         """建立 ES 连接并确保索引存在。"""
         try:
             url = self._load_es_url_from_settings()
-            self._es = AsyncElasticsearch(
-                [url],
-                maxsize=self._settings.es_max_connections or 10,
-                request_timeout=self._settings.es_request_timeout or 30,
-                retry_on_timeout=True,
-            )
+            client_options: dict[str, Any] = {
+                # connections_per_node: elasticsearch-py 8.x 参数（旧名 maxsize
+                # 已弃用；9.x 两个都移除，依赖已在 pyproject 钉 <9.0——锁曾漂到
+                # 9.5.1 导致构造 TypeError、搜索整体降级，2026-10-21 线上实测）
+                "connections_per_node": self._settings.es_max_connections or 10,
+                "request_timeout": self._settings.es_request_timeout or 30,
+                "retry_on_timeout": True,
+            }
+            if self._settings.elasticsearch_username and self._settings.elasticsearch_password:
+                client_options["basic_auth"] = (
+                    self._settings.elasticsearch_username,
+                    self._settings.elasticsearch_password,
+                )
+            if self._settings.elasticsearch_ca_cert:
+                client_options["ca_certs"] = self._settings.elasticsearch_ca_cert
+            self._es = AsyncElasticsearch([url], **client_options)
             # 健康检查
             if await self._es.ping():
                 logger.info("Elasticsearch connected: %s", url)
@@ -298,7 +308,9 @@ class ElasticsearchClient:
             return {
                 "hits": response["hits"]["hits"],
                 "total": response["hits"]["total"]["value"],
-                "max_score": response["hits"]["hits"][0]["_score"] if response["hits"]["hits"] else 0,
+                "max_score": (
+                    response["hits"]["hits"][0]["_score"] if response["hits"]["hits"] else 0
+                ),
                 "aggregations": response.get("aggregations", {}),
                 "took": took_ms,
             }
@@ -314,7 +326,7 @@ class ElasticsearchClient:
             return []
 
         try:
-            suggestion_body = {
+            suggestion_body: dict[str, Any] = {
                 "prefix": prefix,
                 "size": size,
                 "completion": {
@@ -336,11 +348,13 @@ class ElasticsearchClient:
             suggestions = response.get("suggest", {}).get("text_suggestions", [])
             results = []
             for option in suggestions[0].get("options", []):
-                results.append({
-                    "text": option.get("_source", {}).get("text", ""),
-                    "product_count": option.get("_source", {}).get("product_count"),
-                    "type": option.get("_source", {}).get("type", "keyword"),
-                })
+                results.append(
+                    {
+                        "text": option.get("_source", {}).get("text", ""),
+                        "product_count": option.get("_source", {}).get("product_count"),
+                        "type": option.get("_source", {}).get("type", "keyword"),
+                    }
+                )
             return results
         except Exception as exc:
             logger.warning("Autocomplete failed: %s", exc)

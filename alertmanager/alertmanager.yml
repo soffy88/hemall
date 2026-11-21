@@ -1,0 +1,58 @@
+# Alertmanager 路由配置 (audit P1-6)
+#
+# prometheus.rules.yml 里 5 条"生死告警"(5xx 率、验签拒绝、引擎 tick 停滞、
+# DB 死锁…) 在 Prometheus 内评估，但此前全仓库没有 Alertmanager 收件人 ——
+# 告警只停在 Prometheus UI 的 /alert 页，等于没有告警。
+#
+# 收件地址用环境变量占位（见下），由 alertmanager/entrypoint.sh 在容器启动时渲染成
+# /etc/alertmanager/rendered.yml。**任何占位符缺失或为空，入口脚本直接非零退出**，
+# 不会启动 Alertmanager —— 宁可起不来，也不要"启动了但没人收告警"的静默失联。
+#
+# 接收方示例 (任选其一填 HEMALL_ALERT_WEBHOOK_URL):
+#   企业微信机器人 : https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+#   钉钉机器人     : https://oapi.dingtalk.com/robot/send?access_token=...
+#   Slack Incoming : https://hooks.slack.com/services/...
+#   飞书机器人     : https://open.feishu.cn/open-apis/bot/v2/hook/...
+#
+# 需要多路/静默/分组时在 receivers 下追加；route 树可按 severity 分流。
+
+route:
+  receiver: webhook
+  # 生死告警先聚合，避免同一次故障刷屏几十条
+  group_by: [alertname, job]
+  group_wait: 30s
+  group_interval: 5m
+  # 重复告警的重发间隔
+  repeat_interval: 4h
+  routes:
+    # critical 不做抑制：5xx 飙升必须立刻知道
+    - matchers:
+        - severity="critical"
+      receiver: webhook
+      group_wait: 10s
+      repeat_interval: 1h
+    # warning 允许被 critical 压住
+    - matchers:
+        - severity="warning"
+      receiver: webhook
+      group_wait: 2m
+      repeat_interval: 12h
+
+# 一条业务告警静默 1h（例如支付网关维护窗口），避免噪音
+inhibit_rules:
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal: [job]
+
+receivers:
+  - name: webhook
+    webhook_configs:
+      - url: ${HEMALL_ALERT_WEBHOOK_URL}
+        # 告警恢复时也通知一次，避免故障已恢复而无人知晓
+        send_resolved: true
+        max_alerts: 0
+        # 单条告警最多重试 3 次、每次 30s
+        http_config:
+          follow_redirects: true

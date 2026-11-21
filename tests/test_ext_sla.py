@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 from app.ext.oskill import (
     SLA_COMPENSATION_CENTS,
-    WAVE_SHIPPING_PRICE_CENTS,
     WAVE_SCHEDULE_HOURS,
+    WAVE_SHIPPING_PRICE_CENTS,
     _next_wave_at,
     compute_delivery_sla,
 )

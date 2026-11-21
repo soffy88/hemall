@@ -68,9 +68,8 @@ def test_update_cart_input_is_strict():
     掩盖 422; 模型层断言才是该约束的精确验证。
     """
     import pytest
-    from pydantic import ValidationError
-
     from omodul.update_cart import UpdateCartInput
+    from pydantic import ValidationError
 
     ok = UpdateCartInput(cart_id="c1", status="abandoned")
     assert ok.cart_id == "c1"

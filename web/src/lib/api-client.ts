@@ -2,7 +2,13 @@
 
 import type {
   Address,
+  AdminPreorder,
+  InventoryBatch,
+  InviteGiftStatus,
   AdminRegion,
+  AgentCommandResult,
+  AgentIngestResult,
+  AgentTool,
   AppUser,
   BatchJob,
   Cart,
@@ -12,21 +18,38 @@ import type {
   Customer,
   CustomerAddress,
   CustomerGroup,
+  CustomerPreorder,
   CustomerTokenResponse,
   DashboardKPIs,
   Discount,
   Fulfillment,
   GiftCard,
   Health,
+  IngestResult,
+  CounterProduct,
+  CounterTicket,
+  CounterWeighLine,
+  CounterSettlement,
+  CounterShift,
+  CounterDailyReport,
+  MerchantReserveItem,
+  MerchantReserveOrderResult,
+  MyReferral,
   NearbyFeedResponse,
   Order,
   OmodulResult,
   PickupTicket,
+  PaymentIntentResponse,
+  PaymentStatusResponse,
   PriceList,
   Product,
   ProductCategory,
   ProductCollection,
+  PurchaseRequest,
   RecommendationResult,
+  RefundAuditEntry,
+  RefundCreateBody,
+  RefundRequest,
   Region,
   ReturnRequest,
   RmaClaim,
@@ -38,49 +61,122 @@ import type {
   Swap,
   TaxRate,
   TokenResponse,
+  VoucherList,
 } from '@/types/api';
 
+import { errMessage } from '@/lib/errors';
+
 /**
- * 后端地址解析：NEXT_PUBLIC_API_URL 有值就用它（生产/固定域名场景）；否则在浏览器里
- * 用"当前访问前端用的 host + 8030 端口"推导——同一台机器可能同时挂在局域网 IP 和
- * Tailscale IP 下，写死单个 IP 只对那一种访问路径有效，动态推导才能两边都通。
+ * 同源 BFF 反代前缀（F-01/F-03/F-05）：浏览器只调 /api/* 同源路径，由 Next 路由
+ * 处理器透明转发到后端（cookie 自动附带、CSRF 头透传）。不再使用
+ * NEXT_PUBLIC_API_URL / window.location 推导直连地址——生产构建缺
+ * NEXT_PUBLIC_API_URL 时 next.config.ts 直接构建失败，杜绝"静默指向错误后端"。
+ *
+ * 会话令牌只存 HttpOnly cookie，客户端 JS 不可读；这里也不接触任何 token。
  */
-function resolveApiBase(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== 'undefined') {
-    return `${window.location.protocol}//${window.location.hostname}:8030`;
-  }
-  return 'http://localhost:8030';
+const BASE = '/api';
+
+/** CSRF 双重提交 token 的 cookie 名（后端 /auth/login、/auth/refresh 签发，非 HttpOnly）。 */
+const CSRF_COOKIE_NAME = 'hemall_csrf_token';
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
+
+function csrfTokenFromCookie(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${CSRF_COOKIE_NAME}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
-const BASE = resolveApiBase();
-
-function token(): string | null {
-  if (typeof window === 'undefined') return null;
+/** 状态改变请求前确保拿到 CSRF token（缺失时先取 /api/auth/csrf-token）。 */
+async function ensureCsrfToken(): Promise<string | null> {
+  const existing = csrfTokenFromCookie();
+  if (existing) return existing;
   try {
-    return JSON.parse(localStorage.getItem('hemall_auth') || 'null')?.token;
-  } catch {
-    return null;
-  }
-}
-
-function customerToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return JSON.parse(localStorage.getItem('hemall_customer_auth') || 'null')?.token;
+    const res = await fetch(`${BASE}/auth/csrf-token`, { credentials: 'include' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.csrf_token ?? null;
   } catch {
     return null;
   }
 }
 
 /** FastAPI 422 校验错误的 detail 是对象数组（非字符串），需拍平成可读文本。 */
-function errorMessage(body: any, status: number): string {
-  if (typeof body?.detail === 'string') return body.detail;
-  if (Array.isArray(body?.detail)) {
-    return body.detail.map((d: any) => d?.msg || JSON.stringify(d)).join('; ');
+function errorMessage(body: unknown, status: number): string {
+  const b = (body && typeof body === 'object' ? body : {}) as {
+    detail?: unknown;
+    error?: { message?: unknown } | null;
+  };
+  if (typeof b.detail === 'string') return b.detail;
+  if (Array.isArray(b.detail)) {
+    return b.detail
+      .map((d: unknown) => {
+        const msg = (d as { msg?: unknown } | null)?.msg;
+        return typeof msg === 'string' && msg ? msg : JSON.stringify(d);
+      })
+      .join('; ');
   }
-  if (body?.error?.message) return body.error.message;
+  const msg = errMessage(b.error, '');
+  if (msg) return msg;
   return `HTTP ${status}`;
+}
+
+/** 业务失败识别（F-04）：HTTP 200 但响应体是 OmodulResult 失败态时必须抛错。 */
+function assertNotBusinessFailure(data: unknown): void {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+  const r = data as {
+    ok?: unknown;
+    status?: unknown;
+    error?: { message?: unknown; type?: unknown } | null;
+  };
+  const message = r.error && typeof r.error === 'object' ? errMessage(r.error, '') : '';
+  const fallback = r.error && typeof r.error === 'object' && typeof r.error.type === 'string' ? r.error.type : '';
+  if (r.ok === false) {
+    throw new Error(message || fallback || '业务处理失败');
+  }
+  if (r.status === 'failed' || r.status === 'cancelled') {
+    throw new Error(
+      message || fallback || `业务处理${r.status === 'failed' ? '失败' : '已取消'}（${r.status}）`,
+    );
+  }
+  if (message) {
+    throw new Error(message);
+  }
+}
+
+/** 401 自动刷新一次；刷新失败/再 401 → 抛错并广播未登录事件（store 层跳登录页）。 */
+async function fetchWithSession(
+  path: string,
+  opts: RequestInit,
+  auth: boolean | 'customer',
+): Promise<Response> {
+  const res = await fetch(`${BASE}${path}`, opts);
+  if (res.status !== 401 || auth === false) return res;
+
+  let refreshed = false;
+  try {
+    const refreshRes = await fetch(`${BASE}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    refreshed = refreshRes.ok;
+  } catch {
+    refreshed = false;
+  }
+
+  if (!refreshed) {
+    window.dispatchEvent(
+      new CustomEvent('hemall:unauthorized', { detail: { kind: auth === 'customer' ? 'customer' : 'staff' } }),
+    );
+    throw new Error('登录已过期，请重新登录');
+  }
+
+  const retry = await fetch(`${BASE}${path}`, opts);
+  if (retry.status === 401) {
+    window.dispatchEvent(
+      new CustomEvent('hemall:unauthorized', { detail: { kind: auth === 'customer' ? 'customer' : 'staff' } }),
+    );
+  }
+  return retry;
 }
 
 async function request<T>(
@@ -92,19 +188,23 @@ async function request<T>(
     'Content-Type': 'application/json',
     ...(opts.headers as Record<string, string> || {}),
   };
-  if (auth === 'customer') {
-    const t = customerToken();
-    if (t) headers['Authorization'] = `Bearer ${t}`;
-  } else if (auth) {
-    const t = token();
-    if (t) headers['Authorization'] = `Bearer ${t}`;
+  // F-03: 状态改变请求带双重提交 CSRF 头（同源 cookie 自动附带）
+  if (opts.method && !['GET', 'HEAD', 'OPTIONS'].includes(opts.method.toUpperCase())) {
+    const csrf = await ensureCsrfToken();
+    if (csrf) headers[CSRF_HEADER_NAME] = csrf;
   }
-  const res = await fetch(`${BASE}${path}`, { ...opts, headers });
+  const res = await fetchWithSession(
+    path,
+    { ...opts, headers, credentials: 'include' },
+    auth,
+  );
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(errorMessage(body, res.status));
   }
-  return res.json();
+  const data = await res.json();
+  assertNotBusinessFailure(data);
+  return data;
 }
 
 // ── Phase 7 Task 3: 设备指纹 (空间-行为矩阵的数据源标识) ──────────────
@@ -276,6 +376,9 @@ export const api = {
   storeProduct: (id: string) =>
     request<StorefrontProduct>(`/store/products/${id}`),
 
+  storeCategories: () =>
+    request<Array<{ id: string; name: string; slug: string; count: number }>>('/store/categories'),
+
   storeRegions: () =>
     request<Region[]>('/store/regions'),
 
@@ -302,6 +405,13 @@ export const api = {
     request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
       method: 'POST',
       body: JSON.stringify({ cart_id: cartId, batch_id: batchId, quantity }),
+    }),
+
+  /** 无批次商品按变体加购（缺货预订）：后端按 variant 建行，下单时拆预订量。 */
+  addVariantLineItem: (cartId: string, variantId: string, quantity: number = 1) =>
+    request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
+      method: 'POST',
+      body: JSON.stringify({ cart_id: cartId, variant_id: variantId, quantity }),
     }),
 
   updateLineItem: (cartId: string, lineItemId: string, quantity: number) =>
@@ -374,11 +484,26 @@ export const api = {
 
   // ── Storefront: Checkout ────────────────────────────────────
 
-  checkout: (data: { cart_id: string; billing_address?: Address; shipping_address?: Address; customer_id?: string }) =>
+  checkout: (data: { cart_id: string; billing_address?: Address; shipping_address?: Address; customer_id?: string; provider?: string }) =>
     request<CheckoutResult>('/store/checkout', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  createStoreDraftOrder: (data: { region_code?: string; currency?: string; line_items: { batch_id: string; quantity: number }[]; billing_address?: Record<string, unknown>; shipping_address?: Record<string, unknown> }) =>
+    request<{ order_id: string; grand_total_cents: number; currency: string }>('/store/draft-orders', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  createStorePayment: (data: { order_id: string; provider?: string }) =>
+    request<PaymentIntentResponse>('/store/payments/create', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  queryStorePayment: (paymentId: string) =>
+    request<PaymentStatusResponse>(`/store/payments/${encodeURIComponent(paymentId)}`, {}, 'customer'),
 
   lookupOrder: (token: string) =>
     request<Order>(`/store/orders/lookup?token=${encodeURIComponent(token)}`),
@@ -409,6 +534,9 @@ export const api = {
   customerMyOrders: () =>
     request<Order[]>('/store/customers/me/orders', {}, 'customer'),
 
+  customerMyPreorders: () =>
+    request<CustomerPreorder[]>('/store/customers/me/preorders', {}, 'customer'),
+
   customerMyAddresses: () =>
     request<CustomerAddress[]>('/store/customers/me/addresses', {}, 'customer'),
 
@@ -428,6 +556,204 @@ export const api = {
     request<{ ok: boolean }>(`/store/customers/me/addresses/${addressId}`, {
       method: 'DELETE',
     }, 'customer'),
+
+  // ── 仓主试点：推荐 / 券 / 点货 / 邀请礼 / 传货 ──
+
+  getMyReferral: () =>
+    request<MyReferral>('/store/customers/me/referral', {}, 'customer'),
+
+  listMyVouchers: () =>
+    request<VoucherList>('/store/vouchers', {}, 'customer'),
+
+  createPurchaseRequest: (data: {
+    product_name: string;
+    brand?: string;
+    spec_packaging?: string;
+    price_min_cents?: number;
+    price_max_cents?: number;
+    expected_qty?: number;
+    willing_preorder?: boolean;
+  }) =>
+    request<{ request_id: string; status: string }>('/store/purchase-requests', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  listMyPurchaseRequests: () =>
+    request<PurchaseRequest[]>('/store/purchase-requests/mine', {}, 'customer'),
+
+  getInviteGiftStatus: () =>
+    request<InviteGiftStatus>('/store/invite-gift/status', {}, 'customer'),
+
+  claimInviteGift: (giftKind: string) =>
+    request<{ claim_id: string; gift_kind: string; status: string }>('/store/invite-gift/claim', {
+      method: 'POST',
+      body: JSON.stringify({ gift_kind: giftKind }),
+    }, 'customer'),
+
+  uploadMyProduct: async (form: FormData): Promise<IngestResult> => {
+    const headers: Record<string, string> = {};
+    const csrf = await ensureCsrfToken();
+    if (csrf) headers[CSRF_HEADER_NAME] = csrf;
+    const res = await fetchWithSession(
+      '/store/ingest',
+      { method: 'POST', body: form, headers, credentials: 'include' },
+      'customer',
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(errorMessage(body, res.status));
+    }
+    const data = await res.json();
+    assertNotBusinessFailure(data);
+    return data as IngestResult;
+  },
+
+  // ── 商家预订：常购清单 + 整单预订（仅商家账号，非商家后端 403） ──
+
+  merchantReserveList: () =>
+    request<{ items: MerchantReserveItem[] }>('/store/merchant/reserve-list', {}, 'customer'),
+
+  merchantReserveUpsert: (data: { variant_id: string; default_qty: number }) =>
+    request<MerchantReserveItem>('/store/merchant/reserve-list', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  merchantReserveDelete: (itemId: string) =>
+    request<{ ok: boolean }>(`/store/merchant/reserve-list/${itemId}`, {
+      method: 'DELETE',
+    }, 'customer'),
+
+  merchantReserveOrder: (items: { variant_id: string; quantity: number }[]) =>
+    request<MerchantReserveOrderResult>('/store/merchant/reserve-order', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }, 'customer'),
+
+  // ── 柜台称重试点：照片格 + 单据 + 模拟器（仅商家账号） ─────────────
+
+  counterProducts: () =>
+    request<{ products: CounterProduct[] }>('/store/counter/products', {}, 'customer'),
+
+  counterCreateTicket: (data: { tote_id?: string; note?: string }) =>
+    request<CounterTicket>('/store/counter/tickets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterListTickets: () =>
+    request<{ tickets: CounterTicket[] }>('/store/counter/tickets', {}, 'customer'),
+
+  counterGetTicket: (ticketId: string) =>
+    request<{ ticket: CounterTicket; lines: CounterWeighLine[] }>(
+      `/store/counter/tickets/${ticketId}`, {}, 'customer',
+    ),
+
+  counterAddLine: (ticketId: string, data: {
+    batch_id?: string; variant_id?: string; weight_grams?: number;
+    source?: string; weigh_message_id?: string;
+  }) =>
+    request<{ line: CounterWeighLine; ticket_id: string; total_cents: number }>(
+      `/store/counter/tickets/${ticketId}/lines`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }, 'customer',
+    ),
+
+  counterLatestWeight: (params: { ticket_id?: string; tote_id?: string }) =>
+    request<CounterWeighLine | { weight_grams: null }>(
+      `/store/counter/latest-weight?${new URLSearchParams(
+        Object.fromEntries(Object.entries(params).filter(([, v]) => v != null)),
+      ).toString()}`, {}, 'customer',
+    ),
+
+  counterSimulateWeigh: (data: {
+    weight_grams: number; ticket_id?: string; tote_id?: string;
+    batch_id?: string; variant_id?: string;
+  }) =>
+    request<CounterWeighLine & { simulator: boolean }>('/store/counter/simulate-weigh', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterMarkPendingSettlement: (ticketId: string) =>
+    request<CounterTicket & { payment: null; note: string }>(
+      `/store/counter/tickets/${ticketId}/pending-settlement`, {
+        method: 'POST',
+      }, 'customer',
+    ),
+
+  counterVoidTicket: (ticketId: string) =>
+    request<CounterTicket>(`/store/counter/tickets/${ticketId}/void`, {
+      method: 'POST',
+    }, 'customer'),
+
+  counterSettleTicket: (ticketId: string, data: {
+    method: string;
+    amount_received_cents: number;
+  }) =>
+    request<CounterTicket & { settlement: CounterSettlement }>(
+      `/store/counter/tickets/${ticketId}/settle`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      },
+      'customer',
+    ),
+
+  counterOpenShift: (data: { opening_float_cents: number; note?: string }) =>
+    request<{ shift: CounterShift }>('/store/counter/shifts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterListShifts: () =>
+    request<{ shifts: CounterShift[] }>('/store/counter/shifts', {}, 'customer'),
+
+  counterCloseShift: (shiftId: string, data: {
+    counted_cash_cents: number;
+    handover_to?: string;
+    note?: string;
+  }) =>
+    request<{ shift: CounterShift }>(`/store/counter/shifts/${shiftId}/close`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  counterDailyReport: (date: string) =>
+    request<CounterDailyReport>(`/store/counter/daily-report?date=${date}`, {}, 'customer'),
+
+  // ── 后台：商家标记 + 预订配货 ─────────────────────────────────
+
+  adminSetCustomerMerchant: (customerId: string, isMerchant: boolean) =>
+    request<Customer>(`/admin/customers/${customerId}/merchant`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_merchant: isMerchant }),
+    }, true),
+
+  adminListPreorders: () =>
+    request<AdminPreorder[]>('/admin/preorders', {}, true),
+
+  adminAllocatePreorder: (lineId: string) =>
+    request<{ allocated: number; preorder_qty_left: number }>(`/admin/preorders/${lineId}/allocate`, {
+      method: 'POST',
+    }, true),
+
+  // ── 后台：批次质检 ─────────────────────────────────────────
+
+  adminListBatches: (inspectionStatus?: string) =>
+    request<InventoryBatch[]>(
+      `/inventory/batches${inspectionStatus ? `?inspection_status=${encodeURIComponent(inspectionStatus)}` : ''}`,
+      {},
+      true,
+    ),
+
+  updateBatchInspection: (batchId: string, inspectionStatus: 'passed' | 'failed' | 'pending') =>
+    request<{ id: string; inspection_status: string }>(`/inventory/batches/${batchId}/inspection`, {
+      method: 'PATCH',
+      body: JSON.stringify({ inspection_status: inspectionStatus }),
+    }, true),
 
   // ── 售后：RMA 客诉自助报案 ──────────────────────────────────
 
@@ -724,6 +1050,65 @@ export const api = {
   fulfillClaim: (data: { claim_id: string }) =>
     omodul('aftersales', 'fulfill_claim', data),
 
+  // ── Aftersales: 退款状态机 (POST /aftersales/refunds*) ───────
+
+  /** 顾客发起售后申请（金额不超过可退额度，超了后端 400）。 */
+  createRefund: (data: RefundCreateBody) =>
+    request<RefundRequest>('/aftersales/refunds', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, 'customer'),
+
+  /** 顾客查看自己的售后申请。 */
+  customerMyRefunds: (params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    return request<RefundRequest[]>(`/aftersales/refunds/my?${qs}`, {}, 'customer');
+  },
+
+  /** 后台列出售后（status/order_id 过滤）。 */
+  adminListRefunds: (params?: { status?: string; order_id?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.order_id) qs.set('order_id', params.order_id);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    return request<RefundRequest[]>(`/aftersales/refunds?${qs}`, {}, true);
+  },
+
+  /** 后台审核通过 → 自动触发网关退款（approved_amount 缺省=申请金额）。 */
+  adminApproveRefund: (refundId: string, data?: { approved_amount?: number }) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(data ?? {}),
+    }, true),
+
+  /** 后台驳回售后申请（必须给驳回理由）。 */
+  adminRejectRefund: (refundId: string, reject_reason: string) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reject_reason }),
+    }, true),
+
+  /** 后台重试 failed 状态的网关退款。 */
+  adminRetryRefund: (refundId: string) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }, true),
+
+  /** 后台确认收到退货 → 回补库存（幂等）。 */
+  adminReturnReceivedRefund: (refundId: string, data: { tracking_no: string; batch_id: string }) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/return-received`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 后台查看售后审计日志（状态流转轨迹）。 */
+  adminRefundAudit: (refundId: string) =>
+    request<RefundAuditEntry[]>(`/aftersales/refunds/${encodeURIComponent(refundId)}/audit`, {}, true),
+
   // ── Batch jobs ───────────────────────────────────────────────
 
   createBatchJob: (data: { job_type: string; payload?: Record<string, unknown> }) =>
@@ -917,7 +1302,7 @@ export const api = {
     request<PickupTicket>('/store/pickup-ticket', {
       method: 'POST',
       body: JSON.stringify({ order_id: orderId }),
-    }, false),
+    }, 'customer'),
 
   // 零号探针触发器 (Admin Ops)：运营在批次上架时手动激活试探单做市。
   triggerInitialProbe: (data: { batch_id: string; initial_price: number }) =>
@@ -927,13 +1312,13 @@ export const api = {
   // 手机指挥台 / Hermes/Cindy 等智能体接管系统的标准协议。
 
   agentListTools: () =>
-    request<{ count: number; tools: Array<{ tool: string; domain: string; name: string; path: string; require_auth: boolean; parameters: Record<string, any> }> }>('/agent/tools', {}, true),
+    request<{ count: number; tools: AgentTool[] }>('/agent/tools', {}, true),
 
   agentCommand: (text: string) =>
-    request<any>('/agent/command', { method: 'POST', body: JSON.stringify({ text }) }, true),
+    request<AgentCommandResult>('/agent/command', { method: 'POST', body: JSON.stringify({ text }) }, true),
 
-  agentExecute: (tool: string, args: Record<string, any>) =>
-    request<any>('/agent/execute', { method: 'POST', body: JSON.stringify({ tool, args }) }, true),
+  agentExecute: (tool: string, args: Record<string, unknown>) =>
+    request<AgentCommandResult>('/agent/execute', { method: 'POST', body: JSON.stringify({ tool, args }) }, true),
 
   // 视频/图片传货: multipart 上传, 自动上架
   agentIngest: async (file: File, opts?: { retailPriceCents?: number; stockQty?: number; categorySlug?: string }) => {
@@ -942,16 +1327,18 @@ export const api = {
     if (opts?.retailPriceCents) form.append('retail_price_cents', String(opts.retailPriceCents));
     if (opts?.stockQty) form.append('stock_qty', String(opts.stockQty));
     if (opts?.categorySlug) form.append('category_slug', opts.categorySlug);
-    const t = token();
-    const res = await fetch(`${BASE}/agent/ingest`, {
+    // 走 BFF 反代：cookie 自动附带，不能设 Content-Type（boundary 由浏览器生成）。
+    const res = await fetchWithSession('/agent/ingest', {
       method: 'POST',
       body: form,
-      headers: t ? { Authorization: `Bearer ${t}` } : {},
-    });
+      credentials: 'include',
+    }, true);
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(errorMessage(body, res.status));
     }
-    return res.json();
+    const data: AgentIngestResult = await res.json();
+    assertNotBusinessFailure(data);
+    return data;
   },
 };

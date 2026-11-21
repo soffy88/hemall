@@ -4,27 +4,25 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
-import type { Order, ReturnRequest, Swap, Claim } from '@/types/api';
+import type { Order, ReturnRequest, Swap, Claim, RefundRequest, RefundStatus, RefundAuditEntry } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 /** 客诉仲裁记录 —— VLM 判损 + 裁决结果，运营核查用，带手动刷新。 */
 function RmaClaimsTable({ refreshKey }: { refreshKey: number }) {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof api.adminListHemallRmaClaims>>>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setRows(await api.adminListHemallRmaClaims());
-    } catch {
-      // 列表加载失败不阻断整个页面，留空表即可
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    api.adminListHemallRmaClaims()
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败不阻断整个页面，留空表即可
+      })
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   return (
@@ -72,8 +70,203 @@ function RmaClaimsTable({ refreshKey }: { refreshKey: number }) {
   );
 }
 
-function parseNewItems(text: string): { batch_id: string; quantity: number }[] {
-  return text
+const REFUND_STATUSES: RefundStatus[] = ['submitted', 'approved', 'refunding', 'succeeded', 'failed', 'rejected'];
+
+const REFUND_STATUS_STYLE: Record<RefundStatus, string> = {
+  submitted: 'bg-amber-100 text-amber-700',
+  approved: 'bg-blue-100 text-blue-700',
+  refunding: 'bg-blue-100 text-blue-700',
+  succeeded: 'bg-emerald-100 text-emerald-700',
+  failed: 'bg-red-100 text-red-700',
+  rejected: 'bg-red-100 text-red-700',
+};
+
+/** 退款状态机运营面板：审核/驳回/重试/确认收货/审计轨迹，带状态筛选与手动刷新。 */
+function RefundsSection() {
+  const [rows, setRows] = useState<RefundRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+
+  const load = () =>
+    api
+      .adminListRefunds({ status: statusFilter || undefined, limit: 100 })
+      .then(setRows)
+      .catch(() => {
+        // 列表加载失败留空表，不阻断页面
+      })
+      .finally(() => setLoading(false));
+
+  const reload = () => {
+    setLoading(true);
+    load();
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
+
+  return (
+    <div>
+      <div className="mb-3 flex items-end gap-2">
+        <div>
+          <label className="text-xs text-gray-500">状态筛选</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-3 py-2 border rounded-lg text-sm"
+          >
+            <option value="">全部</option>
+            {REFUND_STATUSES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+        <button onClick={reload} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+          {loading ? '加载中...' : '刷新'}
+        </button>
+      </div>
+
+      <div className="overflow-x-auto mb-6">
+        <table className="w-full text-xs bg-white rounded-xl overflow-hidden border border-gray-200">
+          <thead className="bg-gray-50 text-left">
+            <tr>
+              <th className="px-3 py-2 font-medium text-gray-600">refund_id</th>
+              <th className="px-3 py-2 font-medium text-gray-600">order_id</th>
+              <th className="px-3 py-2 font-medium text-gray-600">type</th>
+              <th className="px-3 py-2 font-medium text-gray-600">reason</th>
+              <th className="px-3 py-2 font-medium text-gray-600">申请金额</th>
+              <th className="px-3 py-2 font-medium text-gray-600">批准金额</th>
+              <th className="px-3 py-2 font-medium text-gray-600">status</th>
+              <th className="px-3 py-2 font-medium text-gray-600">created_at</th>
+              <th className="px-3 py-2 font-medium text-gray-600">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {rows.map((r) => (
+              <RefundRow key={r.id} refund={r} onChanged={reload} />
+            ))}
+            {!loading && rows.length === 0 && (
+              <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">暂无售后申请</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RefundRow({ refund, onChanged }: { refund: RefundRequest; onChanged: () => void }) {
+  const [audit, setAudit] = useState<RefundAuditEntry[] | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  async function act(fn: () => Promise<unknown>) {
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
+  function handleApprove() {
+    if (!confirm('审核通过？将立即触发网关退款。')) return;
+    act(() => api.adminApproveRefund(refund.id));
+  }
+
+  function handleReject() {
+    const reason = prompt('驳回理由（必填）');
+    if (!reason || !reason.trim()) return;
+    act(() => api.adminRejectRefund(refund.id, reason.trim()));
+  }
+
+  function handleRetry() {
+    if (!confirm('重试这笔失败的网关退款？')) return;
+    act(() => api.adminRetryRefund(refund.id));
+  }
+
+  function handleReturnReceived() {
+    const tracking_no = prompt('退货物流单号');
+    if (!tracking_no || !tracking_no.trim()) return;
+    const batch_id = prompt('回补库存的 batch_id');
+    if (!batch_id || !batch_id.trim()) return;
+    act(() => api.adminReturnReceivedRefund(refund.id, { tracking_no: tracking_no.trim(), batch_id: batch_id.trim() }));
+  }
+
+  function toggleAudit() {
+    if (audit) {
+      setAudit(null);
+      return;
+    }
+    setAuditLoading(true);
+    api
+      .adminRefundAudit(refund.id)
+      .then(setAudit)
+      .catch((e) => {
+        alert(errMessage(e));
+        setAudit([]);
+      })
+      .finally(() => setAuditLoading(false));
+  }
+
+  const canReceiveReturn =
+    refund.type === 'return_refund' &&
+    (refund.status === 'approved' || refund.status === 'refunding' || refund.status === 'succeeded');
+
+  return (
+    <>
+      <tr className="hover:bg-gray-50">
+        <td className="px-3 py-2 font-mono" title={refund.id}>{refund.id.slice(0, 12)}...</td>
+        <td className="px-3 py-2 font-mono" title={refund.order_id}>{refund.order_id.slice(0, 12)}...</td>
+        <td className="px-3 py-2">{refund.type}</td>
+        <td className="px-3 py-2">{refund.reason}</td>
+        <td className="px-3 py-2">{formatMoney(refund.requested_amount)}</td>
+        <td className="px-3 py-2">{refund.approved_amount == null ? '—' : formatMoney(refund.approved_amount)}</td>
+        <td className="px-3 py-2">
+          <span className={`px-1.5 py-0.5 rounded ${REFUND_STATUS_STYLE[refund.status]}`}>{refund.status}</span>
+          {refund.reject_reason && <div className="text-[10px] text-red-500 mt-0.5">{refund.reject_reason}</div>}
+        </td>
+        <td className="px-3 py-2 text-gray-500">{new Date(refund.created_at).toLocaleString('zh-CN')}</td>
+        <td className="px-3 py-2">
+          <div className="flex gap-2 flex-wrap">
+            {refund.status === 'submitted' && (
+              <>
+                <button onClick={handleApprove} className="text-xs text-emerald-600 hover:underline">通过</button>
+                <button onClick={handleReject} className="text-xs text-red-600 hover:underline">驳回</button>
+              </>
+            )}
+            {refund.status === 'failed' && (
+              <button onClick={handleRetry} className="text-xs text-amber-600 hover:underline">重试退款</button>
+            )}
+            {canReceiveReturn && (
+              <button onClick={handleReturnReceived} className="text-xs text-blue-600 hover:underline">确认收货</button>
+            )}
+            <button onClick={toggleAudit} className="text-xs text-gray-500 hover:underline">
+              {audit ? '收起审计' : auditLoading ? '审计加载中...' : '审计'}
+            </button>
+          </div>
+        </td>
+      </tr>
+      {audit && (
+        <tr>
+          <td colSpan={9} className="px-3 py-2 bg-gray-50">
+            {audit.length === 0 && <div className="text-gray-400">无审计记录</div>}
+            <ul className="space-y-1">
+              {audit.map((a) => (
+                <li key={a.id} className="font-mono text-[11px]">
+                  {new Date(a.created_at).toLocaleString('zh-CN')} · {a.from_status ?? '∅'} → {a.to_status} ·{' '}
+                  {a.operator_type}{a.operator_id ? `(${a.operator_id.slice(0, 8)})` : ''} · {a.reason ?? '—'}
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function parseNewItems(text: string): { batch_id: string; quantity: number }[] {  return text
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
@@ -107,7 +300,7 @@ export default function AftersalesPage() {
   const [claimNewItems, setClaimNewItems] = useState('');
 
   useEffect(() => {
-    api.adminListOrders({ limit: 100 }).then(setOrders).catch((e: any) => setError(e.message));
+    api.adminListOrders({ limit: 100 }).then(setOrders).catch((e) => setError(errMessage(e)));
   }, []);
 
   async function loadOrder() {
@@ -127,8 +320,8 @@ export default function AftersalesPage() {
       setReturnQty({});
       setSwapReturnQty({});
       setClaimQty({});
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     } finally {
       setLoading(false);
     }
@@ -140,20 +333,20 @@ export default function AftersalesPage() {
     if (items.length === 0) { alert('请至少选择一项商品数量'); return; }
     try {
       const res = await api.createReturnRequest({ order_id: order.id, items });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发起退货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发起退货失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleReceiveReturn(id: string) {
     try {
       const res = await api.receiveReturn({ return_request_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '收货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '收货失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -161,10 +354,10 @@ export default function AftersalesPage() {
     if (!confirm('确认取消此退货申请？')) return;
     try {
       const res = await api.cancelReturn({ return_request_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -175,11 +368,11 @@ export default function AftersalesPage() {
     if (return_items.length === 0 || new_items.length === 0) { alert('请选择退回商品并填写换入商品 (batch_id:数量)'); return; }
     try {
       const res = await api.createSwap({ order_id: order.id, return_items, new_items });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发起换货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发起换货失败');
       setSwapNewItems('');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -187,30 +380,30 @@ export default function AftersalesPage() {
     if (!confirm('确认取消此换货？')) return;
     try {
       const res = await api.cancelSwap({ swap_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleFulfillSwap(id: string) {
     try {
       const res = await api.fulfillSwap({ swap_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '执行换货失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '执行换货失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleProcessSwapPayment(id: string) {
     try {
       const res = await api.processSwapPayment({ swap_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '处理差价失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '处理差价失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -221,11 +414,11 @@ export default function AftersalesPage() {
     const new_items = claimType === 'replace' ? parseNewItems(claimNewItems) : undefined;
     try {
       const res = await api.createClaim({ order_id: order.id, claim_type: claimType, items, new_items });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '发起客诉失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '发起客诉失败');
       setClaimNewItems('');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -233,20 +426,20 @@ export default function AftersalesPage() {
     if (!confirm('确认取消此客诉？')) return;
     try {
       const res = await api.cancelClaim({ claim_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '取消失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '取消失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleFulfillClaim(id: string) {
     try {
       const res = await api.fulfillClaim({ claim_id: id });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '处理客诉失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '处理客诉失败');
       loadOrder();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -451,6 +644,14 @@ export default function AftersalesPage() {
         </>
       )}
 
+      <div className="mt-10 mb-3">
+        <h2 className="text-lg font-semibold">退款状态机 — 审核 / 重试 / 确认收货</h2>
+        <p className="text-xs text-gray-500 mt-1">
+          通过=触发网关退款；重试=仅 failed；确认收货=仅 return_refund 且回补库存（幂等）。
+        </p>
+      </div>
+      <RefundsSection />
+
       <div className="mt-10 mb-3 flex items-center justify-between">
         <h2 className="text-lg font-semibold">hemall 扩展运维 — 押金/回收桶/RMA 仲裁</h2>
         <button
@@ -471,7 +672,7 @@ export default function AftersalesPage() {
             { key: 'action', label: 'action', placeholder: 'charge | refund' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallToteDepositAndRefund(v as any)}
+          onSubmit={(v) => api.hemallToteDepositAndRefund(v as Parameters<typeof api.hemallToteDepositAndRefund>[0])}
         />
         <ActionCard
           title="回收桶退货 process_drop_return"
@@ -482,7 +683,7 @@ export default function AftersalesPage() {
             { key: 'reason', label: 'reason (默认 quality)' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallProcessDropReturn(v as any)}
+          onSubmit={(v) => api.hemallProcessDropReturn(v as Parameters<typeof api.hemallProcessDropReturn>[0])}
         />
         <ActionCard
           title="🔥 一键提交客诉 submit_rma_claim (全自动仲裁, ~2 秒)"
@@ -497,7 +698,7 @@ export default function AftersalesPage() {
             { key: 'route_risk', label: 'route_risk (0-1, 默认 0)', type: 'number' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallSubmitRmaClaim(v as any)}
+          onSubmit={(v) => api.hemallSubmitRmaClaim(v as Parameters<typeof api.hemallSubmitRmaClaim>[0])}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -513,7 +714,7 @@ export default function AftersalesPage() {
             { key: 'route_risk', label: 'route_risk (0-1, 默认 0)', type: 'number' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallProcessCreditGatedRma(v as any)}
+          onSubmit={(v) => api.hemallProcessCreditGatedRma(v as Parameters<typeof api.hemallProcessCreditGatedRma>[0])}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
         <ActionCard
@@ -531,7 +732,7 @@ export default function AftersalesPage() {
             { key: 'credibility_decision', label: 'credibility_decision', placeholder: 'instant | honeypot' },
           ]}
           defaults={opsCtx}
-          onSubmit={(v) => api.hemallExecuteLiabilityRouting(v as any)}
+          onSubmit={(v) => api.hemallExecuteLiabilityRouting(v as Parameters<typeof api.hemallExecuteLiabilityRouting>[0])}
           onResult={() => setOpsListRefreshKey((k) => k + 1)}
         />
       </OpsSection>

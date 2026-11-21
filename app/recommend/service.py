@@ -4,22 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .engine import (
-    CollaborativeFilteringEngine,
-    ContentBasedEngine,
     HybridRecommender,
-    TrendingEngine,
 )
 from .models import (
     ProductFeatures,
+    RecommendationResult,
     RecommendConfig,
     RecommendedProduct,
-    RecommendationResult,
     UserBehaviorEvent,
-    UserBehaviorType,
     UserProfile,
 )
 
@@ -103,9 +99,7 @@ class RecommendationService:
         if self._behaviors:
             await self._hybrid.collaborative.init_from_behaviors(self._behaviors)
         else:
-            logger.info(
-                "No behavior data yet; skipping collaborative filtering training"
-            )
+            logger.info("No behavior data yet; skipping collaborative filtering training")
 
         # 2. 内容推荐模型训练
         features = list(self._product_features.values())
@@ -123,9 +117,7 @@ class RecommendationService:
 
     # ── 推荐生成 ────────────────────────────────────────────────
 
-    async def recommend_for_user(
-        self, user_id: str, top_k: int = 20
-    ) -> RecommendationResult:
+    async def recommend_for_user(self, user_id: str, top_k: int = 20) -> RecommendationResult:
         """为用户生成个性化推荐。
 
         Args:
@@ -146,7 +138,7 @@ class RecommendationService:
 
         # 映射为 RecommendedProduct
         products = []
-        for pid, score in recs:
+        for pid, _score in recs:
             feat = self._product_features.get(pid)
             products.append(
                 RecommendedProduct(
@@ -165,16 +157,14 @@ class RecommendationService:
             algorithm=algorithm,
             total=len(products),
             personalized=True,
-            refresh_time=datetime.now(timezone.utc),
+            refresh_time=datetime.now(UTC),
         )
 
-    async def find_similar_products(
-        self, product_id: str, top_k: int = 10
-    ) -> RecommendationResult:
+    async def find_similar_products(self, product_id: str, top_k: int = 10) -> RecommendationResult:
         """查找相似商品 (内容-based)。"""
         recs = await self._hybrid.find_similar_products(product_id, top_k)
         products = []
-        for pid, score in recs:
+        for pid, _score in recs:
             feat = self._product_features.get(pid)
             products.append(
                 RecommendedProduct(
@@ -193,14 +183,14 @@ class RecommendationService:
             algorithm="content_based",
             total=len(products),
             personalized=False,
-            refresh_time=datetime.now(timezone.utc),
+            refresh_time=datetime.now(UTC),
         )
 
     async def get_trending(self, top_k: int = 20) -> RecommendationResult:
         """获取热门推荐 (冷启动兜底)。"""
         recs = await self._hybrid.trending.get_trending(top_k)
         products = []
-        for pid, score in recs:
+        for pid, _score in recs:
             feat = self._product_features.get(pid)
             products.append(
                 RecommendedProduct(
@@ -219,7 +209,7 @@ class RecommendationService:
             algorithm="trending",
             total=len(products),
             personalized=False,
-            refresh_time=datetime.now(timezone.utc),
+            refresh_time=datetime.now(UTC),
         )
 
     # ── 数据管理 ────────────────────────────────────────────────

@@ -62,10 +62,20 @@ app/risk/
 
 **风控规则示例**:
 ```python
-RiskRule("R001", "高频登录失败", RiskRuleCategory.LOGIN,
-         "login_failures > 5 AND time_window < 300", score=20)
-RiskRule("R004", "大额交易预警", RiskRuleCategory.PAYMENT,
-         "amount > 100000 AND user_trust < 50", score=35)
+RiskRule(
+    "R001",
+    "高频登录失败",
+    RiskRuleCategory.LOGIN,
+    "login_failures > 5 AND time_window < 300",
+    score=20,
+)
+RiskRule(
+    "R004",
+    "大额交易预警",
+    RiskRuleCategory.PAYMENT,
+    "amount > 100000 AND user_trust < 50",
+    score=35,
+)
 ```
 
 **API 端点**:
@@ -153,7 +163,7 @@ app/i18n/
 **语言支持**:
 ```python
 Language.ZH_CN = "zh-CN"  # 简体中文
-Language.EN_US = "en-US"  # 美式英语  
+Language.EN_US = "en-US"  # 美式英语
 Language.JA_JP = "ja-JP"  # 日语
 Language.KO_KR = "ko-KR"  # 韩语
 # ... 共 10 种语言
@@ -172,7 +182,7 @@ Currency.JPY = "JPY"  # 日元
 ```python
 region_providers = {
     "CN": ["wechat", "alipay", "unionpay"],
-    "US": ["stripe", "paypal", "apple_pay"], 
+    "US": ["stripe", "paypal", "apple_pay"],
     "EU": ["stripe", "paypal", "sofort"],
     "JP": ["paypay", "rakuten_pay", "stripe"],
 }

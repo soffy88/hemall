@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { ActionCard, OpsSection } from '@/components/ops/OpsActionCard';
 import type { Customer, CustomerGroup, CustomerAddress } from '@/types/api';
+import { errMessage } from '@/lib/errors';
 
 function fmt(cents: number): string {
   return `¥${(cents / 100).toFixed(2)}`;
@@ -38,17 +39,14 @@ export default function CustomersPage() {
   const [addrRegion, setAddrRegion] = useState('');
   const [addrPostal, setAddrPostal] = useState('');
 
-  async function load() {
-    setLoading(true);
-    try {
-      const [c, g] = await Promise.all([api.adminListCustomers(), api.adminListCustomerGroups()]);
-      setCustomers(c);
-      setGroups(g);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+  function load() {
+    Promise.all([api.adminListCustomers(), api.adminListCustomerGroups()])
+      .then(([c, g]) => {
+        setCustomers(c);
+        setGroups(g);
+      })
+      .catch((e) => setError(errMessage(e)))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => { load(); }, []);
@@ -70,15 +68,16 @@ export default function CustomersPage() {
     try {
       if (editingId) {
         const res = await api.updateCustomer({ customer_id: editingId, email, phone, name, status: custStatus });
-        if (res.status === 'failed') throw new Error((res.error as any)?.message || '更新失败');
+        if (res.status === 'failed') throw new Error(res.error?.message || '更新失败');
       } else {
         const res = await api.createCustomer({ email, phone, name });
-        if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+        if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       }
       setShowForm(false);
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -86,12 +85,23 @@ export default function CustomersPage() {
     e.preventDefault();
     try {
       const res = await api.createCustomerGroup({ name: groupName });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '创建失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '创建失败');
       setGroupName('');
       setShowGroupForm(false);
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
+  async function handleToggleMerchant(c: Customer) {
+    try {
+      await api.adminSetCustomerMerchant(c.id, !c.is_merchant);
+      setLoading(true);
+      load();
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -99,10 +109,11 @@ export default function CustomersPage() {
     if (!groupId) return;
     try {
       const res = await api.assignCustomerToGroup({ customer_id: customerId, group_id: groupId });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '分组失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '分组失败');
+      setLoading(true);
       load();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -116,8 +127,8 @@ export default function CustomersPage() {
     try {
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -133,24 +144,24 @@ export default function CustomersPage() {
         region_code: addrRegion,
         postal_code: addrPostal,
       });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '添加地址失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '添加地址失败');
       setAddrRecipient(''); setAddrPhone(''); setAddrLine1(''); setAddrCity(''); setAddrRegion(''); setAddrPostal('');
       setShowAddrForm(false);
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
   async function handleSetDefaultAddress(customerId: string, addressId: string) {
     try {
       const res = await api.updateCustomerAddress({ address_id: addressId, is_default: true });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '设置失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '设置失败');
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -158,11 +169,11 @@ export default function CustomersPage() {
     if (!confirm('确认删除此地址？')) return;
     try {
       const res = await api.deleteCustomerAddress({ address_id: addressId });
-      if (res.status === 'failed') throw new Error((res.error as any)?.message || '删除失败');
+      if (res.status === 'failed') throw new Error(res.error?.message || '删除失败');
       const data = await api.adminListCustomerAddresses(customerId);
       setAddresses(data);
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      alert(errMessage(e));
     }
   }
 
@@ -236,6 +247,7 @@ export default function CustomersPage() {
                 <th className="px-4 py-3 font-medium text-gray-600">电话</th>
                 <th className="px-4 py-3 font-medium text-gray-600">分组</th>
                 <th className="px-4 py-3 font-medium text-gray-600">状态</th>
+                <th className="px-4 py-3 font-medium text-gray-600">商家</th>
                 <th className="px-4 py-3 font-medium text-gray-600">订单数</th>
                 <th className="px-4 py-3 font-medium text-gray-600">累计消费</th>
                 <th className="px-4 py-3 font-medium text-gray-600">操作</th>
@@ -261,6 +273,16 @@ export default function CustomersPage() {
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded text-xs ${c.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{c.status}</span>
                     </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {c.is_merchant && (
+                          <span className="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700">商家</span>
+                        )}
+                        <button onClick={() => handleToggleMerchant(c)} className="text-xs text-blue-600 hover:underline">
+                          {c.is_merchant ? '取消商家' : '设为商家'}
+                        </button>
+                      </div>
+                    </td>
                     <td className="px-4 py-3">{c.order_count}</td>
                     <td className="px-4 py-3">{fmt(c.total_spent_cents)}</td>
                     <td className="px-4 py-3">
@@ -274,7 +296,7 @@ export default function CustomersPage() {
                   </tr>
                   {expandedId === c.id && (
                     <tr>
-                      <td colSpan={8} className="px-4 py-3 bg-gray-50">
+                      <td colSpan={9} className="px-4 py-3 bg-gray-50">
                         <div className="text-xs space-y-2">
                           {addresses.map((a) => (
                             <div key={a.id} className="flex items-center justify-between bg-white rounded px-3 py-2 border border-gray-100">
@@ -315,7 +337,7 @@ export default function CustomersPage() {
                 </Fragment>
               ))}
               {customers.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">暂无客户</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无客户</td></tr>
               )}
             </tbody>
           </table>
@@ -335,7 +357,7 @@ export default function CustomersPage() {
               { key: 'duration_days', label: 'duration_days (默认 365)', type: 'number' },
             ]}
             defaults={opsCtx}
-            onSubmit={(v) => api.hemallProcessSubscription(v as any)}
+            onSubmit={(v) => api.hemallProcessSubscription(v as Parameters<typeof api.hemallProcessSubscription>[0])}
           />
         </OpsSection>
       </div>

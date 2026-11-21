@@ -16,7 +16,7 @@ from typing import Any
 import redis.asyncio as redis
 
 from ..config import Settings
-from .models import CacheConfig, CacheKey, CacheRegion, CACHE_TTL_MAP
+from .models import CACHE_TTL_MAP, CacheKey, CacheRegion
 
 logger = logging.getLogger("hemall.cache")
 
@@ -160,14 +160,30 @@ class CacheManager:
             return 0
 
     async def get_rank(self, key: str) -> list[tuple[str, int]]:
-        """获取 Sorted Set 排行榜前 N 名。"""
+        """获取 Sorted Set 排行榜前 N 名。
+
+        `zrevrange(..., withscores=True)` 返回的是 `[(member, score), ...]`
+        二元组——原实现写的是 `for item in results` 然后同时用 `item` 和
+        `score`，`score` 是未定义名（F821）。NameError 又被 `except Exception`
+        吞掉，于是排行榜**永远**返回空列表，且没有任何日志。
+        """
         if not self.is_available:
             return []
         try:
-            results = await self._pool.zrevrange(key, 0, 9, withscores=True)
-            return [(item.decode() if isinstance(item, bytes) else item, score) for item in results]
-        except Exception:
+            # redis-py 对 withscores=True 的返回类型标注不可靠，实际为
+            # [(member, score), ...]；用 Any 避免误报，元素类型由下方 isinstance 收窄。
+            results: Any = await self._pool.zrevrange(key, 0, 9, withscores=True)
+        except (redis.RedisError, UnicodeDecodeError) as exc:
+            # 只有"Redis 连不上 / 返回值编码坏了"才降级成空榜。
+            logger.warning("cache GET_RANK failed for %s: %s", key, exc)
             return []
+        return [
+            (
+                member.decode("utf-8", errors="replace") if isinstance(member, bytes) else member,
+                score,
+            )
+            for member, score in results
+        ]
 
     # ── 缓存预热 ────────────────────────────────────────────────
 
@@ -210,7 +226,7 @@ class CacheManager:
         try:
             values = await self._pool.mget(keys)
             results = {}
-            for k, v in zip(keys, values):
+            for k, v in zip(keys, values, strict=True):
                 results[k] = json.loads(v) if v else None
             return results
         except Exception as exc:
