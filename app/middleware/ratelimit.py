@@ -230,8 +230,13 @@ class TokenBucketRateLimitMiddleware:
         trusted_proxy_hops: int = 0,
         redis_url: str | None = None,
         fail_closed: bool = False,
+        disabled: bool = False,
     ) -> None:
         self.app = app
+        # 测试环境专用直通开关 (main.py 只在 environment == "test" 时置 True):
+        # 全套件 TestClient 共用 127.0.0.1 一个桶，跑得快即 429 误杀无关测试。
+        # 默认 False, 生产限流行为一字不动。
+        self.disabled = disabled
         self.public_paths = public_paths or set()
         self.path_prefixes = path_prefixes or set()
         self.limiter = TokenBucketRateLimiter(capacity, refill_per_sec)
@@ -291,6 +296,9 @@ class TokenBucketRateLimitMiddleware:
             return self.limiter.allow(key)
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if self.disabled:
+            await self.app(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return

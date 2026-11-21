@@ -564,6 +564,10 @@ def create_app() -> FastAPI:
         trusted_proxy_hops=settings.ratelimit_trusted_proxy_hops,
         redis_url=settings.redis_url,
         fail_closed=settings.environment.lower() == "production",
+        # 测试环境禁用：全套件 TestClient 共用 127.0.0.1 一个令牌桶
+        # (60 令牌、1/s 补充)，套件跑得快即 429 误杀无关测试 (CI 抖动根因)。
+        # 仅 environment == "test" 时生效；开发/预发布/生产配额一字不动。
+        disabled=settings.environment.lower() == "test",
     )
 
     # 补天计划 Task 1.1: Webhook 验签装甲 (最外层)——抖音/支付回调在 ASGI 层
