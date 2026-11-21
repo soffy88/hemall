@@ -15,6 +15,11 @@ import pytest
 from fastapi.testclient import TestClient
 from obase.crypto.util import CryptoUtil
 
+# 测试一律以 environment=test 跑：须在 import app.main (建 app、装限流中间件)
+# 之前置位，否则全局 app 的 /store/ 令牌桶在套件里仍生效 (见 main.py 注释)。
+# 只影响测试进程；生产默认配额一字不动。
+os.environ["HEMALL_ENVIRONMENT"] = "test"
+
 from app.deps import get_settings
 from app.main import app
 
