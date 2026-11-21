@@ -1,6 +1,6 @@
 """仓主试点测试：纯计算单元测试 + DB 集成测试（需 TEST_PG_DSN）。
 
-覆盖规则文件全部关键 math：10% 累积、退款比例冲回、20% 上限、互斥取最优、
+覆盖规则文件全部关键 math：5% 累积、退款比例冲回、20% 上限、互斥取最优、
 自推拦截、余额记负回填；DB 部分覆盖绑定/结算/冲回/持有-核销-返还/冻结/
 邀请礼/点货/账本。
 """
@@ -45,8 +45,8 @@ from app.cangzhu import (
 
 
 def test_referral_reward_rounding() -> None:
-    assert referral_reward_cents(10000) == 1000
-    assert referral_reward_cents(105) == 11  # 10.5 → 11，四舍五入
+    assert referral_reward_cents(10000) == 500
+    assert referral_reward_cents(105) == 5  # 5.25 → 5，四舍五入
     assert referral_reward_cents(0) == 0
     assert referral_reward_cents(-50) == 0
 
@@ -281,13 +281,13 @@ async def test_settle_accrual_and_idempotent_resettle(cz_pool, seed) -> None:
     order = await make_order(cz_pool, seed, buyer, [(variant, 2, 5000)])
     result = await settle_accrual(cz_pool, order)
     assert result["settled"] is True
-    assert result["amount_cents"] == 1000  # 10000 的 10%
+    assert result["amount_cents"] == 500  # 10000 的 5%
     async with cz_pool.acquire() as conn:
-        assert await get_voucher_balance(conn, referrer) == 1000
+        assert await get_voucher_balance(conn, referrer) == 500
     again = await settle_accrual(cz_pool, order)
     assert again["settled"] is False
     async with cz_pool.acquire() as conn:
-        assert await get_voucher_balance(conn, referrer) == 1000
+        assert await get_voucher_balance(conn, referrer) == 500
 
 
 @needs_db
@@ -315,7 +315,7 @@ async def test_excluded_product_not_counted(cz_pool, seed) -> None:
     order = await make_order(cz_pool, seed, buyer, [(normal, 1, 6000), (excluded, 1, 4000)])
     result = await settle_accrual(cz_pool, order)
     assert result["base_cents"] == 6000
-    assert result["amount_cents"] == 600
+    assert result["amount_cents"] == 300
 
 
 @needs_db
@@ -329,30 +329,30 @@ async def test_reversal_proportional_and_negative_balance(cz_pool, seed) -> None
     variant = await make_variant(cz_pool, seed, f"v-{tag}")
     order = await make_order(cz_pool, seed, buyer, [(variant, 2, 5000)])
     await settle_accrual(cz_pool, order)
-    # 推荐人先把 1000 券花掉 800（余额剩 200），再退一半货款：冲回 500 → 记负
+    # 推荐人先把 500 券花掉 400（余额剩 100），再退一半货款：冲回 250 → 记负
     async with cz_pool.acquire() as conn:
         async with conn.transaction():
             await hold_redemption(
-                conn, customer_id=referrer, order_id=str(uuid.uuid4()), amount_cents=800
+                conn, customer_id=referrer, order_id=str(uuid.uuid4()), amount_cents=400
             )
-            assert await get_voucher_balance(conn, referrer) == 200
+            assert await get_voucher_balance(conn, referrer) == 100
     reversed_result = await reverse_for_refund(
         cz_pool, refund_id=f"rf-{tag}", order_id=order, refund_cents=5000
     )
     assert reversed_result["reversed"] is True
-    assert reversed_result["amount_cents"] == 500
+    assert reversed_result["amount_cents"] == 250
     async with cz_pool.acquire() as conn:
-        assert await get_voucher_balance(conn, referrer) == -300
+        assert await get_voucher_balance(conn, referrer) == -150
     # 同一退款重放不重复冲
     again = await reverse_for_refund(
         cz_pool, refund_id=f"rf-{tag}", order_id=order, refund_cents=5000
     )
     assert again["reversed"] is False
-    # 下一笔累积先填负：再完成一单 10000 → 1000 入账，余额 -300+1000=700
+    # 下一笔累积先填负：再完成一单 10000 → 500 入账，余额 -150+500=350
     order2 = await make_order(cz_pool, seed, buyer, [(variant, 2, 5000)])
     await settle_accrual(cz_pool, order2)
     async with cz_pool.acquire() as conn:
-        assert await get_voucher_balance(conn, referrer) == 700
+        assert await get_voucher_balance(conn, referrer) == 350
 
 
 @needs_db
@@ -394,7 +394,7 @@ async def test_freeze_and_unfreeze(cz_pool, seed) -> None:
     assert (await settle_accrual(cz_pool, order))["reason"] == "frozen for review"
     result = await unfreeze_accrual(cz_pool, order)
     assert result["settled"] is True
-    assert result["amount_cents"] == 500
+    assert result["amount_cents"] == 250
 
 
 @needs_db

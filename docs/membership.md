@@ -10,6 +10,7 @@
 | 等级 | 累计合资格净额（规则 2 口径，退款冲回后扣减）：0 元普通、满 500 元银卡、满 2000 元金卡 | 只作身份与统计，不给价格折扣；折扣仍只有会员 9 折，互斥规则一字不动 |
 | 积分 | 合资格金额每满 1 元积 1 分，不足 1 元不计；买家本人得积分 | 独立账本 `points_ledger`；永不过期、不可转让、无现金价值；本批只积不兑 |
 | 储值 | 商家记账式充值，必填外部支付凭证号，只记账 | 独立账本 `stored_value_ledger`；不可提现、不可转让；不调用任何支付网关 |
+| 会费 | 199 元/人，一户一行（`membership_fee`，状态 unpaid/paid/waived） | 只记账；不缴费不影响推荐奖励与下单，不设门禁；减免须逐人记、必须带原因 |
 
 配置常量集中在 `app/membership.py` 顶部（`POINTS_CENTS_PER_POINT`、
 `TIER_THRESHOLDS`、`TIER_LABELS`），不写死在 SQL 里。
@@ -52,6 +53,11 @@
 - `POST /orders/{id}/points-reverse`：商家触发退款冲回（body：`refund_id`、`refund_cents`；幂等，`refund_id` 唯一）。
 - `POST /customers/{id}/stored-value/topup`：商家记账充值（body：`amount_cents`、
   `external_payment_ref`、`note` 可选；同一凭证号重复提交返回 `recorded: false`）。
+- `POST /customers/{id}/membership-fee`：商家记会费（body：`status` 为 `paid`/`waived`，
+  `note`，`amount_cents` 可选，缺省 19900；减免必须带原因，重复记同一状态返回
+  `recorded: false`）。
+- `GET /customers/me/membership-fee`：本人自查会费状态（未记过返回 `unpaid` 默认态）；
+  `GET /customers/{id}/membership-fee`：商家查询任意顾客会费状态。
 
 非商家调商家端点返回 403；未登录返回 401；顾客不存在/订单不存在返回 404；
 非法参数（金额非正、凭证号为空、备注超长）返回 400。
@@ -64,10 +70,20 @@
 - 短信一律不做（blocked）：无短信网关、无凭证；不写发送代码、不接 provider。
   会员变动通知如需短信，待 Soffy 提供网关与凭证后另立批次。
 
+## 会费账本（199 元/人）
+
+- 一户一行：`membership_fee`，`customer_id` 唯一；`amount_cents` 缺省 19900
+  （199 元），`status` 为 `unpaid`/`paid`/`waived` 三态，`recorded_by` 为记账
+  商家，`note` 记原因，`created_at`/`updated_at`。
+- 只记账，不设门禁：不缴费不影响推荐奖励与下单。
+- 减免（`waived`）须逐人记、必须带原因；不自动全员 waived。已缴费（`paid`）
+  不可再改减免；减免后可补缴（`waived → paid`）；重复记同一状态返回
+  `recorded: false`，不重复写。
+
 ## DDL
 
 `MEMBERSHIP_DDL` 在 `app/membership.py` 内，`app/p0_schema.py::ensure_p0_schema`
 加一行注册调用（带“缺口 4”唯一标记注释），幂等。新增表：`points_ledger`、
-`stored_value_ledger`；新增列：`customer.points_balance`、
+`stored_value_ledger`、`membership_fee`；新增列：`customer.points_balance`、
 `customer.stored_value_balance_cents`、`customer.lifetime_eligible_cents`、
 `customer.member_tier`。

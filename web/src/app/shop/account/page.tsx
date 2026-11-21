@@ -421,7 +421,7 @@ export default function AccountPage() {
           <div>分享链接：<span className="break-all text-emerald-700">{referral ? shareLink() : '—'}</span></div>
           <div>已推荐仓主：{referral?.referred_count ?? '—'} 人</div>
           <div>购物券余额：{vouchers ? formatMoney(vouchers.voucher_balance_cents, 'CNY') : '—'}</div>
-          <p className="text-xs text-gray-500">推荐人绑定后不可更改；被推荐人订单完成后，推荐人按合资格金额 10% 累积购物券（永不过期、不可提现）。券与会员 9 折每单取最优一种。</p>
+          <p className="text-xs text-gray-500">推荐人绑定后不可更改；被推荐人订单完成后，推荐人按合资格金额 5% 累积购物券（永不过期、不可提现）。券与会员 9 折每单取最优一种。</p>
         </div>
         <div className="border-t pt-4 space-y-2">
           <h3 className="font-medium text-sm">邀请礼</h3>

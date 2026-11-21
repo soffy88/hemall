@@ -13,7 +13,7 @@ from .counter_closeout import COUNTER_CLOSEOUT_DDL
 from .counter_settlement_order import COUNTER_SETTLEMENT_ORDER_DDL
 from .counter_vision import COUNTER_VISION_DDL
 from .ext.spider_hygiene import OCR_GATE_DDL
-from .membership import MEMBERSHIP_DDL
+from .membership import MEMBERSHIP_DDL, MEMBERSHIP_FEE_DDL
 from .night_pintuan import NIGHT_PINTUAN_DDL
 from .weigh import WEIGH_DDL
 
@@ -235,6 +235,8 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(CANGZHU_DDL)
         # 会员补齐（缺口 4）：等级/积分/储值 DDL（幂等，见 app/membership.py）。
         await conn.execute(MEMBERSHIP_DDL)
+        # 会费账本（199 元/人，Soffy 2026-11-21 拍板新增；只记账，不设门禁）。
+        await conn.execute(MEMBERSHIP_FEE_DDL)
         # 缺口 6（夜市+拼单）：清货标记 + 拼单表（幂等，见 app/night_pintuan.py）。
         await conn.execute(NIGHT_PINTUAN_DDL)
         # OCR 品牌门: inventory_batch.inspection_note 留痕列 (幂等, 见 spider_hygiene.py)。
