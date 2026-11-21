@@ -48,6 +48,17 @@ TIER_LABELS: dict[str, str] = {
     TIER_GOLD: "金卡会员",
 }
 MAX_TOPUP_NOTE_CHARS = 200
+# ── 会费账本（199 元/人，Soffy 2026-11-21 拍板新增）────────────────────
+MEMBERSHIP_FEE_DEFAULT_CENTS = 19900  # 会费默认 199 元
+MEMBERSHIP_FEE_STATUS_UNPAID = "unpaid"
+MEMBERSHIP_FEE_STATUS_PAID = "paid"
+MEMBERSHIP_FEE_STATUS_WAIVED = "waived"
+MEMBERSHIP_FEE_STATUSES = (
+    MEMBERSHIP_FEE_STATUS_UNPAID,
+    MEMBERSHIP_FEE_STATUS_PAID,
+    MEMBERSHIP_FEE_STATUS_WAIVED,
+)
+MAX_FEE_NOTE_CHARS = 200
 
 MEMBERSHIP_DDL = """
 ALTER TABLE customer ADD COLUMN IF NOT EXISTS points_balance INT NOT NULL DEFAULT 0;
@@ -93,12 +104,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_stored_value_topup_ref
     ON stored_value_ledger(customer_id, external_payment_ref);
 """
 
+MEMBERSHIP_FEE_DDL = """
+CREATE TABLE IF NOT EXISTS membership_fee (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id UUID NOT NULL UNIQUE,
+    amount_cents INT NOT NULL DEFAULT 19900 CHECK (amount_cents >= 0),
+    status TEXT NOT NULL DEFAULT 'unpaid'
+        CHECK (status IN ('unpaid', 'paid', 'waived')),
+    recorded_by UUID,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_membership_fee_status
+    ON membership_fee(status, created_at);
+"""
+
 
 async def ensure_membership_schema(pool: Any) -> None:
     """幂等创建会员补齐所需表、列、索引。"""
 
     async with pool.acquire() as conn:
         await conn.execute(MEMBERSHIP_DDL)
+        await conn.execute(MEMBERSHIP_FEE_DDL)
 
 
 # ── 纯计算（无 DB，可单元测试）─────────────────────────────────────────
@@ -422,6 +450,124 @@ async def topup_stored_value(
                 "amount_cents": amount_cents,
                 "stored_value_balance_cents": int(updated),
             }
+
+
+# ── 会费账本 ────────────────────────────────────────────────────────────
+# 199 元/人（Soffy 2026-11-21 拍板新增）：一户一行，状态 unpaid/paid/waived。
+# 只记账：不缴费不影响推荐奖励与下单，不设任何门禁（文档没说要卡，就不发明卡点）。
+# 减免（waived）须逐人记、必须带原因；不自动全员 waived。
+
+
+def _fee_row_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "customer_id": str(row["customer_id"]),
+        "amount_cents": int(row["amount_cents"]),
+        "status": str(row["status"]),
+        "recorded_by": str(row["recorded_by"]) if row["recorded_by"] else None,
+        "note": str(row["note"] or ""),
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
+async def get_membership_fee(conn: Any, customer_id: str) -> dict[str, Any]:
+    """顾客会费状态：有记录返回该行；未记过返回 unpaid 默认态（19900 元）。"""
+
+    exists = await conn.fetchval('SELECT id FROM "customer" WHERE id = $1', customer_id)
+    if exists is None:
+        raise ValueError(f"customer not found: {customer_id}")
+    row = await conn.fetchrow(
+        "SELECT customer_id, amount_cents, status, recorded_by, note,"
+        " created_at, updated_at FROM membership_fee WHERE customer_id = $1",
+        customer_id,
+    )
+    if row is None:
+        return {
+            "customer_id": customer_id,
+            "amount_cents": MEMBERSHIP_FEE_DEFAULT_CENTS,
+            "status": MEMBERSHIP_FEE_STATUS_UNPAID,
+            "recorded_by": None,
+            "note": "",
+            "created_at": None,
+            "updated_at": None,
+        }
+    return _fee_row_to_dict(row)
+
+
+async def record_membership_fee(
+    pool: Any,
+    *,
+    customer_id: str,
+    status: str,
+    operator_id: str | None = None,
+    note: str = "",
+    amount_cents: int | None = None,
+) -> dict[str, Any]:
+    """商家/管理员记一笔会费：缴费（paid）或减免（waived）。
+
+    状态流转：unpaid → paid / waived；waived → paid（后补缴）；
+    paid → paid 与 waived → waived 重复记返回已记账不重复写；
+    paid → waived 拒绝（已缴费不能再减免）。
+    减免必须带原因（note）；金额缺省 19900 元。只记账，不设门禁。
+    """
+
+    target = status.strip().lower()
+    if target not in (MEMBERSHIP_FEE_STATUS_PAID, MEMBERSHIP_FEE_STATUS_WAIVED):
+        raise ValueError("status must be 'paid' or 'waived'")
+    clean_note = note.strip()
+    if target == MEMBERSHIP_FEE_STATUS_WAIVED and not clean_note:
+        raise ValueError("waived membership fee requires a reason (note)")
+    if len(clean_note) > MAX_FEE_NOTE_CHARS:
+        raise ValueError("note is too long")
+    amount = MEMBERSHIP_FEE_DEFAULT_CENTS if amount_cents is None else amount_cents
+    if amount <= 0:
+        raise ValueError("amount_cents must be positive")
+    columns = "customer_id, amount_cents, status, recorded_by, note, created_at, updated_at"
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            exists = await conn.fetchval('SELECT id FROM "customer" WHERE id = $1', customer_id)
+            if exists is None:
+                raise ValueError(f"customer not found: {customer_id}")
+            row = await conn.fetchrow(
+                f"SELECT {columns} FROM membership_fee WHERE customer_id = $1",
+                customer_id,
+            )
+            if row is not None:
+                current = str(row["status"])
+                if current == target:
+                    return {
+                        "recorded": False,
+                        "reason": "already recorded",
+                        **_fee_row_to_dict(row),
+                    }
+                if current == MEMBERSHIP_FEE_STATUS_PAID:
+                    raise ValueError("membership fee already paid; cannot waive")
+                updated = await conn.fetchrow(
+                    "UPDATE membership_fee SET status = $1, amount_cents = $2,"
+                    " recorded_by = $3, note = $4, updated_at = NOW()"
+                    f" WHERE customer_id = $5 RETURNING {columns}",
+                    target,
+                    amount,
+                    operator_id,
+                    clean_note,
+                    customer_id,
+                )
+                if updated is None:
+                    raise ValueError(f"membership fee not found: {customer_id}")
+                return {"recorded": True, **_fee_row_to_dict(updated)}
+            inserted = await conn.fetchrow(
+                "INSERT INTO membership_fee (customer_id, amount_cents, status,"
+                " recorded_by, note)"
+                f" VALUES ($1, $2, $3, $4, $5) RETURNING {columns}",
+                customer_id,
+                amount,
+                target,
+                operator_id,
+                clean_note,
+            )
+            if inserted is None:
+                raise ValueError(f"membership fee not recorded: {customer_id}")
+            return {"recorded": True, **_fee_row_to_dict(inserted)}
 
 
 # ── 查询 ────────────────────────────────────────────────────────────────

@@ -2598,6 +2598,12 @@ class StoredValueTopupRequest(BaseModel):
     note: str = ""
 
 
+class MembershipFeeRecordRequest(BaseModel):
+    status: str  # paid（缴费）或 waived（减免，须带原因）
+    note: str = ""
+    amount_cents: int | None = None  # 缺省 19900（199 元）
+
+
 def _cangzhu_bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(400, str(exc))
 
@@ -2718,6 +2724,59 @@ async def get_customer_membership(
             return await get_membership_summary(conn, customer_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/customers/me/membership-fee")
+async def get_my_membership_fee(request: Request, principal: dict = Depends(get_current_customer)):
+    from app.membership import get_membership_fee
+
+    async with _pool(request).acquire() as conn:
+        try:
+            return await get_membership_fee(conn, str(principal["customer_id"]))
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/customers/{customer_id}/membership-fee")
+async def get_customer_membership_fee(
+    customer_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.membership import get_membership_fee
+
+    await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        try:
+            return await get_membership_fee(conn, customer_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/customers/{customer_id}/membership-fee")
+async def record_customer_membership_fee(
+    customer_id: str,
+    body: MembershipFeeRecordRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.membership import record_membership_fee
+
+    merchant = await _require_merchant(request, principal)
+    async with _pool(request).acquire() as conn:
+        exists = await conn.fetchval('SELECT id FROM "customer" WHERE id = $1', customer_id)
+    if exists is None:
+        raise HTTPException(404, "customer not found")
+    try:
+        result = await record_membership_fee(
+            _pool(request),
+            customer_id=customer_id,
+            status=body.status,
+            operator_id=str(merchant["customer_id"]),
+            note=body.note,
+            amount_cents=body.amount_cents,
+        )
+    except ValueError as exc:
+        raise _cangzhu_bad_request(exc) from exc
+    return {"customer_id": customer_id, **result}
 
 
 @router.post("/orders/{order_id}/points-accrue")

@@ -1,10 +1,10 @@
-"""仓主试点：推荐绑定、10% 购物券账本、9 折互斥、点货、裂变账本。
+"""仓主试点：推荐绑定、5% 购物券账本、9 折互斥、点货、裂变账本。
 
 规则依据：~/workspace/hemal-cangzhu-rules.md（Soffy 2026-11-02 全部通过）。
 本模块只含试点逻辑与幂等 DDL，不 import 任何 app 内模块，避免循环导入。
 
 账本语义（voucher_ledger，append-only，状态机在行内）：
-- accrual（累积）：订单完成态后，按合资格金额 10% 发给直接推荐人。
+- accrual（累积）：订单完成态后，按合资格金额 5% 发给直接推荐人。
   status=posted 计入余额；status=frozen 为异常冻结待人工审，不计入。
 - redemption（核销）：下单时按合资格金额 20% 上限持有，status=held 已扣
   余额；支付确认后 status=posted；订单取消则 status=released 并返还余额。
@@ -27,7 +27,7 @@ from asyncpg.exceptions import UniqueViolationError
 logger = logging.getLogger("hemall.cangzhu")
 
 # ── 规则常量（规则文件默认值；改动须经 Soffy 拍板）─────────────────────
-REFERRAL_REWARD_RATE = Decimal("0.10")  # 被推荐人合资格消费 10% 返推荐人
+REFERRAL_REWARD_RATE = Decimal("0.05")  # 被推荐人合资格消费 5% 返推荐人
 MEMBER_DISCOUNT_RATE = Decimal("0.10")  # 会员 9 折
 VOUCHER_REDEEM_CAP_RATE = Decimal("0.20")  # 每单券抵扣上限：合资格金额 20%
 # ── 夜市阶梯价（规则 1，缺口 6 二期）────────────────────────────────
@@ -142,7 +142,7 @@ def _round_cents(amount: Decimal) -> int:
 
 
 def referral_reward_cents(eligible_cents: int) -> int:
-    """合资格金额 10% 的推荐奖励（分，四舍五入）。"""
+    """合资格金额 5% 的推荐奖励（分，四舍五入）。"""
 
     if eligible_cents <= 0:
         return 0
@@ -504,7 +504,7 @@ async def compute_eligible_base(conn: Any, order_id: str) -> int:
 
 
 async def settle_accrual(pool: Any, order_id: str) -> dict[str, Any]:
-    """订单完成态后结算推荐奖励：合资格基数 10% 发给直接推荐人。
+    """订单完成态后结算推荐奖励：合资格基数 5% 发给直接推荐人。
 
     幂等（accrual:{order_id}）；无推荐人/基数为 0/已冻结时跳过不记账。
     余额可为负：先填负再累积由同一 UPDATE 语义保证。
