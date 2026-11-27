@@ -6,7 +6,9 @@
 状态：模型未训。默认识别器是 NullRecognizer：返回空候选并记日志，
 绝不编分数、绝不瞎猜；调用方收到空候选即退回拍照点选流程。
 真正的模型以后以 Recognizer 实现接入（set_recognizer），本模块不含
-任何权重、推理代码与第三方模型依赖。
+任何权重、推理代码与第三方模型依赖。训练好的模型由
+app.counter_training.registry 按门禁加载（try_load_configured_recognizer，
+未配模型或门禁不通过时返回 None，本模块默认仍是 NullRecognizer）。
 
 铁律：
 - 候选必须来自识别器原始输出的校验（variant_id 为 UUID、score 在 0..1 内），
@@ -189,6 +191,25 @@ def set_recognizer(recognizer: Recognizer | None) -> None:
     """接入真实模型时调用；传 None 恢复默认空实现（测试与回退用）。"""
     global _RECOGNIZER
     _RECOGNIZER = recognizer if recognizer is not None else NullRecognizer()
+
+
+def try_load_configured_recognizer() -> Recognizer | None:
+    """按环境变量加载已通过评估门禁的训练模型，失败 / 未配时返回 None。
+
+    实际加载逻辑在 app.counter_training.registry（本模块不 import 它，
+    避免循环 import；训练 harness 是独立模块）。调用方拿到 None 时
+    保持现有行为：继续用 NullRecognizer（空候选 + model_configured=false）。
+    本函数只做“加载已验证模型”的入口，不改变识别端点默认行为；接入
+    应用启动流程是另一步，须另行批准（见 docs/counter-training.md）。
+    """
+    try:
+        from app.counter_training.registry import load_registered_recognizer
+    except Exception:  # noqa: BLE001 - harness 缺失 / 损坏时一律视为未配置
+        return None
+    try:
+        return load_registered_recognizer()
+    except Exception:  # noqa: BLE001 - 加载失败一律视为未配置，不阻塞柜台
+        return None
 
 
 def validate_candidates(raw: object, *, limit: int = MAX_CANDIDATES) -> list[dict[str, Any]]:
