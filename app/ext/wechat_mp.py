@@ -23,8 +23,8 @@ import logging
 from typing import Any
 
 import httpx
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
+from Cryptodome.Cipher import AES
+from Cryptodome.Util.Padding import unpad
 
 logger = logging.getLogger("hemall.wechat_mp")
 

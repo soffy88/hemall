@@ -45,6 +45,10 @@ CREATE INDEX IF NOT EXISTS idx_core4_delivery_task_slot
 """
 
 CORE4_EXPIRY_DDL = """
+-- expiration_time 列由 ensure_ext_schema 补丁，但本 DDL 的索引依赖它；
+-- init_db 里 core4 先于 ext 执行，空库时列尚不存在会让建索引失败。
+-- 这里先幂等补列（线上已有列时为空操作），让 DDL 自给自足。
+ALTER TABLE inventory_batch ADD COLUMN IF NOT EXISTS expiration_time TIMESTAMPTZ;
 ALTER TABLE inventory_batch ADD COLUMN IF NOT EXISTS list_price_cents INTEGER;
 ALTER TABLE inventory_batch ADD COLUMN IF NOT EXISTS discount_label TEXT;
 ALTER TABLE inventory_batch ADD COLUMN IF NOT EXISTS discount_reason TEXT;
@@ -53,10 +57,6 @@ CREATE INDEX IF NOT EXISTS idx_inventory_batch_expiry_discount
     ON inventory_batch(expiration_time)
     WHERE status = 'active' AND discount_label IS NOT NULL;
 
-ALTER TABLE store_inventory_entry ADD COLUMN IF NOT EXISTS loss_category TEXT;
-CREATE INDEX IF NOT EXISTS idx_store_inventory_entry_loss
-    ON store_inventory_entry(biz_date, loss_category)
-    WHERE entry_type = 'loss';
 """
 
 CORE4_REPLENISH_DDL = """

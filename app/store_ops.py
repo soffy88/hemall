@@ -49,6 +49,13 @@ CREATE INDEX IF NOT EXISTS idx_store_inventory_entry_date
 CREATE INDEX IF NOT EXISTS idx_store_inventory_entry_variant
     ON store_inventory_entry(variant_id, biz_date DESC);
 
+-- 损耗分类列（原在 CORE4_EXPIRY_DDL，但该 DDL 在 init_db 里先于本表创建执行，
+-- 空库会报 relation does not exist；随建表语句走，p0_schema 执行时表已存在）。
+ALTER TABLE store_inventory_entry ADD COLUMN IF NOT EXISTS loss_category TEXT;
+CREATE INDEX IF NOT EXISTS idx_store_inventory_entry_loss
+    ON store_inventory_entry(biz_date, loss_category)
+    WHERE entry_type = 'loss';
+
 ALTER TABLE customer_order ADD COLUMN IF NOT EXISTS shipping_method_code TEXT;
 ALTER TABLE customer_order ADD COLUMN IF NOT EXISTS weigh_status TEXT;
 ALTER TABLE cart ADD COLUMN IF NOT EXISTS shipping_method_code TEXT;

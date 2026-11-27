@@ -48,6 +48,9 @@ dependencies = [
     "onnxruntime>=1.18",
     # 视觉识别: FAISS 向量检索
     "faiss-cpu>=1.8",
+    # app.ext.wechat_mp 直接用 Cryptodome.Cipher (AES-128-CBC 解密微信数据)；
+    # 之前只靠 python-alipay-sdk 间接带入 pycryptodomex，这里显式声明，不依赖隐式传递依赖。
+    "pycryptodomex>=3.20",
 ]
 
 [project.optional-dependencies]

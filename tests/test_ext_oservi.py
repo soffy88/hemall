@@ -176,6 +176,7 @@ async def test_inventory_reaper_engine_disposes_expired_and_marks_down_near_expi
     cn_pool,
 ):
     from app.config import Settings
+    from app.core4_expiry import default_expiry_rules, save_expiry_rules
     from app.ext.oservi import build_inventory_reaper_engine
 
     loc_id, var_id = await _make_variant(cn_pool)
@@ -202,8 +203,16 @@ async def test_inventory_reaper_engine_disposes_expired_and_marks_down_near_expi
         expiration_time=now + timedelta(hours=1),  # 24h 保质期，已过 23/24
     )
 
-    engine = build_inventory_reaper_engine(cn_pool, settings=Settings(output_root="/tmp"))
-    results = await engine.run_once()
+    # core4 临期规则默认开启时 reaper 不再自行改价（由 core4_expiry 统一管理）；
+    # 本测试验的是 reaper 自身的降价路径，先关掉 core4 接管，跑完恢复默认。
+    await save_expiry_rules(
+        cn_pool, {**default_expiry_rules(), "enabled": False}, updated_by="test"
+    )
+    try:
+        engine = build_inventory_reaper_engine(cn_pool, settings=Settings(output_root="/tmp"))
+        results = await engine.run_once()
+    finally:
+        await save_expiry_rules(cn_pool, default_expiry_rules(), updated_by="test")
 
     summary = results[0]
     assert expired_batch in summary["disposed"]
