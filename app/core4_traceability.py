@@ -25,32 +25,34 @@ router = APIRouter(prefix="/store/traceability", tags=["traceability"])
 
 class TraceabilityBatch(BaseModel):
     """溯源批次信息。"""
+
     batch_id: str
     batch_no: str
-    produced_at: str | None = None          # 生产日期（若批次有记录）
-    received_at: str                        # 到店/入库日期 (batch.created_at)
-    origin_region: str | None = None        # 产地
-    storage_condition: str | None = None    # 储存条件
-    shelf_life_days: int | None = None      # 保质期天数
-    expiration_time: str | None = None      # 过期时间
+    produced_at: str | None = None  # 生产日期（若批次有记录）
+    received_at: str  # 到店/入库日期 (batch.created_at)
+    origin_region: str | None = None  # 产地
+    storage_condition: str | None = None  # 储存条件
+    shelf_life_days: int | None = None  # 保质期天数
+    expiration_time: str | None = None  # 过期时间
     quality_certificate_url: str | None = None  # 质检证书
-    inspection_status: str                  # 质检状态: passed/pending/failed
-    inspection_note: str | None = None      # 质检备注
-    inspection_at: str | None = None        # 质检时间
-    available_qty: int                      # 可用库存
-    retail_price_cents: int                 # 零售价
+    inspection_status: str  # 质检状态: passed/pending/failed
+    inspection_note: str | None = None  # 质检备注
+    inspection_at: str | None = None  # 质检时间
+    available_qty: int  # 可用库存
+    retail_price_cents: int  # 零售价
 
 
 class TraceabilityResponse(BaseModel):
     """商品溯源聚合响应。"""
+
     product_id: str
     product_title: str
     category_name: str | None = None
     batches: list[TraceabilityBatch]
-    traceability_complete: bool             # 是否所有关键字段齐全
-    missing_fields: list[str] = []          # 缺失的关键字段
-    earliest_received_at: str | None = None # 最早入库日期
-    latest_expiration: str | None = None    # 最近过期时间
+    traceability_complete: bool  # 是否所有关键字段齐全
+    missing_fields: list[str] = []  # 缺失的关键字段
+    earliest_received_at: str | None = None  # 最早入库日期
+    latest_expiration: str | None = None  # 最近过期时间
 
 
 @router.get("/{product_id}")
@@ -106,8 +108,11 @@ async def get_product_traceability(
     batches = []
     missing_fields_set: set[str] = set()
     required_fields = [
-        "origin_region", "storage_condition", "shelf_life_days",
-        "quality_certificate_url", "inspection_status"
+        "origin_region",
+        "storage_condition",
+        "shelf_life_days",
+        "quality_certificate_url",
+        "inspection_status",
     ]
     received_dates = []
     expiration_dates = []
@@ -214,12 +219,14 @@ async def get_batch_traceability(
             SELECT sie.*, u.name AS operator_name
             FROM store_inventory_entry sie
             LEFT JOIN "app_user" u ON u.id = sie.operator_id
-            WHERE sie.variant_id = $1 AND sie.biz_date >= (ib.created_at AT TIME ZONE 'Asia/Shanghai')::date
+            WHERE sie.variant_id = $1
+                AND sie.biz_date >= (ib.created_at AT TIME ZONE 'Asia/Shanghai')::date
               AND ib.id = $2
             ORDER BY sie.created_at DESC
             LIMIT 10
             """,
-            batch["variant_id"], batch_id,
+            batch["variant_id"],
+            batch_id,
         )
 
     return {
@@ -231,7 +238,9 @@ async def get_batch_traceability(
             "origin_region": batch["origin_region"],
             "storage_condition": batch["storage_condition"],
             "shelf_life_days": batch["shelf_life_days"],
-            "expiration_time": batch["expiration_time"].isoformat() if batch["expiration_time"] else None,
+            "expiration_time": (
+                batch["expiration_time"].isoformat() if batch["expiration_time"] else None
+            ),
             "quality_certificate_url": batch["quality_certificate_url"],
             "inspection_status": batch["inspection_status"],
             "inspection_note": batch["inspection_note"],
@@ -288,12 +297,16 @@ async def verify_quality_certificate(
 
     # 允许的证书域名白名单（防 SSRF）
     allowed_domains = {
-        "ciq.gov.cn", "customs.gov.cn", "marketreg.gov.cn",
-        "test.hemall.local", "localhost",
+        "ciq.gov.cn",
+        "customs.gov.cn",
+        "marketreg.gov.cn",
+        "test.hemall.local",
+        "localhost",
     }
 
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(certificate_url)
         if parsed.scheme not in ("http", "https"):
             return {"valid": False, "reason": "invalid_scheme", "url": certificate_url}
@@ -302,7 +315,12 @@ async def verify_quality_certificate(
         # 允许子域名匹配
         allowed = any(domain == d or domain.endswith("." + d) for d in allowed_domains)
         if not allowed and not domain.startswith("127.") and not domain.startswith("192.168."):
-            return {"valid": False, "reason": "domain_not_allowed", "domain": domain, "url": certificate_url}
+            return {
+                "valid": False,
+                "reason": "domain_not_allowed",
+                "domain": domain,
+                "url": certificate_url,
+            }
     except Exception as e:
         return {"valid": False, "reason": "parse_error", "error": str(e), "url": certificate_url}
 
@@ -334,8 +352,12 @@ def _num(v: Any) -> int:
 
 # ── 管理端：溯源数据完整性报表 ────────────────────────────────────────────
 
-def _require_admin(request: Request, principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+
+def _require_admin(
+    request: Request, principal: dict[str, Any] = Depends(get_current_user)
+) -> dict[str, Any]:
     from .deps import assert_staff_role
+
     return assert_staff_role(principal, {"admin", "support"})
 
 
@@ -350,20 +372,28 @@ async def traceability_completeness_report(
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            f"""
+            """
             SELECT p.id, p.title, p.category_id, pc.name AS category_name,
                    COUNT(ib.id)::int AS total_batches,
-                   COUNT(ib.id) FILTER (WHERE ib.origin_region IS NOT NULL AND ib.origin_region <> '')::int AS has_origin,
-                   COUNT(ib.id) FILTER (WHERE ib.storage_condition IS NOT NULL AND ib.storage_condition <> '')::int AS has_storage,
-                   COUNT(ib.id) FILTER (WHERE ib.shelf_life_days IS NOT NULL AND ib.shelf_life_days > 0)::int AS has_shelf_life,
-                   COUNT(ib.id) FILTER (WHERE ib.quality_certificate_url IS NOT NULL AND ib.quality_certificate_url <> '')::int AS has_cert,
-                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'passed')::int AS passed_inspection,
-                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'failed')::int AS failed_inspection,
-                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'pending')::int AS pending_inspection
+                   COUNT(ib.id) FILTER (WHERE ib.origin_region IS NOT NULL
+                       AND ib.origin_region <> '')::int AS has_origin,
+                   COUNT(ib.id) FILTER (WHERE ib.storage_condition IS NOT NULL
+                       AND ib.storage_condition <> '')::int AS has_storage,
+                   COUNT(ib.id) FILTER (WHERE ib.shelf_life_days IS NOT NULL
+                       AND ib.shelf_life_days > 0)::int AS has_shelf_life,
+                   COUNT(ib.id) FILTER (WHERE ib.quality_certificate_url IS NOT NULL
+                       AND ib.quality_certificate_url <> '')::int AS has_cert,
+                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'passed')::int
+                       AS passed_inspection,
+                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'failed')::int
+                       AS failed_inspection,
+                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'pending')::int
+                       AS pending_inspection
             FROM product p
             LEFT JOIN product_category pc ON pc.id = p.category_id
             LEFT JOIN product_variant pv ON pv.product_id = p.id AND pv.deleted_at IS NULL
-            LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id AND ib.deleted_at IS NULL AND ib.status = 'active'
+            LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id
+                AND ib.deleted_at IS NULL AND ib.status = 'active'
             WHERE p.deleted_at IS NULL AND p.status = 'published'
             GROUP BY p.id, p.title, p.category_id, pc.name
             HAVING COUNT(ib.id) > 0
@@ -376,35 +406,44 @@ async def traceability_completeness_report(
     report = []
     for r in rows:
         total = _num(r["total_batches"])
-        complete = (_num(r["has_origin"]) == total and
-                    _num(r["has_storage"]) == total and
-                    _num(r["has_shelf_life"]) == total and
-                    _num(r["has_cert"]) == total and
-                    _num(r["passed_inspection"]) == total)
+        complete = (
+            _num(r["has_origin"]) == total
+            and _num(r["has_storage"]) == total
+            and _num(r["has_shelf_life"]) == total
+            and _num(r["has_cert"]) == total
+            and _num(r["passed_inspection"]) == total
+        )
         missing = []
-        if _num(r["has_origin"]) < total: missing.append("产地")
-        if _num(r["has_storage"]) < total: missing.append("储存条件")
-        if _num(r["has_shelf_life"]) < total: missing.append("保质期")
-        if _num(r["has_cert"]) < total: missing.append("质检证书")
-        if _num(r["passed_inspection"]) < total: missing.append("质检未通过")
+        if _num(r["has_origin"]) < total:
+            missing.append("产地")
+        if _num(r["has_storage"]) < total:
+            missing.append("储存条件")
+        if _num(r["has_shelf_life"]) < total:
+            missing.append("保质期")
+        if _num(r["has_cert"]) < total:
+            missing.append("质检证书")
+        if _num(r["passed_inspection"]) < total:
+            missing.append("质检未通过")
 
-        report.append({
-            "product_id": str(r["id"]),
-            "title": r["title"],
-            "category": r["category_name"],
-            "total_batches": total,
-            "complete": complete,
-            "missing_fields": missing,
-            "details": {
-                "has_origin": _num(r["has_origin"]),
-                "has_storage": _num(r["has_storage"]),
-                "has_shelf_life": _num(r["has_shelf_life"]),
-                "has_cert": _num(r["has_cert"]),
-                "passed_inspection": _num(r["passed_inspection"]),
-                "failed_inspection": _num(r["failed_inspection"]),
-                "pending_inspection": _num(r["pending_inspection"]),
+        report.append(
+            {
+                "product_id": str(r["id"]),
+                "title": r["title"],
+                "category": r["category_name"],
+                "total_batches": total,
+                "complete": complete,
+                "missing_fields": missing,
+                "details": {
+                    "has_origin": _num(r["has_origin"]),
+                    "has_storage": _num(r["has_storage"]),
+                    "has_shelf_life": _num(r["has_shelf_life"]),
+                    "has_cert": _num(r["has_cert"]),
+                    "passed_inspection": _num(r["passed_inspection"]),
+                    "failed_inspection": _num(r["failed_inspection"]),
+                    "pending_inspection": _num(r["pending_inspection"]),
+                },
             }
-        })
+        )
 
     complete_count = sum(1 for r in report if r["complete"])
     return {
@@ -430,15 +469,21 @@ async def traceability_completeness_report_csv(
             """
             SELECT p.id, p.title, pc.name AS category_name,
                    COUNT(ib.id)::int AS total_batches,
-                   COUNT(ib.id) FILTER (WHERE ib.origin_region IS NOT NULL AND ib.origin_region <> '')::int AS has_origin,
-                   COUNT(ib.id) FILTER (WHERE ib.storage_condition IS NOT NULL AND ib.storage_condition <> '')::int AS has_storage,
-                   COUNT(ib.id) FILTER (WHERE ib.shelf_life_days IS NOT NULL AND ib.shelf_life_days > 0)::int AS has_shelf_life,
-                   COUNT(ib.id) FILTER (WHERE ib.quality_certificate_url IS NOT NULL AND ib.quality_certificate_url <> '')::int AS has_cert,
-                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'passed')::int AS passed_inspection
+                   COUNT(ib.id) FILTER (WHERE ib.origin_region IS NOT NULL
+                       AND ib.origin_region <> '')::int AS has_origin,
+                   COUNT(ib.id) FILTER (WHERE ib.storage_condition IS NOT NULL
+                       AND ib.storage_condition <> '')::int AS has_storage,
+                   COUNT(ib.id) FILTER (WHERE ib.shelf_life_days IS NOT NULL
+                       AND ib.shelf_life_days > 0)::int AS has_shelf_life,
+                   COUNT(ib.id) FILTER (WHERE ib.quality_certificate_url IS NOT NULL
+                       AND ib.quality_certificate_url <> '')::int AS has_cert,
+                   COUNT(ib.id) FILTER (WHERE ib.inspection_status = 'passed')::int
+                       AS passed_inspection
             FROM product p
             LEFT JOIN product_category pc ON pc.id = p.category_id
             LEFT JOIN product_variant pv ON pv.product_id = p.id AND pv.deleted_at IS NULL
-            LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id AND ib.deleted_at IS NULL AND ib.status = 'active'
+            LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id
+                AND ib.deleted_at IS NULL AND ib.status = 'active'
             WHERE p.deleted_at IS NULL AND p.status = 'published'
             GROUP BY p.id, p.title, pc.name
             HAVING COUNT(ib.id) > 0
@@ -446,27 +491,45 @@ async def traceability_completeness_report_csv(
             """
         )
 
-    header = ["商品ID", "商品名称", "分类", "批次数", "有产地", "有储存条件", "有保质期", "有证书", "质检通过", "完整性"]
+    header = [
+        "商品ID",
+        "商品名称",
+        "分类",
+        "批次数",
+        "有产地",
+        "有储存条件",
+        "有保质期",
+        "有证书",
+        "质检通过",
+        "完整性",
+    ]
     csv_rows = []
     for r in rows:
         total = _num(r["total_batches"])
-        complete = (_num(r["has_origin"]) == total and
-                    _num(r["has_storage"]) == total and
-                    _num(r["has_shelf_life"]) == total and
-                    _num(r["has_cert"]) == total and
-                    _num(r["passed_inspection"]) == total)
-        csv_rows.append([
-            str(r["id"]),
-            r["title"],
-            r["category_name"] or "",
-            total,
-            _num(r["has_origin"]),
-            _num(r["has_storage"]),
-            _num(r["has_shelf_life"]),
-            _num(r["has_cert"]),
-            _num(r["passed_inspection"]),
-            "完整" if complete else "不完整",
-        ])
+        complete = (
+            _num(r["has_origin"]) == total
+            and _num(r["has_storage"]) == total
+            and _num(r["has_shelf_life"]) == total
+            and _num(r["has_cert"]) == total
+            and _num(r["passed_inspection"]) == total
+        )
+        csv_rows.append(
+            [
+                str(r["id"]),
+                r["title"],
+                r["category_name"] or "",
+                total,
+                _num(r["has_origin"]),
+                _num(r["has_storage"]),
+                _num(r["has_shelf_life"]),
+                _num(r["has_cert"]),
+                _num(r["passed_inspection"]),
+                "完整" if complete else "不完整",
+            ]
+        )
 
     from datetime import date
-    return _csv_response(f"traceability-completeness-{date.today().isoformat()}.csv", header, csv_rows)
+
+    return _csv_response(
+        f"traceability-completeness-{date.today().isoformat()}.csv", header, csv_rows
+    )

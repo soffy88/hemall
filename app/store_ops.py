@@ -495,6 +495,7 @@ class InboundInput(BaseModel):
     unit_cost_cents: int | None = Field(default=None, ge=0)
     supplier: str = ""
     note: str = ""
+    loss_category: str = "other"
 
 
 LOSS_CATEGORIES = ("expired", "damaged", "tasting", "other")

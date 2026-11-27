@@ -12,7 +12,7 @@ import json
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .deps import assert_staff_role, get_current_user
@@ -28,16 +28,17 @@ ADMIN_ROLES = frozenset({"admin", "support"})
 
 class BannerItem(BaseModel):
     """轮播图项"""
+
     id: str = Field(default_factory=lambda: f"banner_{secrets.token_hex(4)}")
     image_url: str = ""
     link_type: str = "none"  # none, product, category, pintuan, pickup, url
-    link_target: str = ""    # 目标 ID 或 URL
+    link_target: str = ""  # 目标 ID 或 URL
     title: str = ""
     subtitle: str = ""
     sort_order: int = 0
     is_active: bool = True
     start_at: str | None = None  # ISO datetime
-    end_at: str | None = None    # ISO datetime
+    end_at: str | None = None  # ISO datetime
 
 
 def default_banner_settings() -> dict[str, Any]:
@@ -69,7 +70,7 @@ def default_banner_settings() -> dict[str, Any]:
                 "end_at": None,
             },
         ],
-        "note": "占位配置，请在后台配置真实轮播图"
+        "note": "占位配置，请在后台配置真实轮播图",
     }
 
 
@@ -90,18 +91,20 @@ def _clean_banners(raw: Any) -> dict[str, Any]:
         for b in banners:
             if not isinstance(b, dict):
                 continue
-            cleaned.append({
-                "id": str(b.get("id", "")) or f"banner_{secrets.token_hex(4)}",
-                "image_url": str(b.get("image_url", "")).strip(),
-                "link_type": str(b.get("link_type", "none")).strip(),
-                "link_target": str(b.get("link_target", "")).strip(),
-                "title": str(b.get("title", "")).strip(),
-                "subtitle": str(b.get("subtitle", "")).strip(),
-                "sort_order": int(b.get("sort_order", 0)),
-                "is_active": bool(b.get("is_active", True)),
-                "start_at": b.get("start_at") if b.get("start_at") else None,
-                "end_at": b.get("end_at") if b.get("end_at") else None,
-            })
+            cleaned.append(
+                {
+                    "id": str(b.get("id", "")) or f"banner_{secrets.token_hex(4)}",
+                    "image_url": str(b.get("image_url", "")).strip(),
+                    "link_type": str(b.get("link_type", "none")).strip(),
+                    "link_target": str(b.get("link_target", "")).strip(),
+                    "title": str(b.get("title", "")).strip(),
+                    "subtitle": str(b.get("subtitle", "")).strip(),
+                    "sort_order": int(b.get("sort_order", 0)),
+                    "is_active": bool(b.get("is_active", True)),
+                    "start_at": b.get("start_at") if b.get("start_at") else None,
+                    "end_at": b.get("end_at") if b.get("end_at") else None,
+                }
+            )
         # 按 sort_order 排序
         cleaned.sort(key=lambda x: x["sort_order"])
         base["banners"] = cleaned
@@ -125,7 +128,9 @@ async def load_banner_settings(pool: Any) -> dict[str, Any]:
     return _clean_banners(raw)
 
 
-async def save_banner_settings(pool: Any, cfg: dict[str, Any], *, updated_by: str) -> dict[str, Any]:
+async def save_banner_settings(
+    pool: Any, cfg: dict[str, Any], *, updated_by: str
+) -> dict[str, Any]:
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -260,7 +265,8 @@ async def reorder_banners(
 @router.get("/list")
 async def get_banners(request: Request) -> dict[str, Any]:
     """获取轮播图列表（仅返回启用且在有效期内的）。"""
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
+
     pool = getattr(request.app.state, "pool", None)
     cfg = await load_banner_settings(pool)
     now = datetime.now(UTC)

@@ -115,6 +115,7 @@ def _decrypt_session_data(session_key: str, encrypted_data: str, iv: str) -> dic
     cipher = AES.new(session_key_bytes, AES.MODE_CBC, iv_bytes)
     decrypted = unpad(cipher.decrypt(encrypted_data_bytes), AES.block_size)
     import json
+
     return json.loads(decrypted.decode("utf-8"))
 
 
@@ -195,7 +196,9 @@ async def send_subscribe_message(
     data = resp.json()
     errcode = int(data.get("errcode") or 0)
     if errcode != 0:
-        logger.warning("send_subscribe_message failed errcode=%s openid=%s", errcode, openid[:10] + "...")
+        logger.warning(
+            "send_subscribe_message failed errcode=%s openid=%s", errcode, openid[:10] + "..."
+        )
         # 部分错误码不抛异常，仅记录 (如用户未订阅 43101)
         if errcode in (43101, 41028, 41029, 41030):
             return {"errcode": errcode, "errmsg": str(data.get("errmsg") or "")}

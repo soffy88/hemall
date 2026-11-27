@@ -22,6 +22,20 @@ from pydantic import BaseModel
 
 from . import queries
 from .auth import router as auth_router
+from .core4_banner import admin_router as banner_admin_router
+from .core4_banner import router as banner_router
+from .core4_delivery import admin_router as delivery_admin_router
+from .core4_delivery import staff_router as delivery_staff_router
+from .core4_delivery import store_router as delivery_store_router
+from .core4_expiry import router as expiry_router
+from .core4_monitoring import router as monitoring_router
+from .core4_personalization import router as personalization_router
+from .core4_pickup import admin_router as pickup_admin_router
+from .core4_pickup import router as pickup_router
+from .core4_pintuan import admin_router as pintuan_admin_router
+from .core4_pintuan import router as pintuan_router
+from .core4_replenish import router as replenish_router
+from .core4_traceability import router as traceability_router
 from .db_recovery import kick_pool_recovery
 from .deps import (
     assert_staff_role,
@@ -44,20 +58,9 @@ from .ext.oskill import (
 )
 from .ext.registry import all_endpoint_specs as ext_endpoint_specs
 from .product_photo import router as product_photo_router
-from .core4_delivery import admin_router as delivery_admin_router
-from .core4_delivery import staff_router as delivery_staff_router
-from .core4_delivery import store_router as delivery_store_router
-from .core4_expiry import router as expiry_router
-from .core4_replenish import router as replenish_router
-from .core4_personalization import router as personalization_router
-from .core4_pintuan import router as pintuan_router, admin_router as pintuan_admin_router
-from .core4_pickup import router as pickup_router, admin_router as pickup_admin_router
-from .core4_traceability import router as traceability_router
-from .core4_monitoring import router as monitoring_router
-from .core4_banner import router as banner_router, admin_router as banner_admin_router
-from .scale_router import router as scale_router
 from .registry import all_endpoint_specs
 from .respond import omodul_endpoint
+from .scale_router import router as scale_router
 from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
 from .shipping import SETTING_KEY as SHIPPING_SETTING_KEY
 from .shipping import load_shipping_rules
@@ -1040,8 +1043,8 @@ async def lookup_order_by_pickup_code(
 
     解析 JWT 中的 order_id，返回订单详情。
     """
-    from .security.tokens import decode_token, TOKEN_TYPE_PICKUP, TokenTypeError
-    from .orders.service import OrderService, OrderNotFoundError
+    from .orders.service import OrderNotFoundError, OrderService
+    from .security.tokens import TOKEN_TYPE_PICKUP, TokenTypeError, decode_token
 
     pool = _pool(request)
     cfg = request.app.state.config
@@ -1054,9 +1057,9 @@ async def lookup_order_by_pickup_code(
             algorithm=cfg.jwt_algorithm,
         )
     except TokenTypeError:
-        raise HTTPException(400, "无效的取货码")
+        raise HTTPException(400, "无效的取货码") from None
     except Exception:
-        raise HTTPException(400, "取货码已过期或格式错误")
+        raise HTTPException(400, "取货码已过期或格式错误") from None
 
     order_id = payload.get("order_id")
     if not order_id:
@@ -1067,7 +1070,7 @@ async def lookup_order_by_pickup_code(
         order = await svc.get_order(order_id)
         items = await svc.get_order_items(order_id)
     except OrderNotFoundError:
-        raise HTTPException(404, "订单不存在")
+        raise HTTPException(404, "订单不存在") from None
 
     if order is None:
         raise HTTPException(404, "订单不存在")

@@ -10,19 +10,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import math
-from collections import Counter, defaultdict
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .deps import get_current_customer, get_current_user
-from .store_ops import _csv_response
 
 router = APIRouter(prefix="/store/personalization", tags=["personalization"])
 
@@ -32,16 +27,17 @@ logger = logging.getLogger("hemall.core4.personalization")
 PERSONALIZATION_SETTING_KEY = "personalization.settings.v1"
 
 DEFAULT_PERSONALIZATION_SETTINGS = {
-    "reorder_lookback_days": 90,      # 再来一单：回看天数
-    "frequent_lookback_days": 180,    # 我的常买：回看天数
-    "min_purchase_count": 2,          # 我的常买：最小购买次数
+    "reorder_lookback_days": 90,  # 再来一单：回看天数
+    "frequent_lookback_days": 180,  # 我的常买：回看天数
+    "min_purchase_count": 2,  # 我的常买：最小购买次数
     "copurchase_lookback_days": 180,  # 共购：回看天数
-    "copurchase_min_cooccurrence": 2, # 共购：最小共现次数
+    "copurchase_min_cooccurrence": 2,  # 共购：最小共现次数
     "copurchase_max_recommendations": 10,
-    "homepage_top_k": 20,             # 首页推荐数量
+    "homepage_top_k": 20,  # 首页推荐数量
 }
 
 # ── 工具函数 ───────────────────────────────────────────────────────────
+
 
 def _num(v: Any) -> int:
     try:
@@ -66,6 +62,7 @@ async def _get_settings(pool: Any) -> dict[str, Any]:
 
 async def _save_settings(pool: Any, settings: dict[str, Any], operator_id: str) -> None:
     import json
+
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -114,6 +111,7 @@ async def _get_customer_last_order(pool: Any, customer_id: str) -> dict | None:
 
 # ── 1. 再来一单 ─────────────────────────────────────────────────────────
 
+
 @router.get("/reorder/last-order")
 async def get_last_order_for_reorder(
     request: Request,
@@ -130,6 +128,7 @@ async def get_last_order_for_reorder(
 
 class ReorderRequest(BaseModel):
     """再来一单请求：可选覆盖数量、跳过某些行。"""
+
     order_id: str
     variant_qty_overrides: dict[str, int] = Field(default_factory=dict)  # variant_id -> quantity
     skip_variant_ids: list[str] = Field(default_factory=list)
@@ -174,7 +173,8 @@ async def apply_reorder_to_cart(
     # 获取或创建购物车
     async with pool.acquire() as conn:
         cart = await conn.fetchrow(
-            "SELECT id FROM cart WHERE customer_id = $1 AND status = 'active' AND deleted_at IS NULL",
+            "SELECT id FROM cart WHERE customer_id = $1 "
+            "AND status = 'active' AND deleted_at IS NULL",
             customer_id,
         )
         if cart:
@@ -205,14 +205,17 @@ async def apply_reorder_to_cart(
 
             # 检查是否已有该变体在购物车中
             existing = await conn.fetchrow(
-                "SELECT id, quantity FROM cart_line_item WHERE cart_id = $1 AND variant_id = $2 AND deleted_at IS NULL",
-                cart_id, vid,
+                "SELECT id, quantity FROM cart_line_item WHERE cart_id = $1 "
+                "AND variant_id = $2 AND deleted_at IS NULL",
+                cart_id,
+                vid,
             )
             if existing:
                 new_qty = _num(existing["quantity"]) + qty
                 await conn.execute(
                     "UPDATE cart_line_item SET quantity = $1, updated_at = NOW() WHERE id = $2",
-                    new_qty, existing["id"],
+                    new_qty,
+                    existing["id"],
                 )
             else:
                 await conn.execute(
@@ -266,7 +269,10 @@ async def apply_reorder_to_cart(
 
 # ── 2. 我的常买 ─────────────────────────────────────────────────────────
 
-async def _compute_frequent_purchases(pool: Any, customer_id: str, settings: dict[str, Any]) -> list[dict]:
+
+async def _compute_frequent_purchases(
+    pool: Any, customer_id: str, settings: dict[str, Any]
+) -> list[dict]:
     """计算我的常买：近 N 天内购买频次最高的商品。"""
     lookback_days = settings.get("frequent_lookback_days", 180)
     min_count = settings.get("min_purchase_count", 2)
@@ -346,7 +352,8 @@ async def add_frequent_to_cart(
     # 获取或创建购物车
     async with pool.acquire() as conn:
         cart = await conn.fetchrow(
-            "SELECT id FROM cart WHERE customer_id = $1 AND status = 'active' AND deleted_at IS NULL",
+            "SELECT id FROM cart WHERE customer_id = $1 "
+            "AND status = 'active' AND deleted_at IS NULL",
             customer_id,
         )
         if cart:
@@ -368,22 +375,26 @@ async def add_frequent_to_cart(
 
             # 获取变体价格
             variant = await conn.fetchrow(
-                "SELECT reference_price_cents FROM product_variant WHERE id = $1 AND deleted_at IS NULL",
+                "SELECT reference_price_cents FROM product_variant WHERE id = $1 "
+                "AND deleted_at IS NULL",
                 vid,
             )
             if not variant:
                 continue
 
             existing = await conn.fetchrow(
-                "SELECT id, quantity FROM cart_line_item WHERE cart_id = $1 AND variant_id = $2 AND deleted_at IS NULL",
-                cart_id, vid,
+                "SELECT id, quantity FROM cart_line_item WHERE cart_id = $1 "
+                "AND variant_id = $2 AND deleted_at IS NULL",
+                cart_id,
+                vid,
             )
             price = _num(variant["reference_price_cents"])
             if existing:
                 new_qty = _num(existing["quantity"]) + qty
                 await conn.execute(
                     "UPDATE cart_line_item SET quantity = $1, updated_at = NOW() WHERE id = $2",
-                    new_qty, existing["id"],
+                    new_qty,
+                    existing["id"],
                 )
             else:
                 await conn.execute(
@@ -393,15 +404,21 @@ async def add_frequent_to_cart(
                          line_total_cents, pricing_mode)
                     VALUES ($1, $2, $3, $4, $5, 'piece')
                     """,
-                    cart_id, vid, qty, price, qty * price,
+                    cart_id,
+                    vid,
+                    qty,
+                    price,
+                    qty * price,
                 )
             added += 1
 
         await conn.execute(
             """
             UPDATE cart SET
-                subtotal_cents = (SELECT COALESCE(SUM(line_total_cents), 0) FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
-                grand_total_cents = (SELECT COALESCE(SUM(line_total_cents), 0) FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
+                subtotal_cents = (SELECT COALESCE(SUM(line_total_cents), 0)
+                    FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
+                grand_total_cents = (SELECT COALESCE(SUM(line_total_cents), 0)
+                    FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
                 updated_at = NOW()
             WHERE id = $1
             """,
@@ -412,6 +429,7 @@ async def add_frequent_to_cart(
 
 
 # ── 3. 共购推荐：买了它的人也买了 ────────────────────────────────────────
+
 
 async def _compute_copurchase_recommendations(
     pool: Any,
@@ -499,6 +517,7 @@ async def get_copurchase_recommendations(
 
 # ── 4. 首页个性化排序 ───────────────────────────────────────────────────
 
+
 async def _get_personalized_homepage(
     pool: Any,
     customer_id: str | None,
@@ -533,7 +552,6 @@ async def _get_personalized_homepage(
 
     # 有历史用户：使用推荐引擎的个性化推荐
     # 这里复用现有的 recommend 服务
-    from app.recommend.service import RecommendationService
     from app.main import get_app_state
 
     app_state = get_app_state()
@@ -555,7 +573,7 @@ async def _get_hot_products(pool: Any, top_k: int, reason: str) -> dict[str, Any
     """获取热销商品（兜底）。"""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            f"""
+            """
             SELECT p.id, p.title, p.slug, p.description,
                    MIN(ib.retail_price_cents) AS min_price_cents,
                    SUM(GREATEST(ib.stock_qty - ib.reserved_qty, 0))::int AS total_stock,
@@ -565,7 +583,8 @@ async def _get_hot_products(pool: Any, top_k: int, reason: str) -> dict[str, Any
                        JOIN product_variant pv2 ON pv2.id = ib2.variant_id
                        WHERE pv2.product_id = p.id AND ib2.deleted_at IS NULL
                          AND ib2.status = 'active' AND ib2.inspection_status <> 'failed'
-                       ORDER BY GREATEST(ib2.stock_qty - ib2.reserved_qty, 0) DESC, ib2.created_at ASC
+                       ORDER BY GREATEST(ib2.stock_qty - ib2.reserved_qty, 0) DESC,
+                           ib2.created_at ASC
                        LIMIT 1
                    ) AS image_url
             FROM product p
@@ -605,6 +624,7 @@ async def get_personalized_homepage(
 
 
 # ── 5. 菜谱 ─────────────────────────────────────────────────────────────
+
 
 class RecipeIngredient(BaseModel):
     variant_id: str
@@ -667,8 +687,10 @@ CREATE TABLE IF NOT EXISTS core4_recipe (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_core4_recipe_published ON core4_recipe(is_published, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_core4_recipe_published
+    ON core4_recipe(is_published, created_at DESC);
 """
+
 
 async def _ensure_recipe_table(pool: Any) -> None:
     async with pool.acquire() as conn:
@@ -787,9 +809,7 @@ async def get_recipe(
     await _ensure_recipe_table(pool)
 
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM core4_recipe WHERE id = $1", recipe_id
-        )
+        row = await conn.fetchrow("SELECT * FROM core4_recipe WHERE id = $1", recipe_id)
         if not row:
             raise HTTPException(404, "recipe not found")
 
@@ -823,7 +843,7 @@ async def update_recipe(
     await _ensure_recipe_table(pool)
 
     updates = []
-    params = [recipe_id]
+    params: list[Any] = [recipe_id]
     param_idx = 2
 
     fields = {
@@ -909,7 +929,8 @@ async def add_recipe_to_cart(
     # 获取或创建购物车
     async with pool.acquire() as conn:
         cart = await conn.fetchrow(
-            "SELECT id FROM cart WHERE customer_id = $1 AND status = 'active' AND deleted_at IS NULL",
+            "SELECT id FROM cart WHERE customer_id = $1 "
+            "AND status = 'active' AND deleted_at IS NULL",
             customer_id,
         )
         if cart:
@@ -933,22 +954,26 @@ async def add_recipe_to_cart(
             qty = max(1, int(base_qty * servings + 0.5))
 
             variant = await conn.fetchrow(
-                "SELECT reference_price_cents FROM product_variant WHERE id = $1 AND deleted_at IS NULL",
+                "SELECT reference_price_cents FROM product_variant WHERE id = $1 "
+                "AND deleted_at IS NULL",
                 vid,
             )
             if not variant:
                 continue
 
             existing = await conn.fetchrow(
-                "SELECT id, quantity FROM cart_line_item WHERE cart_id = $1 AND variant_id = $2 AND deleted_at IS NULL",
-                cart_id, vid,
+                "SELECT id, quantity FROM cart_line_item WHERE cart_id = $1 "
+                "AND variant_id = $2 AND deleted_at IS NULL",
+                cart_id,
+                vid,
             )
             price = _num(variant["reference_price_cents"])
             if existing:
                 new_qty = _num(existing["quantity"]) + qty
                 await conn.execute(
                     "UPDATE cart_line_item SET quantity = $1, updated_at = NOW() WHERE id = $2",
-                    new_qty, existing["id"],
+                    new_qty,
+                    existing["id"],
                 )
             else:
                 await conn.execute(
@@ -958,15 +983,21 @@ async def add_recipe_to_cart(
                          line_total_cents, pricing_mode)
                     VALUES ($1, $2, $3, $4, $5, 'piece')
                     """,
-                    cart_id, vid, qty, price, qty * price,
+                    cart_id,
+                    vid,
+                    qty,
+                    price,
+                    qty * price,
                 )
             added += 1
 
         await conn.execute(
             """
             UPDATE cart SET
-                subtotal_cents = (SELECT COALESCE(SUM(line_total_cents), 0) FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
-                grand_total_cents = (SELECT COALESCE(SUM(line_total_cents), 0) FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
+                subtotal_cents = (SELECT COALESCE(SUM(line_total_cents), 0)
+                    FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
+                grand_total_cents = (SELECT COALESCE(SUM(line_total_cents), 0)
+                    FROM cart_line_item WHERE cart_id = $1 AND deleted_at IS NULL),
                 updated_at = NOW()
             WHERE id = $1
             """,
@@ -982,6 +1013,7 @@ async def add_recipe_to_cart(
 
 # ── 管理端配置 ───────────────────────────────────────────────────────────
 
+
 class PersonalizationSettings(BaseModel):
     reorder_lookback_days: int = Field(default=90, ge=1, le=365)
     frequent_lookback_days: int = Field(default=180, ge=1, le=365)
@@ -992,9 +1024,12 @@ class PersonalizationSettings(BaseModel):
     homepage_top_k: int = Field(default=20, ge=5, le=100)
 
 
-def _require_admin(request: Request, principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+def _require_admin(
+    request: Request, principal: dict[str, Any] = Depends(get_current_user)
+) -> dict[str, Any]:
     # 复用现有的 admin 鉴权逻辑
     from .deps import assert_staff_role
+
     return assert_staff_role(principal, {"admin", "support"})
 
 

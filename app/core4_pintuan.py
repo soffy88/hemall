@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -28,13 +27,13 @@ from .night_pintuan import (
     list_pintuan_groups,
     sweep_expired_pintuan_groups,
 )
-from .security.tokens import TOKEN_TYPE_PICKUP, sign_token
 
 router = APIRouter(prefix="/store/pintuan", tags=["pintuan"])
 admin_router = APIRouter(prefix="/admin/pintuan", tags=["admin-pintuan"])
 
 
 # ── 顾客端模型 ────────────────────────────────────────────────────────────
+
 
 class CreatePintuanGroupRequest(BaseModel):
     variant_id: str
@@ -103,6 +102,7 @@ async def _enrich_participants_with_nickname(pool: Any, participants: list[dict]
 
 # ── 顾客端端点 ────────────────────────────────────────────────────────────
 
+
 @router.get("/groups")
 async def list_groups(
     request: Request,
@@ -130,7 +130,9 @@ async def get_group(
     if not group:
         raise HTTPException(404, "团购不存在或已过期")
     await _enrich_group_with_variant(pool, group)
-    group["participants"] = await _enrich_participants_with_nickname(pool, group.get("participants", []))
+    group["participants"] = await _enrich_participants_with_nickname(
+        pool, group.get("participants", [])
+    )
     return group
 
 
@@ -154,7 +156,7 @@ async def create_group(
             quantity=body.quantity,
         )
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     await _enrich_group_with_variant(pool, group)
     return group
 
@@ -177,13 +179,16 @@ async def join_group(
             quantity=body.quantity,
         )
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     await _enrich_group_with_variant(pool, group)
-    group["participants"] = await _enrich_participants_with_nickname(pool, group.get("participants", []))
+    group["participants"] = await _enrich_participants_with_nickname(
+        pool, group.get("participants", [])
+    )
     return group
 
 
 # ── 后台管理端点 ────────────────────────────────────────────────────────────
+
 
 @admin_router.get("/groups")
 async def admin_list_groups(

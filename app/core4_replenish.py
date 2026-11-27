@@ -12,14 +12,11 @@
 
 from __future__ import annotations
 
-import csv
-import io
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .deps import assert_staff_role, get_current_user
@@ -33,16 +30,18 @@ TZ = "Asia/Shanghai"
 REPLENISH_SETTING_KEY = "replenish.settings.v1"
 
 DEFAULT_SETTINGS = {
-    "target_days": 7,           # 目标库存天数
-    "min_order_qty": 1,         # 最小起订量（件）
+    "target_days": 7,  # 目标库存天数
+    "min_order_qty": 1,  # 最小起订量（件）
     "max_shelf_life_pct": 0.6,  # 补货不超过保质期的比例
     "weekday_lookback_weeks": 8,  # 星期效应回望周数
-    "sales_windows": [7, 14],   # 销量窗口（天）
-    "cost_fallback_pct": 0.6,   # 无成本时用参考价 * 此比例估算成本
+    "sales_windows": [7, 14],  # 销量窗口（天）
+    "cost_fallback_pct": 0.6,  # 无成本时用参考价 * 此比例估算成本
 }
 
 
-def _require_admin(request: Request, principal: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+def _require_admin(
+    request: Request, principal: dict[str, Any] = Depends(get_current_user)
+) -> dict[str, Any]:
     return assert_staff_role(principal, {"admin", "support"})
 
 
@@ -64,6 +63,7 @@ async def _get_settings(pool: Any) -> dict[str, Any]:
 async def _save_settings(pool: Any, settings: dict[str, Any], operator_id: str) -> None:
     """保存补货配置。"""
     import json
+
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -85,7 +85,9 @@ def _num(v: Any) -> int:
         return 0
 
 
-async def _compute_replenish_suggestions(pool: Any, settings: dict[str, Any]) -> list[dict[str, Any]]:
+async def _compute_replenish_suggestions(
+    pool: Any, settings: dict[str, Any]
+) -> list[dict[str, Any]]:
     """核心算法：计算每个变体的补货建议。"""
     target_days = settings.get("target_days", 7)
     max_shelf_life_pct = settings.get("max_shelf_life_pct", 0.6)
@@ -99,17 +101,19 @@ async def _compute_replenish_suggestions(pool: Any, settings: dict[str, Any]) ->
     async with pool.acquire() as conn:
         # 1. 取所有在售变体（有批次、非测试、有库存或有销量）
         variants = await conn.fetch(
-            f"""
+            """
             SELECT pv.id AS variant_id, pv.sku_code, pv.pricing_mode, pv.reference_price_cents,
                    pv.price_basis_grams, pv.weight_options, pv.stock_unit,
                    p.title AS product_name, p.id AS product_id,
                    COALESCE((
                        SELECT jsonb_agg(jsonb_build_object(
                            'id', ib.id, 'stock_qty', ib.stock_qty, 'reserved_qty', ib.reserved_qty,
-                           'cost_price_cents', ib.cost_price_cents, 'shelf_life_days', ib.shelf_life_days
+                           'cost_price_cents', ib.cost_price_cents,
+                           'shelf_life_days', ib.shelf_life_days
                        ))
                        FROM inventory_batch ib
-                       WHERE ib.variant_id = pv.id AND ib.status = 'active' AND ib.deleted_at IS NULL
+                       WHERE ib.variant_id = pv.id AND ib.status = 'active'
+                           AND ib.deleted_at IS NULL
                    ), '[]'::jsonb) AS batches
             FROM product_variant pv
             JOIN product p ON p.id = pv.product_id
@@ -143,7 +147,8 @@ async def _compute_replenish_suggestions(pool: Any, settings: dict[str, Any]) ->
                   AND o.status NOT IN ('cancelled', 'failed', 'draft')
                   AND o.created_at >= {cutoff}
                   AND NOT EXISTS (
-                      SELECT 1 FROM customer c WHERE c.id = o.customer_id AND c.excluded_from_reports
+                      SELECT 1 FROM customer c WHERE c.id = o.customer_id
+                          AND c.excluded_from_reports
                   )
                 GROUP BY oli.variant_id
                 """
@@ -171,7 +176,8 @@ async def _compute_replenish_suggestions(pool: Any, settings: dict[str, Any]) ->
                   AND o.status NOT IN ('cancelled', 'failed', 'draft')
                   AND o.created_at >= {start} AND o.created_at < {end}
                   AND NOT EXISTS (
-                      SELECT 1 FROM customer c WHERE c.id = o.customer_id AND c.excluded_from_reports
+                      SELECT 1 FROM customer c WHERE c.id = o.customer_id
+                          AND c.excluded_from_reports
                   )
                 GROUP BY oli.variant_id, dow
                 """
@@ -261,24 +267,26 @@ async def _compute_replenish_suggestions(pool: Any, settings: dict[str, Any]) ->
             needed = min_order_qty
 
         if needed > 0:
-            suggestions.append({
-                "variant_id": vid,
-                "sku_code": v["sku_code"] or "",
-                "product_name": v["product_name"] or "",
-                "unit": unit,
-                "stock_qty": stock_qty,
-                "transit_qty": transit_qty,
-                "avg_daily_7d": round(avg_7d, 2),
-                "avg_daily_14d": round(avg_14d, 2),
-                "base_daily": round(base_daily, 2),
-                "weekday_factor": round(weekday_factor, 2),
-                "target_days": target_days,
-                "target_stock": int(target_stock + 0.5),
-                "suggested_qty": needed,
-                "cost_price_cents": cost_price,
-                "estimated_amount_cents": needed * cost_price,
-                "shelf_life_days": shelf_life_days,
-            })
+            suggestions.append(
+                {
+                    "variant_id": vid,
+                    "sku_code": v["sku_code"] or "",
+                    "product_name": v["product_name"] or "",
+                    "unit": unit,
+                    "stock_qty": stock_qty,
+                    "transit_qty": transit_qty,
+                    "avg_daily_7d": round(avg_7d, 2),
+                    "avg_daily_14d": round(avg_14d, 2),
+                    "base_daily": round(base_daily, 2),
+                    "weekday_factor": round(weekday_factor, 2),
+                    "target_days": target_days,
+                    "target_stock": int(target_stock + 0.5),
+                    "suggested_qty": needed,
+                    "cost_price_cents": cost_price,
+                    "estimated_amount_cents": needed * cost_price,
+                    "shelf_life_days": shelf_life_days,
+                }
+            )
 
     # 按估算金额降序
     suggestions.sort(key=lambda x: x["estimated_amount_cents"], reverse=True)
@@ -327,7 +335,11 @@ async def get_replenish_suggestions(
     pool = request.app.state.pool
     settings = await _get_settings(pool)
     suggestions = await _compute_replenish_suggestions(pool, settings)
-    return {"generated_at": datetime.now().isoformat(), "count": len(suggestions), "suggestions": suggestions}
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "count": len(suggestions),
+        "suggestions": suggestions,
+    }
 
 
 @router.get("/suggestions.csv")
@@ -383,6 +395,7 @@ async def export_replenish_suggestions_csv(
 
 class CreatePORequest(BaseModel):
     """从建议创建采购单草稿。"""
+
     supplier_name: str = Field(min_length=1)
     supplier_contact: str = ""
     expected_arrival: str | None = None  # YYYY-MM-DD
@@ -414,7 +427,7 @@ async def create_purchase_order(
         try:
             expected_arrival = date.fromisoformat(body.expected_arrival)
         except ValueError:
-            raise HTTPException(400, "expected_arrival must be YYYY-MM-DD")
+            raise HTTPException(400, "expected_arrival must be YYYY-MM-DD") from None
 
     operator_id = str(principal.get("user_id") or "")
 
@@ -425,7 +438,8 @@ async def create_purchase_order(
             po_id = await conn.fetchval(
                 """
                 INSERT INTO core4_purchase_order
-                    (supplier_name, supplier_contact, expected_arrival, total_amount_cents, note, created_by)
+                    (supplier_name, supplier_contact, expected_arrival,
+                        total_amount_cents, note, created_by)
                 VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id
                 """,
@@ -442,7 +456,8 @@ async def create_purchase_order(
                 await conn.execute(
                     """
                     INSERT INTO core4_purchase_order_line
-                        (po_id, variant_id, sku_code, product_name, suggested_qty, unit, unit_cost_cents, note)
+                        (po_id, variant_id, sku_code, product_name, suggested_qty, unit,
+                            unit_cost_cents, note)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
                     po_id,
@@ -518,7 +533,7 @@ async def get_purchase_order(
         )
     return {
         **_row_to_dict(po),
-        "lines": [_row_to_dict(l) for l in lines],
+        "lines": [_row_to_dict(line) for line in lines],
     }
 
 
@@ -534,7 +549,9 @@ async def update_purchase_order_status(
     body: UpdatePOStatusRequest,
     principal: dict[str, Any] = Depends(_require_admin),
 ):
-    """更新采购单状态（确认/收货/取消）。收货时回写入库（生成批次 + stock_movement + store_inventory_entry）。"""
+    """更新采购单状态（确认/收货/取消）。
+    收货时回写入库（生成批次 + stock_movement + store_inventory_entry）。
+    """
     pool = request.app.state.pool
     operator_id = str(principal.get("user_id") or "")
 
@@ -577,14 +594,16 @@ async def update_purchase_order_status(
                     if batch_id is None:
                         # 需要 location_id
                         loc_id = await conn.fetchval(
-                            "SELECT id FROM stock_location WHERE status = 'active' ORDER BY created_at LIMIT 1"
+                            "SELECT id FROM stock_location WHERE status = 'active' "
+                            "ORDER BY created_at LIMIT 1"
                         )
                         if loc_id is None:
                             raise HTTPException(500, "no active stock location")
                         batch_id = await conn.fetchval(
                             """
                             INSERT INTO inventory_batch
-                                (id, batch_no, variant_id, location_id, cost_price_cents, retail_price_cents,
+                                (id, batch_no, variant_id, location_id,
+                                    cost_price_cents, retail_price_cents,
                                  stock_qty, inspection_status, status)
                             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 0, 'pending', 'active')
                             RETURNING id
@@ -598,7 +617,8 @@ async def update_purchase_order_status(
 
                     # 入库
                     await conn.execute(
-                        "UPDATE inventory_batch SET stock_qty = stock_qty + $1, updated_at = NOW() WHERE id = $2",
+                        "UPDATE inventory_batch SET stock_qty = stock_qty + $1, "
+                        "updated_at = NOW() WHERE id = $2",
                         line["suggested_qty"],
                         batch_id,
                     )
@@ -608,7 +628,8 @@ async def update_purchase_order_status(
                         INSERT INTO stock_movement
                             (product_id, variant_id, location_id, batch_id, movement_type,
                              quantity, unit_cost, reference_type, reference_id, reason, operator_id)
-                        SELECT p.id, $1, ib.location_id, $2, 'receipt', $3, $4, 'purchase_order', $5, $6, $7
+                        SELECT p.id, $1, ib.location_id, $2, 'receipt', $3, $4,
+                            'purchase_order', $5, $6, $7
                         FROM product_variant pv
                         JOIN product p ON p.id = pv.product_id
                         JOIN inventory_batch ib ON ib.id = $2
@@ -644,7 +665,8 @@ async def update_purchase_order_status(
                     )
 
             await conn.execute(
-                "UPDATE core4_purchase_order SET status = $1, note = COALESCE($2, note), updated_at = NOW() WHERE id = $3",
+                "UPDATE core4_purchase_order SET status = $1, "
+                "note = COALESCE($2, note), updated_at = NOW() WHERE id = $3",
                 body.status,
                 body.note or None,
                 po_id,
@@ -672,15 +694,15 @@ async def export_purchase_order_csv(
     header = ["SKU", "商品名称", "单位", "建议数量", "成本价(分)", "行金额(分)", "备注"]
     rows = [
         [
-            l["sku_code"],
-            l["product_name"],
-            l["unit"],
-            l["suggested_qty"],
-            l["unit_cost_cents"],
-            l["suggested_qty"] * l["unit_cost_cents"],
-            l["note"],
+            line["sku_code"],
+            line["product_name"],
+            line["unit"],
+            line["suggested_qty"],
+            line["unit_cost_cents"],
+            line["suggested_qty"] * line["unit_cost_cents"],
+            line["note"],
         ]
-        for l in lines
+        for line in lines
     ]
     # 头部加采购单基本信息
     info_rows = [
@@ -710,6 +732,3 @@ def _row_to_dict(row: Any) -> dict:
         elif hasattr(v, "isoformat"):
             d[k] = v.isoformat()
     return d
-
-
-from fastapi import HTTPException

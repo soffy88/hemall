@@ -12,26 +12,27 @@ BRIEF.md Feature F 要求：
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
-import subprocess
 import time
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .deps import get_current_user
-from .middleware.metrics import ENGINE_TICK_LAST_SECONDS, ENGINE_FAILURE_TOTAL, HTTP_REQUEST_DURATION, HTTP_REQUESTS_TOTAL
 
 router = APIRouter(prefix="/admin/system-status", tags=["monitoring"])
 
 
 # ── 数据模型 ──────────────────────────────────────────────────────────────
 
+
 class HealthCheck(BaseModel):
     """单项健康检查结果。"""
+
     name: str
     status: str  # ok / warning / critical
     value: str | float | None = None
@@ -41,6 +42,7 @@ class HealthCheck(BaseModel):
 
 class SystemStatusResponse(BaseModel):
     """系统状态页聚合响应。"""
+
     overall: str  # ok / warning / critical
     timestamp: str
     checks: list[HealthCheck]
@@ -50,6 +52,7 @@ class SystemStatusResponse(BaseModel):
 
 class AlertRecord(BaseModel):
     """告警记录。"""
+
     id: str
     alert_type: str
     severity: str
@@ -64,20 +67,24 @@ class AlertRecord(BaseModel):
 
 class AlertListResponse(BaseModel):
     """告警列表响应。"""
+
     total: int
     alerts: list[AlertRecord]
 
 
 # ── 管理端鉴权 ────────────────────────────────────────────────────────────
 
+
 def _require_admin(
     request: Request, principal: dict[str, Any] = Depends(get_current_user)
 ) -> dict[str, Any]:
     from .deps import assert_staff_role
+
     return assert_staff_role(principal, {"admin", "support"})
 
 
 # ── 告警辅助函数 ──────────────────────────────────────────────────────────
+
 
 async def _create_alert(
     pool: Any,
@@ -119,11 +126,11 @@ async def _resolve_stale_alerts(pool: Any, alert_type: str) -> None:
 
 # ── 核心检查函数 ──────────────────────────────────────────────────────────
 
+
 async def check_api_health(pool: Any) -> HealthCheck:
     """检查 API 健康：5xx 率、P95 延迟（近 5 分钟）。"""
-    five_min_ago = datetime.now(UTC) - timedelta(minutes=5)
 
-    async with pool.acquire() as conn:
+    async with pool.acquire() as _conn:
         # 从 order_status_history 或 customer_order 统计近 5 分钟请求
         # 这里简化：用 metrics 中间件收集的数据
         # 实际查询：统计 5xx 和总请求
@@ -134,7 +141,6 @@ async def check_api_health(pool: Any) -> HealthCheck:
 
     total_requests = 0
     error_5xx = 0
-    latencies: list[float] = []
 
     for metric in REGISTRY.collect():
         if metric.name == "http_requests_total":
@@ -183,7 +189,8 @@ async def check_order_failure_rate(pool: Any) -> HealthCheck:
             """
             SELECT
                 COUNT(*)::int AS total,
-                COUNT(*) FILTER (WHERE status IN ('cancelled', 'failed', 'payment_failed'))::int AS failed
+                COUNT(*) FILTER (WHERE status IN
+                    ('cancelled', 'failed', 'payment_failed'))::int AS failed
             FROM customer_order
             WHERE created_at > $1
             """,
@@ -266,7 +273,11 @@ async def check_backup_freshness() -> HealthCheck:
             continue
         try:
             for entry in os.scandir(backup_dir):
-                if entry.is_file() and (entry.name.endswith(".sql") or entry.name.endswith(".dump") or entry.name.endswith(".backup")):
+                if entry.is_file() and (
+                    entry.name.endswith(".sql")
+                    or entry.name.endswith(".dump")
+                    or entry.name.endswith(".backup")
+                ):
                     mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=UTC)
                     if latest_backup is None or mtime > latest_backup:
                         latest_backup = mtime
@@ -362,7 +373,7 @@ async def check_engine_health() -> HealthCheck:
             engines_checked += 1
             for sample in metric.samples:
                 last_tick = sample.value
-                engine = sample.labels.get("engine", "unknown")
+                _engine = sample.labels.get("engine", "unknown")
                 age_seconds = now - last_tick
                 if age_seconds > 300:  # 5 分钟没 tick
                     stale_engines += 1
@@ -436,6 +447,7 @@ async def check_redis_health(settings: Any) -> HealthCheck:
 
 # ── 系统状态页端点 ────────────────────────────────────────────────────────
 
+
 @router.get("")
 async def system_status(
     request: Request,
@@ -463,13 +475,15 @@ async def system_status(
         if isinstance(c, HealthCheck):
             valid_checks.append(c)
         elif isinstance(c, Exception):
-            valid_checks.append(HealthCheck(
-                name="unknown",
-                status="critical",
-                value=None,
-                threshold="N/A",
-                message=f"检查异常: {c}",
-            ))
+            valid_checks.append(
+                HealthCheck(
+                    name="unknown",
+                    status="critical",
+                    value=None,
+                    threshold="N/A",
+                    message=f"检查异常: {c}",
+                )
+            )
 
     # 计算整体状态
     statuses = [c.status for c in valid_checks]
@@ -482,7 +496,8 @@ async def system_status(
 
     # 指标快照
     from prometheus_client import REGISTRY
-    metrics_snapshot = {
+
+    metrics_snapshot: dict[str, Any] = {
         "http_requests_total": 0,
         "http_requests_in_progress": 0,
         "db_pool_size": 0,
@@ -560,6 +575,7 @@ async def system_status(
 
 
 # ── 告警管理端点 ──────────────────────────────────────────────────────────
+
 
 @router.get("/alerts")
 async def list_alerts(
@@ -697,6 +713,7 @@ async def resolve_alert(
 
 # ── 后台定期检查任务（由 oservi 调度或手动触发） ──────────────────────────
 
+
 @router.post("/check")
 async def run_health_checks(
     request: Request,
@@ -721,7 +738,7 @@ async def run_health_checks(
     alert_results = []
 
     for c in checks:
-        if isinstance(c, Exception):
+        if not isinstance(c, HealthCheck):
             continue
 
         alert_type = c.name
@@ -752,9 +769,3 @@ async def run_health_checks(
             alert_results.append({"type": alert_type, "action": "resolved_stale"})
 
     return {"ok": True, "results": alert_results, "timestamp": datetime.now(UTC).isoformat()}
-
-
-# ── 导出模块供 router 挂载 ────────────────────────────────────────────────
-
-from fastapi import HTTPException
-import asyncio

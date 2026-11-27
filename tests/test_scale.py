@@ -1,23 +1,20 @@
 """Tests for app.scale — 秤接入协议解析、稳定判定、模拟器"""
 
-import pytest
 import time
-from decimal import Decimal
+
+import pytest
 
 from app.scale import (
+    ScaleReading,
+    ScaleSource,
+    SimulatorScale,
+    get_stable_weight,
+    is_stable,
     parse_dahua,
     parse_dingjian,
-    parse_toledo,
     parse_generic,
     parse_scale_line,
-    ScaleReading,
-    is_stable,
-    get_stable_weight,
-    StableWeight,
-    SimulatorScale,
-    ScaleSource,
-    DEFAULT_STABLE_COUNT,
-    DEFAULT_STABLE_THRESHOLD_G,
+    parse_toledo,
 )
 
 
@@ -210,6 +207,7 @@ class TestEdgeCases:
 
     def test_max_weight_validation(self):
         from app.scale import MAX_WEIGHT_GRAMS
+
         line = f"ST,GS,+{MAX_WEIGHT_GRAMS / 1000:.3f}kg"
         reading = parse_dahua(line)
         assert reading.weight_grams == MAX_WEIGHT_GRAMS

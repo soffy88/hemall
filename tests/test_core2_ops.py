@@ -66,7 +66,7 @@ async def _seed_product(pool, token: str, *, title: str, aliases: list[str], pri
             "INSERT INTO product_variant (id, product_id, sku_code, option_values, status, "
             "pricing_mode, unit_price_cents, price_basis_grams, weight_options, stock_unit) "
             "VALUES ($1, $2, $3, '{}'::jsonb, 'active', 'weight', $4, 500, "
-            "'[{\"label\":\"约1斤\",\"grams\":500}]'::jsonb, 'gram') RETURNING id",
+            '\'[{"label":"约1斤","grams":500}]\'::jsonb, \'gram\') RETURNING id',
             uuid7(),
             product,
             f"CORE2-{token}",
@@ -199,9 +199,7 @@ async def test_customer_pickup_arrived(core2_pool):
             uuid7(),
             customer,
         )
-    result = await customer_pickup_arrived(
-        str(order), _Req(pool), {"customer_id": str(customer)}
-    )
+    result = await customer_pickup_arrived(str(order), _Req(pool), {"customer_id": str(customer)})
     assert result["status"] == "arrived"
     assert result["pickup_arrived_at"]
 

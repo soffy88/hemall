@@ -10,41 +10,36 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import logging
 import uuid
-from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from PIL import Image
+from pydantic import BaseModel
 
+from .counter_settlement_order import (
+    COUNTER_ORDER_STATUS,
+    ORDER_CHANNEL_COUNTER,
+    require_weigh_line_pricing,
+    weigh_stock_units,
+)
 from .deps import require_staff_role
+from .product_photo import _actor
 from .scale import (
-    ScaleService,
-    DeviceSession,
-    parse_scale_line,
-    get_stable_weight,
-    ScaleReading,
-    StableWeight,
     DEFAULT_STABLE_COUNT,
     DEFAULT_STABLE_THRESHOLD_G,
     MAX_WEIGHT_GRAMS,
+    ScaleService,
+    parse_scale_line,
 )
-from .scale_vision import get_scale_recognizer, ONNXRecognizer
-from .weigh_price import weigh_amount_cents, diff_policy, settlement_status_for, validate_weight_grams
-from .weigh_settle import record_actual_weight, WeighSettlementError, WeighSettlementNotFound
-from .counter_settlement_order import (
-    weigh_stock_units,
-    require_weigh_line_pricing,
-    ORDER_CHANNEL_COUNTER,
-    COUNTER_ORDER_STATUS,
+from .scale_vision import ONNXRecognizer, get_scale_recognizer
+from .weigh_price import (
+    validate_weight_grams,
 )
-from .product_photo import add_photo, _output_root, _actor
+from .weigh_settle import WeighSettlementError, WeighSettlementNotFound, record_actual_weight
 
 logger = logging.getLogger("hemall.scale_router")
 
@@ -57,10 +52,12 @@ _STAFF_ROLES = ("admin", "support", "staff")
 # 依赖注入
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _pool(request: Request) -> Any:
     pool = getattr(request.app.state, "pool", None)
     if pool is None:
         from .db_recovery import kick_pool_recovery
+
         kick_pool_recovery(request.app)
         raise HTTPException(503, "database not ready")
     return pool
@@ -73,6 +70,7 @@ def _scale_service(request: Request) -> ScaleService:
 # ──────────────────────────────────────────────────────────────────────────────
 # Pydantic 模型
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class DeviceCreate(BaseModel):
     name: str
@@ -135,6 +133,7 @@ class SkipPickLineRequest(BaseModel):
 # 秤设备 CRUD
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/devices")
 async def list_devices(
     service: ScaleService = Depends(_scale_service),
@@ -183,6 +182,7 @@ async def delete_device(
 # 串口数据解析 (供前端 Web Serial 实时解析)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @router.post("/parse")
 async def parse_line(
     data: ParseLineRequest,
@@ -210,6 +210,7 @@ async def parse_line(
 # 摄像头识别 (POS 收银模式)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @router.post("/recognize")
 async def recognize_frame(
     request: Request,
@@ -226,7 +227,7 @@ async def recognize_frame(
         img = Image.open(io.BytesIO(raw))
         img.verify()
     except Exception as e:
-        raise HTTPException(400, f"invalid image: {e}")
+        raise HTTPException(400, f"invalid image: {e}") from e
 
     # 获取识别器
     pool = _pool(request)
@@ -247,28 +248,33 @@ async def recognize_frame(
                        COALESCE(ib.shelf_image_url, pp.url) as image_url
                 FROM product_variant pv
                 JOIN product p ON p.id = pv.product_id
-                LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id AND ib.deleted_at IS NULL AND ib.status = 'active'
-                LEFT JOIN product_photo pp ON pp.variant_id = pv.id AND pp.is_primary AND pp.status = 'active' AND pp.deleted_at IS NULL
+                LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id
+                    AND ib.deleted_at IS NULL AND ib.status = 'active'
+                LEFT JOIN product_photo pp ON pp.variant_id = pv.id
+                    AND pp.is_primary AND pp.status = 'active' AND pp.deleted_at IS NULL
                 WHERE pv.id = $1 AND pv.deleted_at IS NULL
                 """,
                 c["variant_id"],
             )
             if row:
-                enriched.append({
-                    "variant_id": str(row["id"]),
-                    "score": c["score"],
-                    "name": row["title"],
-                    "sku": row["sku_code"],
-                    "price_cents": int(row["reference_price_cents"] or 0),
-                    "pricing_mode": row["pricing_mode"],
-                    "image_url": row["image_url"],
-                })
+                enriched.append(
+                    {
+                        "variant_id": str(row["id"]),
+                        "score": c["score"],
+                        "name": row["title"],
+                        "sku": row["sku_code"],
+                        "price_cents": int(row["reference_price_cents"] or 0),
+                        "pricing_mode": row["pricing_mode"],
+                        "image_url": row["image_url"],
+                    }
+                )
     return {"candidates": enriched, "model_configured": True}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 摄像头识别 (拣货称重模式) - 校验是否拿对货
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @router.post("/recognize-pick")
 async def recognize_pick_frame(
@@ -286,7 +292,7 @@ async def recognize_pick_frame(
         img = Image.open(io.BytesIO(raw))
         img.verify()
     except Exception as e:
-        raise HTTPException(400, f"invalid image: {e}")
+        raise HTTPException(400, f"invalid image: {e}") from e
 
     pool = _pool(request)
     recognizer: ONNXRecognizer = await get_scale_recognizer(pool)
@@ -311,19 +317,22 @@ async def recognize_pick_frame(
                 is_match = str(row["id"]) == expected_variant_id
                 if is_match:
                     matched = True
-                enriched.append({
-                    "variant_id": str(row["id"]),
-                    "score": c["score"],
-                    "name": row["title"],
-                    "sku": row["sku_code"],
-                    "matched": is_match,
-                })
+                enriched.append(
+                    {
+                        "variant_id": str(row["id"]),
+                        "score": c["score"],
+                        "name": row["title"],
+                        "sku": row["sku_code"],
+                        "matched": is_match,
+                    }
+                )
     return {"candidates": enriched, "model_configured": True, "matched": matched}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 商品搜索 (收银模式手工搜索)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @router.get("/search-product")
 async def search_product(
@@ -336,12 +345,15 @@ async def search_product(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT pv.id as variant_id, pv.sku_code, p.title, pv.reference_price_cents, pv.pricing_mode,
+            SELECT pv.id as variant_id, pv.sku_code, p.title,
+                pv.reference_price_cents, pv.pricing_mode,
                    COALESCE(ib.shelf_image_url, pp.url) as image_url
             FROM product_variant pv
             JOIN product p ON p.id = pv.product_id
-            LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id AND ib.deleted_at IS NULL AND ib.status = 'active'
-            LEFT JOIN product_photo pp ON pp.variant_id = pv.id AND pp.is_primary AND pp.status = 'active' AND pp.deleted_at IS NULL
+            LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id
+                AND ib.deleted_at IS NULL AND ib.status = 'active'
+            LEFT JOIN product_photo pp ON pp.variant_id = pv.id
+                AND pp.is_primary AND pp.status = 'active' AND pp.deleted_at IS NULL
             WHERE pv.deleted_at IS NULL AND pv.status = 'active'
               AND (p.title ILIKE $1 OR pv.sku_code ILIKE $1 OR p.title ILIKE $2)
             LIMIT 20
@@ -367,6 +379,7 @@ async def search_product(
 # ──────────────────────────────────────────────────────────────────────────────
 # 收银结算
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @router.post("/settle")
 async def settle_pos(
@@ -415,7 +428,7 @@ async def settle_pos(
             order_line_ids = []
             for line in data.lines:
                 # 硬件事件
-                hw_id = await conn.fetchval(
+                _hw_id = await conn.fetchval(
                     """
                     INSERT INTO hardware_event
                     (event_type, device_id, payload, session_id, settlement_status,
@@ -441,7 +454,7 @@ async def settle_pos(
                     basis_g = int(line.get("price_basis_grams", 500))
                     stock_units = weigh_stock_units(weight_g, basis_g)
                     # 预留并标记 consumed
-                    res_id = await conn.fetchval(
+                    _res_id = await conn.fetchval(
                         """
                         INSERT INTO inventory_reservation
                         (batch_id, qty, status, created_by)
@@ -509,7 +522,8 @@ async def settle_pos(
                          price_basis_grams, estimated_weight_grams, estimated_amount_cents,
                          actual_weight_grams, actual_amount_cents, weight_diff_cents,
                          settlement_status, created_by)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, 'not_required', $14)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                            $9, $10, $11, $12, $13, 0, 'not_required', $14)
                         RETURNING id
                         """,
                         order_id,
@@ -570,6 +584,7 @@ async def settle_pos(
 # 拣货单列表
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/pick-orders")
 async def list_pick_orders(
     request: Request,
@@ -609,39 +624,43 @@ async def list_pick_orders(
             """,
             row["id"],
         )
-        orders.append({
-            "id": str(row["id"]),
-            "order_no": row["order_no"],
-            "customer_name": row["customer_name"],
-            "customer_phone": row["customer_phone"],
-            "status": row["status"],
-            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-            "lines": [
-                {
-                    "id": str(l["id"]),
-                    "variant_id": str(l["variant_id"]),
-                    "name": l["name"],
-                    "sku": l["sku"],
-                    "quantity": l["quantity"],
-                    "unit": "斤" if l["pricing_mode"] == "weight" else "件",
-                    "price_cents": int(l["price_cents"] or 0),
-                    "pricing_mode": l["pricing_mode"],
-                    "estimated_weight_grams": l["estimated_weight_grams"],
-                    "estimated_amount_cents": int(l["estimated_amount_cents"] or 0),
-                    "actual_weight_grams": l["actual_weight_grams"],
-                    "actual_amount_cents": l["actual_amount_cents"],
-                    "diff_cents": l["weight_diff_cents"],
-                    "settled": l["settlement_status"] in ("auto_settled", "confirmed", "refunded"),
-                }
-                for l in lines
-            ],
-        })
+        orders.append(
+            {
+                "id": str(row["id"]),
+                "order_no": row["order_no"],
+                "customer_name": row["customer_name"],
+                "customer_phone": row["customer_phone"],
+                "status": row["status"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "lines": [
+                    {
+                        "id": str(line["id"]),
+                        "variant_id": str(line["variant_id"]),
+                        "name": line["name"],
+                        "sku": line["sku"],
+                        "quantity": line["quantity"],
+                        "unit": "斤" if line["pricing_mode"] == "weight" else "件",
+                        "price_cents": int(line["price_cents"] or 0),
+                        "pricing_mode": line["pricing_mode"],
+                        "estimated_weight_grams": line["estimated_weight_grams"],
+                        "estimated_amount_cents": int(line["estimated_amount_cents"] or 0),
+                        "actual_weight_grams": line["actual_weight_grams"],
+                        "actual_amount_cents": line["actual_amount_cents"],
+                        "diff_cents": line["weight_diff_cents"],
+                        "settled": line["settlement_status"]
+                        in ("auto_settled", "confirmed", "refunded"),
+                    }
+                    for line in lines
+                ],
+            }
+        )
     return orders
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 记录拣货实称重量
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @router.post("/record-pick-weight")
 async def record_pick_weight(
@@ -686,14 +705,15 @@ async def record_pick_weight(
         )
         return result
     except WeighSettlementNotFound:
-        raise HTTPException(404, "order line not found")
+        raise HTTPException(404, "order line not found") from None
     except WeighSettlementError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 跳过拣货行 (人工处理)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @router.post("/skip-pick-line")
 async def skip_pick_line(
@@ -703,7 +723,7 @@ async def skip_pick_line(
 ):
     """跳过拣货行，标记为人工处理"""
     pool = _pool(request)
-    actor = _actor(await require_staff_role(*_STAFF_ROLES)(request))
+    _ = _actor(await require_staff_role(*_STAFF_ROLES)(request))
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -733,6 +753,7 @@ async def skip_pick_line(
 # ──────────────────────────────────────────────────────────────────────────────
 # 识别模型管理：重新构建索引、添加确认帧
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @router.post("/vision/rebuild-index")
 async def rebuild_vision_index(

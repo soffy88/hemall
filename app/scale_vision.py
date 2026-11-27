@@ -22,23 +22,22 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import os
-import pickle
-import struct
 import time
-import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
 # 尝试导入 ONNX Runtime（CPU）
 try:
     import onnxruntime as ort
+
     _ORT_AVAILABLE = True
 except ImportError:
     _ORT_AVAILABLE = False
@@ -47,6 +46,7 @@ except ImportError:
 # 尝试导入 FAISS
 try:
     import faiss
+
     _FAISS_AVAILABLE = True
 except ImportError:
     _FAISS_AVAILABLE = False
@@ -55,12 +55,13 @@ except ImportError:
 # 尝试导入 PIL
 try:
     from PIL import Image
+
     _PIL_AVAILABLE = True
 except ImportError:
     _PIL_AVAILABLE = False
     Image = None  # type: ignore
 
-from .counter_vision import Recognizer, validate_candidates, MAX_CANDIDATES
+from .counter_vision import MAX_CANDIDATES
 
 logger = logging.getLogger("hemall.scale_vision")
 
@@ -86,7 +87,8 @@ MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "dinov2_small": {
         "name": "DINOv2-Small",
-        "url": "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14.onnx",  # 官方未发布 ONNX，需自行转换
+        # 官方未发布 ONNX，需自行转换
+        "url": "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14.onnx",
         "filename": "dinov2_vits14.onnx",
         "input_size": (224, 224),
         "mean": [0.485, 0.456, 0.406],
@@ -125,9 +127,11 @@ DISK_HALT_THRESHOLD = 15 * 1024 * 1024 * 1024  # 15GB
 # 数据结构
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class VectorEntry:
     """向量库条目"""
+
     variant_id: str
     embedding: np.ndarray  # shape (dim,), float32, L2 归一化
     image_sha256: str
@@ -139,6 +143,7 @@ class VectorEntry:
 @dataclass
 class RecognitionResult:
     """识别结果"""
+
     candidates: list[dict[str, Any]]  # [{"variant_id": str, "score": float, "rank": int}, ...]
     model_name: str
     model_configured: bool
@@ -150,6 +155,7 @@ class RecognitionResult:
 # 工具函数
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def check_disk_space(path: Path) -> bool:
     """检查磁盘剩余空间，<15G 返回 False（触发 HALT）"""
     try:
@@ -160,7 +166,7 @@ def check_disk_space(path: Path) -> bool:
         return True  # 无法检测时默认通过
 
 
-def detect_image_format(data: bytes) -> Optional[str]:
+def detect_image_format(data: bytes) -> str | None:
     """检测图像格式（魔数）"""
     if data.startswith(b"\xff\xd8\xff"):
         return "jpeg"
@@ -192,14 +198,14 @@ def preprocess_image(
     """预处理图像为模型输入：RGB、Resize、Normalize、CHW、Batch"""
     if not _PIL_AVAILABLE:
         raise RuntimeError("PIL not available")
-    img = Image.open(io.BytesIO(image_data))
+    img: Image.Image = Image.open(io.BytesIO(image_data))
     if img.mode != "RGB":
         img = img.convert("RGB")
     img = img.resize(input_size, Image.Resampling.LANCZOS)
-    arr = np.array(img, dtype=np.float32) / 255.0  # HWC, 0-1
+    arr: np.ndarray = np.array(img, dtype=np.float32) / 255.0  # HWC, 0-1
     arr = (arr - np.array(mean, dtype=np.float32)) / np.array(std, dtype=np.float32)
     arr = arr.transpose(2, 0, 1)  # CHW
-    arr = arr[np.newaxis, ...]    # NCHW
+    arr = arr[np.newaxis, ...]  # NCHW
     return arr.astype(np.float32)
 
 
@@ -211,13 +217,10 @@ def l2_normalize(vec: np.ndarray) -> np.ndarray:
     return (vec / norm).astype(np.float32)
 
 
-# 需要 io
-import io
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # ONNX 模型封装
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class ONNXModel:
     """ONNX 模型加载与推理封装"""
@@ -232,7 +235,9 @@ class ONNXModel:
         )
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
-        logger.info(f"Loaded ONNX model: {model_path} (input={self.input_name}, output={self.output_name})")
+        logger.info(
+            f"Loaded ONNX model: {model_path} (input={self.input_name}, output={self.output_name})"
+        )
 
     def infer(self, input_tensor: np.ndarray) -> np.ndarray:
         """推理，返回原始输出（通常为 logits 或特征向量）"""
@@ -246,6 +251,7 @@ class ONNXModel:
 # ──────────────────────────────────────────────────────────────────────────────
 # 向量索引（FAISS）
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class VectorIndex:
     """FAISS 向量索引：IndexFlatIP（内积=余弦相似度，向量已 L2 归一化）"""
@@ -271,7 +277,7 @@ class VectorIndex:
         query = query.reshape(1, -1).astype(np.float32)
         scores, indices = self.index.search(query, min(k, self.index.ntotal))
         results = []
-        for idx, score in zip(indices[0], scores[0]):
+        for idx, score in zip(indices[0], scores[0], strict=True):
             if idx >= 0 and idx < len(self.entries):
                 results.append((self.entries[idx], float(score)))
         return results
@@ -280,7 +286,11 @@ class VectorIndex:
         """持久化索引与元数据"""
         index_path.parent.mkdir(parents=True, exist_ok=True)
         faiss.write_index(self.index, str(index_path))
-        embeddings = np.vstack([e.embedding for e in self.entries]) if self.entries else np.zeros((0, self.dim), dtype=np.float32)
+        embeddings = (
+            np.vstack([e.embedding for e in self.entries])
+            if self.entries
+            else np.zeros((0, self.dim), dtype=np.float32)
+        )
         np.save(emb_path, embeddings)
         meta = [
             {
@@ -295,7 +305,7 @@ class VectorIndex:
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
     @classmethod
-    def load(cls, index_path: Path, meta_path: Path, emb_path: Path, dim: int) -> "VectorIndex":
+    def load(cls, index_path: Path, meta_path: Path, emb_path: Path, dim: int) -> VectorIndex:
         """加载索引与元数据"""
         if not index_path.exists():
             return cls(dim)
@@ -307,25 +317,29 @@ class VectorIndex:
             if emb_path.exists():
                 embeddings = np.load(emb_path)
                 for i, m in enumerate(meta):
-                    obj.entries.append(VectorEntry(
-                        variant_id=m["variant_id"],
-                        embedding=embeddings[i],
-                        image_sha256=m["image_sha256"],
-                        source=m["source"],
-                        added_at=m["added_at"],
-                        confirmed_count=m.get("confirmed_count", 0),
-                    ))
+                    obj.entries.append(
+                        VectorEntry(
+                            variant_id=m["variant_id"],
+                            embedding=embeddings[i],
+                            image_sha256=m["image_sha256"],
+                            source=m["source"],
+                            added_at=m["added_at"],
+                            confirmed_count=m.get("confirmed_count", 0),
+                        )
+                    )
             else:
                 # 兼容旧版无 embeddings.npy
                 for m in meta:
-                    obj.entries.append(VectorEntry(
-                        variant_id=m["variant_id"],
-                        embedding=np.zeros(dim, dtype=np.float32),  # 占位
-                        image_sha256=m["image_sha256"],
-                        source=m["source"],
-                        added_at=m["added_at"],
-                        confirmed_count=m.get("confirmed_count", 0),
-                    ))
+                    obj.entries.append(
+                        VectorEntry(
+                            variant_id=m["variant_id"],
+                            embedding=np.zeros(dim, dtype=np.float32),  # 占位
+                            image_sha256=m["image_sha256"],
+                            source=m["source"],
+                            added_at=m["added_at"],
+                            confirmed_count=m.get("confirmed_count", 0),
+                        )
+                    )
         logger.info(f"Loaded vector index: {len(obj.entries)} entries, dim={dim}")
         return obj
 
@@ -333,6 +347,7 @@ class VectorIndex:
 # ──────────────────────────────────────────────────────────────────────────────
 # 识别器实现（实现 counter_vision.Recognizer 协议）
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class ONNXRecognizer:
     """ONNX 模型识别器：实现 Recognizer 协议"""
@@ -355,8 +370,8 @@ class ONNXRecognizer:
         if not self.config:
             raise ValueError(f"Unknown model key: {model_key}")
 
-        self.model: Optional[ONNXModel] = None
-        self.index: Optional[VectorIndex] = None
+        self.model: ONNXModel | None = None
+        self.index: VectorIndex | None = None
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -375,20 +390,22 @@ class ONNXRecognizer:
 
         # 3. 初始化向量索引
         dim = self.config["feature_dim"]
-        self.index = VectorIndex.load(
-            INDEX_FILE, META_FILE, EMBEDDINGS_FILE, dim
-        )
+        self.index = VectorIndex.load(INDEX_FILE, META_FILE, EMBEDDINGS_FILE, dim)
 
         # 4. 若索引为空且有数据库连接池，从商品图片构建初始索引
         if self.index.index.ntotal == 0 and self.pool:
             await self._build_initial_index()
 
         self._initialized = True
-        logger.info(f"ONNXRecognizer initialized: {self.config['name']}, index size={self.index.index.ntotal}")
+        logger.info(
+            f"ONNXRecognizer initialized: {self.config['name']}, "
+            f"index size={self.index.index.ntotal}"
+        )
 
     async def _download_model(self, model_path: Path) -> None:
         """下载模型文件（简化版，实际应用建议预置）"""
         import urllib.request
+
         url = self.config.get("url")
         if not url:
             logger.warning(f"No download URL for {self.model_key}")
@@ -412,8 +429,10 @@ class ONNXRecognizer:
                 SELECT DISTINCT ON (pv.id) pv.id as variant_id,
                        COALESCE(ib.shelf_image_url, pp.url) as image_url
                 FROM product_variant pv
-                LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id AND ib.deleted_at IS NULL AND ib.status = 'active'
-                LEFT JOIN product_photo pp ON pp.variant_id = pv.id AND pp.is_primary AND pp.status = 'active' AND pp.deleted_at IS NULL
+                LEFT JOIN inventory_batch ib ON ib.variant_id = pv.id
+                    AND ib.deleted_at IS NULL AND ib.status = 'active'
+                LEFT JOIN product_photo pp ON pp.variant_id = pv.id
+                    AND pp.is_primary AND pp.status = 'active' AND pp.deleted_at IS NULL
                 WHERE pv.deleted_at IS NULL AND pv.status = 'active'
                   AND (ib.shelf_image_url IS NOT NULL OR pp.url IS NOT NULL)
                 ORDER BY pv.id, ib.created_at DESC
@@ -421,7 +440,9 @@ class ONNXRecognizer:
         count = 0
         for row in rows:
             try:
-                await self._add_image_to_index(str(row["variant_id"]), str(row["image_url"]), "reference")
+                await self._add_image_to_index(
+                    str(row["variant_id"]), str(row["image_url"]), "reference"
+                )
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to index variant {row['variant_id']}: {e}")
@@ -460,7 +481,7 @@ class ONNXRecognizer:
             # 兜底：展平并截断/填充
             flat = output.flatten()
             if len(flat) >= self.config["feature_dim"]:
-                embedding = flat[:self.config["feature_dim"]]
+                embedding = flat[: self.config["feature_dim"]]
             else:
                 embedding = np.pad(flat, (0, self.config["feature_dim"] - len(flat)))
         if self.config["normalize"]:
@@ -474,7 +495,7 @@ class ONNXRecognizer:
         )
         self.index.add(entry)
 
-    async def _fetch_image(self, url: str) -> Optional[bytes]:
+    async def _fetch_image(self, url: str) -> bytes | None:
         """获取图片字节（支持 file://, /media/, http(s)://）"""
         if url.startswith("file://"):
             path = Path(url[7:])
@@ -487,6 +508,7 @@ class ONNXRecognizer:
                 return path.read_bytes()
         elif url.startswith(("http://", "https://")):
             import urllib.request
+
             try:
                 with urllib.request.urlopen(url, timeout=10) as resp:
                     return resp.read()
@@ -498,9 +520,7 @@ class ONNXRecognizer:
         if self.index:
             self.index.save(INDEX_FILE, META_FILE, EMBEDDINGS_FILE)
 
-    async def recognize(
-        self, image_bytes: bytes, weight_grams: int
-    ) -> Iterable[dict[str, Any]]:
+    async def recognize(self, image_bytes: bytes, weight_grams: int) -> Iterable[dict[str, Any]]:
         """Recognizer 协议：识别图片，返回候选列表"""
         if not self._initialized:
             await self.initialize()
@@ -525,7 +545,7 @@ class ONNXRecognizer:
         else:
             flat = output.flatten()
             if len(flat) >= self.config["feature_dim"]:
-                embedding = flat[:self.config["feature_dim"]]
+                embedding = flat[: self.config["feature_dim"]]
             else:
                 embedding = np.pad(flat, (0, self.config["feature_dim"] - len(flat)))
         if self.config["normalize"]:
@@ -567,7 +587,7 @@ class ONNXRecognizer:
 # 便捷函数：获取/设置识别器（供 app 启动时调用）
 # ──────────────────────────────────────────────────────────────────────────────
 
-_recognizer_instance: Optional[ONNXRecognizer] = None
+_recognizer_instance: ONNXRecognizer | None = None
 
 
 async def get_scale_recognizer(
@@ -597,7 +617,6 @@ def set_scale_recognizer(recognizer: ONNXRecognizer) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import sys
     import argparse
 
     parser = argparse.ArgumentParser(description="Scale Vision ONNX Tools")
@@ -630,12 +649,14 @@ if __name__ == "__main__":
                 print(f"No download URL for {args.model}")
                 return
             import urllib.request
+
             print(f"Downloading {url} -> {model_path}...")
             urllib.request.urlretrieve(url, model_path)
             print("Done")
 
         elif args.cmd == "build-index":
             import asyncpg
+
             pool = await asyncpg.create_pool(args.dsn)
             rec = ONNXRecognizer(model_key=args.model, pool=pool)
             await rec.initialize()
@@ -644,6 +665,7 @@ if __name__ == "__main__":
 
         elif args.cmd == "test":
             import asyncpg
+
             pool = await asyncpg.create_pool(args.dsn) if args.dsn else None
             rec = ONNXRecognizer(model_key=args.model, pool=pool)
             await rec.initialize()

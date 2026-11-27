@@ -21,15 +21,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import re
-import struct
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from enum import Enum
-from typing import Any, Callable, Deque, Optional, Protocol
+from enum import StrEnum
+from typing import Any, Protocol
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 常量与类型
@@ -41,37 +40,31 @@ logger = logging.getLogger("hemall.scale")
 MAX_WEIGHT_GRAMS = 15000
 
 # 稳定判定默认参数
-DEFAULT_STABLE_COUNT = 3       # 连续稳定读数次数
-DEFAULT_STABLE_THRESHOLD_G = 2 # 相邻读数差值阈值（克）
+DEFAULT_STABLE_COUNT = 3  # 连续稳定读数次数
+DEFAULT_STABLE_THRESHOLD_G = 2  # 相邻读数差值阈值（克）
 
 # 协议正则
 # 大华: ST,GS,+0000.000kg / ST,GS,+0000.000g
-RE_DAHUA = re.compile(
-    r"ST,GS,([+\-]?\d+(?:\.\d+)?)\s*(kg|g)", re.IGNORECASE
-)
+RE_DAHUA = re.compile(r"ST,GS,([+\-]?\d+(?:\.\d+)?)\s*(kg|g)", re.IGNORECASE)
 # 顶尖: GS  0.000 kg / NT  0.000 kg
-RE_DINGJIAN = re.compile(
-    r"(?:GS|NT)\s+([+\-]?\d+(?:\.\d+)?)\s*(kg|g)", re.IGNORECASE
-)
+RE_DINGJIAN = re.compile(r"(?:GS|NT)\s+([+\-]?\d+(?:\.\d+)?)\s*(kg|g)", re.IGNORECASE)
 # 托利多: S  0.000 kg / ST  0.000 kg
-RE_TOLEDO = re.compile(
-    r"S[T]?\s+([+\-]?\d+(?:\.\d+)?)\s*(kg|g)", re.IGNORECASE
-)
+RE_TOLEDO = re.compile(r"S[T]?\s+([+\-]?\d+(?:\.\d+)?)\s*(kg|g)", re.IGNORECASE)
 # 通用 ASCII: 任意包含数字+单位
-RE_GENERIC = re.compile(
-    r"([+\-]?\d+(?:\.\d+)?)\s*(kg|g|KG|G)", re.IGNORECASE
-)
+RE_GENERIC = re.compile(r"([+\-]?\d+(?:\.\d+)?)\s*(kg|g|KG|G)", re.IGNORECASE)
 
 
-class ScaleSource(str, Enum):
+class ScaleSource(StrEnum):
     """秤数据来源"""
-    SCALE = "scale"       # 真实秤直发
+
+    SCALE = "scale"  # 真实秤直发
     SIMULATOR = "simulator"  # 模拟器注入（演示与验证专用）
-    BRIDGE = "bridge"     # 本地桥接程序转发
+    BRIDGE = "bridge"  # 本地桥接程序转发
 
 
-class ScaleStatus(str, Enum):
+class ScaleStatus(StrEnum):
     """秤连接状态"""
+
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
@@ -81,16 +74,19 @@ class ScaleStatus(str, Enum):
 @dataclass(frozen=True)
 class ScaleReading:
     """单次秤读数（原始）"""
-    weight_grams: int          # 克，已换算
-    unit: str                  # 原始单位 "g" 或 "kg"
-    raw: str                   # 原始帧文本
+
+    weight_grams: int  # 克，已换算
+    unit: str  # 原始单位 "g" 或 "kg"
+    raw: str  # 原始帧文本
     timestamp: float = field(default_factory=time.time)
-    stable: bool = False       # 硬件自带稳定位（如有）
+    stable: bool = False  # 硬件自带稳定位（如有）
+    source: ScaleSource = ScaleSource.SCALE
 
 
 @dataclass(frozen=True)
 class StableWeight:
     """稳定后的重量结果"""
+
     weight_grams: int
     readings: tuple[ScaleReading, ...]  # 用于稳定判定的窗口读数
     source: ScaleSource
@@ -100,52 +96,75 @@ class StableWeight:
 # 协议解析器（纯函数，可单测）
 # ──────────────────────────────────────────────────────────────────────────────
 
-def parse_dahua(line: str) -> Optional[ScaleReading]:
+
+def parse_dahua(line: str) -> ScaleReading | None:
     """解析大华协议帧"""
     m = RE_DAHUA.search(line)
     if not m:
         return None
     val = Decimal(m.group(1))
     unit = m.group(2).lower()
-    grams = int((val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(rounding=ROUND_HALF_UP))
-    return ScaleReading(weight_grams=grams, unit=unit, raw=line.strip(), stable="ST" in line.upper())
+    grams = int(
+        (val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    return ScaleReading(
+        weight_grams=grams, unit=unit, raw=line.strip(), stable="ST" in line.upper()
+    )
 
 
-def parse_dingjian(line: str) -> Optional[ScaleReading]:
+def parse_dingjian(line: str) -> ScaleReading | None:
     """解析顶尖协议帧"""
     m = RE_DINGJIAN.search(line)
     if not m:
         return None
     val = Decimal(m.group(1))
     unit = m.group(2).lower()
-    grams = int((val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(rounding=ROUND_HALF_UP))
-    return ScaleReading(weight_grams=grams, unit=unit, raw=line.strip(), stable="ST" in line.upper())
+    grams = int(
+        (val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    return ScaleReading(
+        weight_grams=grams, unit=unit, raw=line.strip(), stable="ST" in line.upper()
+    )
 
 
-def parse_toledo(line: str) -> Optional[ScaleReading]:
+def parse_toledo(line: str) -> ScaleReading | None:
     """解析托利多协议帧"""
     m = RE_TOLEDO.search(line)
     if not m:
         return None
     val = Decimal(m.group(1))
     unit = m.group(2).lower()
-    grams = int((val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(rounding=ROUND_HALF_UP))
-    return ScaleReading(weight_grams=grams, unit=unit, raw=line.strip(), stable="ST" in line.upper())
+    grams = int(
+        (val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    return ScaleReading(
+        weight_grams=grams, unit=unit, raw=line.strip(), stable="ST" in line.upper()
+    )
 
 
-def parse_generic(line: str) -> Optional[ScaleReading]:
+def parse_generic(line: str) -> ScaleReading | None:
     """解析通用 ASCII 帧（兜底）"""
     m = RE_GENERIC.search(line)
     if not m:
         return None
     val = Decimal(m.group(1))
     unit = m.group(2).lower()
-    grams = int((val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(rounding=ROUND_HALF_UP))
+    grams = int(
+        (val * (Decimal(1000) if unit == "kg" else Decimal(1))).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
     return ScaleReading(weight_grams=grams, unit=unit, raw=line.strip())
 
 
 # 解析器优先级：特定协议优先，通用兜底最后
-PARSERS: list[Callable[[str], Optional[ScaleReading]]] = [
+PARSERS: list[Callable[[str], ScaleReading | None]] = [
     parse_dahua,
     parse_dingjian,
     parse_toledo,
@@ -153,7 +172,7 @@ PARSERS: list[Callable[[str], Optional[ScaleReading]]] = [
 ]
 
 
-def parse_scale_line(line: str) -> Optional[ScaleReading]:
+def parse_scale_line(line: str) -> ScaleReading | None:
     """尝试所有解析器，返回首个成功的结果"""
     for parser in PARSERS:
         reading = parser(line)
@@ -166,8 +185,9 @@ def parse_scale_line(line: str) -> Optional[ScaleReading]:
 # 稳定判定（纯函数）
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def is_stable(
-    window: Deque[ScaleReading],
+    window: deque[ScaleReading],
     *,
     count: int = DEFAULT_STABLE_COUNT,
     threshold_g: int = DEFAULT_STABLE_THRESHOLD_G,
@@ -183,11 +203,11 @@ def is_stable(
 
 
 def get_stable_weight(
-    window: Deque[ScaleReading],
+    window: deque[ScaleReading],
     *,
     count: int = DEFAULT_STABLE_COUNT,
     threshold_g: int = DEFAULT_STABLE_THRESHOLD_G,
-) -> Optional[StableWeight]:
+) -> StableWeight | None:
     """若窗口稳定，返回稳定重量（取窗口中位数，抗抖动）"""
     if not is_stable(window, count=count, threshold_g=threshold_g):
         return None
@@ -205,22 +225,25 @@ def get_stable_weight(
 # 协议解析器协议（可插拔，供扩展自定义协议）
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class ScaleParser(Protocol):
     """协议解析器接口：输入一行文本，返回 ScaleReading 或 None"""
+
     name: str
 
-    def parse(self, line: str) -> Optional[ScaleReading]: ...
+    def parse(self, line: str) -> ScaleReading | None: ...
 
 
 class CompositeParser:
     """组合解析器：按注册顺序尝试"""
+
     def __init__(self) -> None:
         self._parsers: list[ScaleParser] = []
 
     def register(self, parser: ScaleParser) -> None:
         self._parsers.append(parser)
 
-    def parse(self, line: str) -> Optional[ScaleReading]:
+    def parse(self, line: str) -> ScaleReading | None:
         for p in self._parsers:
             r = p.parse(line)
             if r is not None:
@@ -231,16 +254,20 @@ class CompositeParser:
 # 默认组合解析器（内置四大协议）
 DEFAULT_PARSER = CompositeParser()
 for fn in [parse_dahua, parse_dingjian, parse_toledo, parse_generic]:
+
     class _Wrapper:
         name = fn.__name__
-        def parse(self, line: str) -> Optional[ScaleReading]:
-            return fn(line)
+
+        def parse(self, line: str, _fn=fn) -> ScaleReading | None:
+            return _fn(line)
+
     DEFAULT_PARSER.register(_Wrapper())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 模拟秤（开发/测试用）
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class SimulatorScale:
     """模拟秤：产生可配置的重量序列，用于无硬件时的开发与 E2E 测试。
@@ -263,7 +290,7 @@ class SimulatorScale:
         self._stable_count = stable_count
         self._stable_threshold_g = stable_threshold_g
         self._noise_g = noise_g
-        self._window: Deque[ScaleReading] = deque(maxlen=stable_count * 3)
+        self._window: deque[ScaleReading] = deque(maxlen=stable_count * 3)
         self._connected = False
 
     def set_sequence(self, weights_grams: list[int]) -> None:
@@ -287,7 +314,7 @@ class SimulatorScale:
     def is_connected(self) -> bool:
         return self._connected
 
-    async def next_reading(self) -> Optional[ScaleReading]:
+    async def next_reading(self) -> ScaleReading | None:
         """产生下一帧读数（模拟秤连续输出）"""
         if not self._connected or self._index >= len(self._sequence):
             return None
@@ -299,6 +326,7 @@ class SimulatorScale:
         # 加噪声
         if self._noise_g > 0:
             import random
+
             weight += random.randint(-self._noise_g, self._noise_g)
             weight = max(0, weight)
         reading = ScaleReading(
@@ -310,7 +338,7 @@ class SimulatorScale:
         self._window.append(reading)
         return reading
 
-    async def get_stable_weight(self) -> Optional[StableWeight]:
+    async def get_stable_weight(self) -> StableWeight | None:
         """阻塞等待直到稳定（或序列耗尽）"""
         while self._connected:
             reading = await self.next_reading()
@@ -408,7 +436,12 @@ def bridge_main() -> None:
     parser.add_argument("--port", help="串口设备路径，如 /dev/ttyUSB0 或 COM3")
     parser.add_argument("--baud", type=int, default=9600, help="波特率 (默认 9600)")
     parser.add_argument("--ws-port", type=int, default=8765, help="WebSocket 端口 (默认 8765)")
-    parser.add_argument("--parser", default="auto", choices=["auto", "dahua", "dingjian", "toledo", "generic"], help="强制指定协议")
+    parser.add_argument(
+        "--parser",
+        default="auto",
+        choices=["auto", "dahua", "dingjian", "toledo", "generic"],
+        help="强制指定协议",
+    )
     parser.add_argument("--list-ports", action="store_true", help="列出可用串口并退出")
     parser.add_argument("--test", action="store_true", help="测试模式：读取 10 帧后退出")
     parser.add_argument("--stable-count", type=int, default=DEFAULT_STABLE_COUNT)
@@ -458,7 +491,7 @@ def bridge_main() -> None:
     )
     logger.info(f"Opened serial port {args.port} @ {args.baud}")
 
-    window: Deque[ScaleReading] = deque(maxlen=args.stable_count * 3)
+    window: deque[ScaleReading] = deque(maxlen=args.stable_count * 3)
     clients: set = set()
 
     async def broadcast(msg: dict) -> None:
@@ -489,29 +522,39 @@ def bridge_main() -> None:
                 logger.debug(f"Parse failed: {line}")
                 continue
             window.append(reading)
-            await broadcast({
-                "type": "reading",
-                "weight_grams": reading.weight_grams,
-                "unit": reading.unit,
-                "raw": reading.raw,
-                "stable": reading.stable,
-                "ts": reading.timestamp,
-            })
+            await broadcast(
+                {
+                    "type": "reading",
+                    "weight_grams": reading.weight_grams,
+                    "unit": reading.unit,
+                    "raw": reading.raw,
+                    "stable": reading.stable,
+                    "ts": reading.timestamp,
+                }
+            )
             stable = get_stable_weight(
                 window,
                 count=args.stable_count,
                 threshold_g=args.stable_threshold,
             )
             if stable:
-                await broadcast({
-                    "type": "stable",
-                    "weight_grams": stable.weight_grams,
-                    "readings": [
-                        {"weight_grams": r.weight_grams, "unit": r.unit, "raw": r.raw, "stable": r.stable, "ts": r.timestamp}
-                        for r in stable.readings
-                    ],
-                    "source": "bridge",
-                })
+                await broadcast(
+                    {
+                        "type": "stable",
+                        "weight_grams": stable.weight_grams,
+                        "readings": [
+                            {
+                                "weight_grams": r.weight_grams,
+                                "unit": r.unit,
+                                "raw": r.raw,
+                                "stable": r.stable,
+                                "ts": r.timestamp,
+                            }
+                            for r in stable.readings
+                        ],
+                        "source": "bridge",
+                    }
+                )
             frame_count += 1
             if args.test and frame_count >= 10:
                 break
@@ -554,7 +597,8 @@ CREATE TABLE IF NOT EXISTS scale_device (
     name TEXT NOT NULL,
     port_path TEXT NOT NULL,           -- /dev/ttyUSB0, COM3 等
     baud_rate INT NOT NULL DEFAULT 9600,
-    protocol TEXT NOT NULL DEFAULT 'auto' CHECK (protocol IN ('auto','dahua','dingjian','toledo','generic')),
+    protocol TEXT NOT NULL DEFAULT 'auto'
+        CHECK (protocol IN ('auto','dahua','dingjian','toledo','generic')),
     parser_config JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 协议特定参数
     stable_count INT NOT NULL DEFAULT 3,
     stable_threshold_g INT NOT NULL DEFAULT 2,
@@ -606,7 +650,8 @@ CREATE TABLE IF NOT EXISTS scale_stable_event (
     session_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_scale_stable_device ON scale_stable_event(device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scale_stable_device
+    ON scale_stable_event(device_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scale_stable_ticket ON scale_stable_event(ticket_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_scale_stable_pick ON scale_stable_event(pick_order_id, created_at);
 """
@@ -616,25 +661,22 @@ CREATE INDEX IF NOT EXISTS idx_scale_stable_pick ON scale_stable_event(pick_orde
 # 后端服务接口（供路由层调用，不含 FastAPI 依赖）
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class ScaleService:
     """秤设备管理与读数服务（供 API 路由调用）"""
 
     def __init__(self, pool: Any) -> None:
         self.pool = pool
-        self._devices: dict[str, "DeviceSession"] = {}
+        self._devices: dict[str, DeviceSession] = {}
 
     async def list_devices(self) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM scale_device ORDER BY created_at DESC"
-            )
+            rows = await conn.fetch("SELECT * FROM scale_device ORDER BY created_at DESC")
         return [dict(r) for r in rows]
 
-    async def get_device(self, device_id: str) -> Optional[dict[str, Any]]:
+    async def get_device(self, device_id: str) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM scale_device WHERE id = $1", device_id
-            )
+            row = await conn.fetchrow("SELECT * FROM scale_device WHERE id = $1", device_id)
         return dict(row) if row else None
 
     async def create_device(self, data: dict[str, Any], actor: str) -> dict[str, Any]:
@@ -665,7 +707,7 @@ class ScaleService:
             )
         return dict(row)
 
-    async def update_device(self, device_id: str, data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    async def update_device(self, device_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -705,20 +747,21 @@ class ScaleService:
 
     async def delete_device(self, device_id: str) -> bool:
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM scale_device WHERE id = $1", device_id
-            )
+            result = await conn.execute("DELETE FROM scale_device WHERE id = $1", device_id)
         return result != "DELETE 0"
 
 
 class DeviceSession:
     """单设备的连接会话（内存态，不持久化）"""
+
     def __init__(self, device: dict[str, Any], service: ScaleService) -> None:
         self.device = device
         self.service = service
-        self._window: Deque[ScaleReading] = deque(maxlen=device.get("stable_count", DEFAULT_STABLE_COUNT) * 3)
+        self._window: deque[ScaleReading] = deque(
+            maxlen=device.get("stable_count", DEFAULT_STABLE_COUNT) * 3
+        )
         self._connected = False
-        self._session_id: Optional[str] = None
+        self._session_id: str | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -739,10 +782,11 @@ class DeviceSession:
         async with self.service.pool.acquire() as conn:
             await conn.execute(
                 "UPDATE scale_device SET status = $1, updated_at = NOW() WHERE id = $2",
-                status, self.device["id"]
+                status,
+                self.device["id"],
             )
 
-    def feed_line(self, line: str) -> Optional[ScaleReading]:
+    def feed_line(self, line: str) -> ScaleReading | None:
         """输入一行文本，返回解析后的读数（供桥接程序/前端 WebSocket 回调）"""
         parser_name = self.device.get("protocol", "auto")
         if parser_name == "auto":
@@ -760,7 +804,7 @@ class DeviceSession:
         self._window.append(reading)
         return reading
 
-    def get_stable(self) -> Optional[StableWeight]:
+    def get_stable(self) -> StableWeight | None:
         """检查窗口是否稳定，返回稳定重量"""
         stable = get_stable_weight(
             self._window,
@@ -775,7 +819,13 @@ class DeviceSession:
             )
         return None
 
-    async def record_reading(self, reading: ScaleReading, *, ticket_id: Optional[str] = None, pick_order_id: Optional[str] = None) -> None:
+    async def record_reading(
+        self,
+        reading: ScaleReading,
+        *,
+        ticket_id: str | None = None,
+        pick_order_id: str | None = None,
+    ) -> None:
         """持久化单帧读数"""
         async with self.service.pool.acquire() as conn:
             await conn.execute(
@@ -796,7 +846,13 @@ class DeviceSession:
                 self._session_id,
             )
 
-    async def record_stable(self, stable: StableWeight, *, ticket_id: Optional[str] = None, pick_order_id: Optional[str] = None) -> None:
+    async def record_stable(
+        self,
+        stable: StableWeight,
+        *,
+        ticket_id: str | None = None,
+        pick_order_id: str | None = None,
+    ) -> None:
         """持久化稳定重量事件"""
         async with self.service.pool.acquire() as conn:
             await conn.execute(
@@ -808,10 +864,19 @@ class DeviceSession:
                 """,
                 self.device["id"],
                 stable.weight_grams,
-                json.dumps([
-                    {"weight_grams": r.weight_grams, "unit": r.unit, "raw": r.raw, "stable": r.stable, "ts": r.timestamp}
-                    for r in stable.readings
-                ], ensure_ascii=False),
+                json.dumps(
+                    [
+                        {
+                            "weight_grams": r.weight_grams,
+                            "unit": r.unit,
+                            "raw": r.raw,
+                            "stable": r.stable,
+                            "ts": r.timestamp,
+                        }
+                        for r in stable.readings
+                    ],
+                    ensure_ascii=False,
+                ),
                 stable.source.value,
                 ticket_id,
                 pick_order_id,
@@ -833,6 +898,7 @@ class DeviceSession:
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 1 and sys.argv[1] == "bridge":
         # 以桥接程序模式运行：python -m app.scale bridge --port /dev/ttyUSB0
         sys.argv.pop(1)  # 移除 "bridge"

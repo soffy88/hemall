@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import (
     APIRouter,
@@ -876,16 +876,16 @@ def _resolve_weight_selection(
         grams = validate_weight_grams(weight_grams)
         label = f"自定义{grams}克"
         for option in options:
-            if int(option["grams"]) == grams:
+            if int(cast(Any, option["grams"])) == grams:
                 return grams, str(option["label"])
         return grams, label
     if weight_option_label:
         for option in options:
             if str(option["label"]) == weight_option_label:
-                return int(option["grams"]), str(option["label"])
+                return int(cast(Any, option["grams"])), str(option["label"])
         raise HTTPException(400, f"unknown weight option: {weight_option_label}")
     option = options[0]
-    return int(option["grams"]), str(option["label"])
+    return int(cast(Any, option["grams"])), str(option["label"])
 
 
 @router.post("/carts/line-items")
@@ -971,7 +971,7 @@ async def add_line_item(
             int(unit_per_jin),
             price_basis_grams=int(pricing["price_basis_grams"]),
         )
-        response = await _route_add_weight_line_item(
+        weight_response = await _route_add_weight_line_item(
             pool,
             cart_id=body.cart_id,
             batch_id=weight_batch["id"] if weight_batch is not None else None,
@@ -989,7 +989,7 @@ async def add_line_item(
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("recommend weight cart_add logging failed", exc_info=True)
-        return response
+        return weight_response
 
     batch_id = body.batch_id
     variant_row = None
@@ -3382,25 +3382,29 @@ async def wechat_phone_login_customer(body: WeChatPhoneLoginRequest, request: Re
         # 更新微信绑定
         async with pool.acquire() as conn:
             await conn.execute(
-                'UPDATE "customer" SET wechat_openid = $1, wechat_unionid = COALESCE($2, wechat_unionid) WHERE id = $3',
+                'UPDATE "customer" SET wechat_openid = $1, '
+                "wechat_unionid = COALESCE($2, wechat_unionid) WHERE id = $3",
                 openid,
                 unionid,
                 str(row["id"]),
             )
-        issued = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
+        issued = _sign_customer_token(
+            str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm
+        )
         return CustomerTokenResponse(
             **{"access_token": issued, "customer_id": str(row["id"]), "email": row["email"]}
         )
 
     # 手机号未注册，创建新客户
     from obase.auth.password import bcrypt_hash
+    from obase.uuid7 import uuid7
     from omodul.create_customer import (
         CreateCustomerConfig,
         CreateCustomerInput,
         create_customer,
     )
+
     from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
-    from obase.uuid7 import uuid7
 
     wx_referrer_id: str | None = None
     if (body.referral_code or "").strip():
@@ -3420,8 +3424,7 @@ async def wechat_phone_login_customer(body: WeChatPhoneLoginRequest, request: Re
     if result["status"] == "failed":
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                'SELECT id, email, status FROM "customer" '
-                "WHERE phone = $1 AND deleted_at IS NULL",
+                'SELECT id, email, status FROM "customer" WHERE phone = $1 AND deleted_at IS NULL',
                 phone_number,
             )
         if row is None:
@@ -3435,7 +3438,9 @@ async def wechat_phone_login_customer(body: WeChatPhoneLoginRequest, request: Re
                 unionid,
                 str(row["id"]),
             )
-        issued = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
+        issued = _sign_customer_token(
+            str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm
+        )
         return CustomerTokenResponse(
             **{"access_token": issued, "customer_id": str(row["id"]), "email": row["email"]}
         )
@@ -3445,7 +3450,8 @@ async def wechat_phone_login_customer(body: WeChatPhoneLoginRequest, request: Re
     password_hash = bcrypt_hash(**hash_kwargs)
     async with pool.acquire() as conn:
         await conn.execute(
-            'UPDATE "customer" SET password_hash = $1, wechat_openid = $2, wechat_unionid = $3 WHERE id = $4',
+            'UPDATE "customer" SET password_hash = $1, wechat_openid = $2, '
+            "wechat_unionid = $3 WHERE id = $4",
             password_hash,
             openid,
             unionid,
@@ -6084,7 +6090,8 @@ async def submit_aftersales_claim(
             LEFT JOIN product p ON p.id = pv.product_id
             WHERE oli.id = $1 AND oli.order_id = $2
             """,
-            body.line_item_id, body.order_id,
+            body.line_item_id,
+            body.order_id,
         )
         if not line_item:
             raise HTTPException(404, "订单商品不存在")

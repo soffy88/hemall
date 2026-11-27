@@ -18,7 +18,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel
 
 from .deps import assert_staff_role, get_current_customer, get_current_user
 
@@ -625,7 +624,8 @@ async def _transition(
             stamp = {
                 "claimed": "claimed_at = NOW(), assigned_to = $2",
                 "picked": "picked_at = NOW(), assigned_to = COALESCE(NULLIF(assigned_to, ''), $2)",
-                "delivered": "delivered_at = NOW(), assigned_to = COALESCE(NULLIF(assigned_to, ''), $2)",
+                "delivered": "delivered_at = NOW(), "
+                "assigned_to = COALESCE(NULLIF(assigned_to, ''), $2)",
             }[to_status]
             updated = await conn.fetchrow(
                 f"UPDATE core4_delivery_task SET status = $3, {stamp}, "

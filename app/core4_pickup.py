@@ -16,9 +16,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
 
-from .deps import assert_staff_role, get_current_customer, get_current_user
+from .deps import assert_staff_role, get_current_user
 
 TZ = ZoneInfo("Asia/Shanghai")
 SETTING_KEY = "pickup.settings.v1"
@@ -73,28 +72,34 @@ def _clean_config(raw: Any) -> dict[str, Any]:
         for p in points:
             if not isinstance(p, dict):
                 continue
-            cleaned_points.append({
-                "id": str(p.get("id", "")) or f"point_{secrets.token_hex(4)}",
-                "name": str(p.get("name", "")).strip() or "未命名自提点",
-                "address": str(p.get("address", "")).strip(),
-                "phone": str(p.get("phone", "")).strip(),
-                "latitude": float(p.get("latitude", 0)) if p.get("latitude") is not None else 0.0,
-                "longitude": float(p.get("longitude", 0)) if p.get("longitude") is not None else 0.0,
-                "business_hours": {
-                    "start": str(p.get("business_hours", {}).get("start", "08:00")).strip(),
-                    "end": str(p.get("business_hours", {}).get("end", "21:00")).strip(),
-                },
-                "time_slots": [
-                    {
-                        "start": str(s.get("start", "")).strip(),
-                        "end": str(s.get("end", "")).strip(),
-                        "capacity": max(1, int(s.get("capacity", 20))),
-                    }
-                    for s in p.get("time_slots", [])
-                    if isinstance(s, dict) and s.get("start") and s.get("end")
-                ],
-                "is_active": bool(p.get("is_active", True)),
-            })
+            cleaned_points.append(
+                {
+                    "id": str(p.get("id", "")) or f"point_{secrets.token_hex(4)}",
+                    "name": str(p.get("name", "")).strip() or "未命名自提点",
+                    "address": str(p.get("address", "")).strip(),
+                    "phone": str(p.get("phone", "")).strip(),
+                    "latitude": float(p.get("latitude", 0))
+                    if p.get("latitude") is not None
+                    else 0.0,
+                    "longitude": (
+                        float(p.get("longitude", 0)) if p.get("longitude") is not None else 0.0
+                    ),
+                    "business_hours": {
+                        "start": str(p.get("business_hours", {}).get("start", "08:00")).strip(),
+                        "end": str(p.get("business_hours", {}).get("end", "21:00")).strip(),
+                    },
+                    "time_slots": [
+                        {
+                            "start": str(s.get("start", "")).strip(),
+                            "end": str(s.get("end", "")).strip(),
+                            "capacity": max(1, int(s.get("capacity", 20))),
+                        }
+                        for s in p.get("time_slots", [])
+                        if isinstance(s, dict) and s.get("start") and s.get("end")
+                    ],
+                    "is_active": bool(p.get("is_active", True)),
+                }
+            )
         base["points"] = cleaned_points
 
     # 合并 default_point_id
@@ -121,7 +126,9 @@ async def load_pickup_settings(pool: Any) -> dict[str, Any]:
     return _clean_config(raw)
 
 
-async def save_pickup_settings(pool: Any, cfg: dict[str, Any], *, updated_by: str) -> dict[str, Any]:
+async def save_pickup_settings(
+    pool: Any, cfg: dict[str, Any], *, updated_by: str
+) -> dict[str, Any]:
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -145,6 +152,7 @@ def generate_pickup_code() -> str:
 def generate_qr_data(order_id: str, pickup_code: str) -> str:
     """生成二维码数据：JSON 字符串，含 order_id 和 pickup_code。"""
     import json
+
     return json.dumps({"order_id": order_id, "pickup_code": pickup_code}, ensure_ascii=False)
 
 
@@ -164,7 +172,8 @@ async def _get_booked_counts(pool: Any, point_id: str, day: date) -> dict[str, i
               AND pickup_time_slot_start IS NOT NULL
             GROUP BY pickup_time_slot_start
             """,
-            point_id, day,
+            point_id,
+            day,
         )
     for row in rows:
         counts[str(row["pickup_time_slot_start"])] = int(row["n"])
@@ -203,16 +212,18 @@ def available_pickup_slots(
         capacity = int(slot.get("capacity", 20))
         if used >= capacity:
             continue
-        slots.append({
-            "id": f"{point['id']}_{slot['start']}",
-            "start_time": slot["start"],
-            "end_time": slot["end"],
-            "capacity": capacity,
-            "booked": used,
-            "remaining": capacity - used,
-            "is_available": True,
-            "label": f"{slot['start']}-{slot['end']}",
-        })
+        slots.append(
+            {
+                "id": f"{point['id']}_{slot['start']}",
+                "start_time": slot["start"],
+                "end_time": slot["end"],
+                "capacity": capacity,
+                "booked": used,
+                "remaining": capacity - used,
+                "is_available": True,
+                "label": f"{slot['start']}-{slot['end']}",
+            }
+        )
     return slots
 
 
@@ -284,8 +295,12 @@ async def get_pickup_slots(
     if not point["is_active"]:
         raise HTTPException(400, "自提点已停用")
 
-    target_date = date.fromisoformat(date) if date else datetime.now(TZ).date()
-    now = datetime.now(TZ) if target_date == datetime.now(TZ).date() else datetime.combine(target_date, time(0, 0), tzinfo=TZ)
+    target_date = datetime.fromisoformat(date).date() if date else datetime.now(TZ).date()
+    now = (
+        datetime.now(TZ)
+        if target_date == datetime.now(TZ).date()
+        else datetime.combine(target_date, time(0, 0), tzinfo=TZ)
+    )
 
     booked = await _get_booked_counts(pool, point_id, target_date)
     slots = available_pickup_slots(point, now=now, booked=booked)
