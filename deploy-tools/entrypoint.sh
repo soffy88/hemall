@@ -17,6 +17,7 @@ set -e
 
 if [ "$(id -u)" = "0" ]; then
     echo "[entrypoint] running as root: fixing data dir ownership before dropping to hemall"
+    mkdir -p /app/var/omodul_output /app/logs
     chown -R hemall:hemall /app/var/omodul_output /app/logs 2>/dev/null || true
     chown -R hemall:hemall /home/hemall 2>/dev/null || true
     echo "[entrypoint] starting gunicorn as root master (workers drop to hemall): $*"

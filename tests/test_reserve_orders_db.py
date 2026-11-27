@@ -203,11 +203,15 @@ async def _seed_batch(
             lid,
             f"reserve_loc_{uuid7().replace('-', '')[:8]}",
         )
+        # P0-08 商品门禁要求非 daily/electronics 批次带齐食品资料；这些预订
+        # 用例的商品没有分类，故按生鲜口径补齐效期/产地/储存条件/保质期。
         await conn.execute(
             "INSERT INTO inventory_batch (id, variant_id, location_id, batch_no, "
             "video_url, cost_price_cents, retail_price_cents, stock_qty, "
-            "reserved_qty, inspection_status, status) VALUES ($1, $2, $3, $4, "
-            "'https://video.example/b.mp4', $5, $6, $7, 0, $8, 'active')",
+            "reserved_qty, inspection_status, status, expiration_time, "
+            "origin_region, storage_condition, shelf_life_days) VALUES ($1, $2, $3, $4, "
+            "'https://video.example/b.mp4', $5, $6, $7, 0, $8, 'active', "
+            "NOW() + INTERVAL '30 days', '测试产地', '常温避光', 30)",
             bid,
             variant_id,
             lid,
@@ -257,7 +261,9 @@ async def _fetchall(sql: str, *args):
 
 
 def test_zero_stock_product_visible_in_storefront(db_client):
-    pid, _vid = _run(_seed_product("预订测试-零库存苹果", reference_price=1500))
+    pid, vid = _run(_seed_product("预订专用-零库存苹果", reference_price=1500))
+    # 有合规批次但库存为 0：仍应作为可预订商品出现在前台。
+    _run(_seed_batch(vid, stock=0, price=1500))
 
     r = db_client.get("/store/products", params={"search": "零库存苹果"})
     assert r.status_code == 200, r.text

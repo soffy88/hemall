@@ -30,6 +30,7 @@ from .refund_service import (
     RefundError,
     _refund_to_dict,
     approve_refund,
+    confirm_manual_refund,
     create_refund_request,
     get_refund_audit_logs,
     list_refund_requests,
@@ -68,7 +69,11 @@ class RefundRejectBody(BaseModel):
 
 class RefundReturnBody(BaseModel):
     tracking_no: str = Field(..., min_length=1, description="退货物流单号")
-    batch_id: str = Field(..., min_length=1, description="回补库存的批次 ID")
+    quantity: int | None = Field(
+        None,
+        gt=0,
+        description="退货数量；缺省按原订单行数量，批次由订单行自动关联",
+    )
 
 
 # ── 顾客端 ─────────────────────────────────────────────────────────────
@@ -189,9 +194,23 @@ async def return_received_endpoint(
             pool,
             refund_id,
             body.tracking_no,
-            body.batch_id,
             str(principal["user_id"]),
+            quantity=body.quantity,
         )
+    except RefundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _refund_to_dict(refund)
+
+
+@router.post("/{refund_id}/confirm-manual")
+async def confirm_manual_refund_endpoint(
+    refund_id: str,
+    principal: dict = Depends(require_staff_role("admin")),
+    pool: Any = Depends(get_pool),
+) -> dict[str, Any]:
+    """管理员线下完成转账后确认；这是 manual 退款进入 succeeded 的唯一入口。"""
+    try:
+        refund = await confirm_manual_refund(pool, refund_id, str(principal["user_id"]))
     except RefundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _refund_to_dict(refund)

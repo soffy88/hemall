@@ -12,6 +12,7 @@ authorize_payment_for_cart / omodul.complete_checkout)——这个文件验证
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -88,6 +89,10 @@ async def test_intake_to_checkout_full_chain(cn_pool, tmp_path, test_redis_url):
             stock_qty=10,
             cost_price=2000,
             retail_price=3900,
+            expiration_time=(datetime.now(UTC) + timedelta(days=7)).isoformat(),
+            origin_region="上海",
+            storage_condition="0-4℃冷藏",
+            shelf_life_days=7,
         ),
         tmp_path,
         pool=cn_pool,
@@ -105,12 +110,34 @@ async def test_intake_to_checkout_full_chain(cn_pool, tmp_path, test_redis_url):
             stock_qty=5,
             cost_price=1000,
             retail_price=2000,
+            expiration_time=(datetime.now(UTC) + timedelta(days=7)).isoformat(),
+            origin_region="上海",
+            storage_condition="0-4℃冷藏",
+            shelf_life_days=7,
         ),
         tmp_path,
         pool=cn_pool,
     )
     assert rejected["status"] == "failed"
     assert "video_url" in rejected["error"]["message"]
+
+    # 1c. 食品缺必填资料必须拒绝
+    missing_data = await create_inventory_batch(
+        CreateInventoryBatchConfig(),
+        CreateInventoryBatchInput(
+            variant_id=var_id,
+            location_id=loc_id,
+            video_url="https://video.example/v.mp4",
+            stock_qty=5,
+            cost_price=1000,
+            retail_price=2000,
+        ),
+        tmp_path,
+        pool=cn_pool,
+    )
+    assert missing_data["status"] == "failed"
+    assert "expiration_time" in missing_data["error"]["message"]
+    assert "origin_region" in missing_data["error"]["message"]
 
     # 2. 建车 + 加车 (共享 omodul，不是 扩展域自己的版本)
     from omodul.add_line_item_to_cart import (

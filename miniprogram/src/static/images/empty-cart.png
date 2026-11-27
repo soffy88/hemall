@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <circle cx="100" cy="100" r="80" fill="#F5F5F5" stroke="#E0E0E0" stroke-width="2" stroke-dasharray="10,10"/>
+  <path d="M60 100 L85 125 L140 70" fill="none" stroke="#BDBDBD" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="100" y="160" font-family="system-ui, sans-serif" font-size="14" fill="#9E9E9E" text-anchor="middle">购物车是空的</text>
+</svg>

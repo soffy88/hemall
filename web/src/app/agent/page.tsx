@@ -16,7 +16,7 @@ import { useRouter } from 'next/navigation';
 import { initAuth, isAuthenticated } from '@/lib/auth-store';
 import { api } from '@/lib/api-client';
 import { errMessage } from '@/lib/errors';
-import type { AgentCommandResult, AgentTool } from '@/types/api';
+import type { AgentCommandResult, AgentTool, Product } from '@/types/api';
 
 export default function AgentConsolePage() {
   const router = useRouter();
@@ -26,6 +26,11 @@ export default function AgentConsolePage() {
   const [log, setLog] = useState<AgentCommandResult[]>([]);
   const [uploading, setUploading] = useState(false);
   const [mediaUrl, setMediaUrl] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState('');
+  const [pickerResults, setPickerResults] = useState<Product[]>([]);
+  const [pickerBusy, setPickerBusy] = useState(false);
+  const [target, setTarget] = useState<{ id: string; title: string } | null>(null);
 
   // 鉴权守卫：cookie 会话下客户端读不到 token，等 initAuth 拉完 /auth/me 再判断。
   useEffect(() => {
@@ -74,13 +79,28 @@ export default function AgentConsolePage() {
     }
   }
 
+  async function searchProducts() {
+    setPickerBusy(true);
+    try {
+      const list = await api.adminListProducts({ search: pickerQuery.trim() || undefined });
+      setPickerResults(list.slice(0, 20));
+    } catch (err) {
+      setLog((l) => [{ input: '搜索商品', error: errMessage(err) }, ...l]);
+    } finally {
+      setPickerBusy(false);
+    }
+  }
+
   async function uploadVideo(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file || uploading) return;
     setUploading(true);
     try {
-      const res = await api.agentIngest(file);
-      setLog((l) => [{ ...res, input: `📹 传货: ${file.name}` }, ...l]);
+      const res = await api.agentIngest(file, target ? { targetProductId: target.id } : undefined);
+      setLog((l) => [{
+        ...res,
+        input: target ? `📷 换图: ${target.title}` : `📹 传货: ${file.name}`,
+      }, ...l]);
       if (res.media_url) setMediaUrl(res.media_url);
     } catch (err) {
       setLog((l) => [{ input: `📹 传货: ${file.name}`, error: errMessage(err) }, ...l]);
@@ -120,16 +140,77 @@ export default function AgentConsolePage() {
             </button>
           </div>
 
+          <div className="mt-2 rounded-2xl border border-emerald-200 bg-white px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] font-bold text-gray-600">
+                {target ? `换图目标：${target.title}` : '不选目标 = 新建商品'}
+              </span>
+              <div className="flex gap-2">
+                {target && (
+                  <button onClick={() => setTarget(null)} className="text-[11px] text-gray-500 underline">
+                    取消
+                  </button>
+                )}
+                <button
+                  onClick={() => { setPickerOpen((v) => !v); if (!pickerOpen) void searchProducts(); }}
+                  className="text-[11px] font-bold text-emerald-700 underline"
+                >
+                  {target ? '换一个' : '选择要换图的商品'}
+                </button>
+              </div>
+            </div>
+            {pickerOpen && (
+              <div className="mt-2 space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    value={pickerQuery}
+                    onChange={(e) => setPickerQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && searchProducts()}
+                    placeholder="搜商品名 / 部分名称"
+                    className="flex-1 rounded-xl border border-gray-200 px-3 py-2 text-[13px] outline-none focus:border-emerald-400"
+                  />
+                  <button
+                    onClick={searchProducts}
+                    disabled={pickerBusy}
+                    className="rounded-xl bg-gray-100 px-3 py-2 text-[12px] font-bold text-gray-700 disabled:opacity-40"
+                  >
+                    {pickerBusy ? '…' : '搜索'}
+                  </button>
+                </div>
+                <div className="max-h-44 overflow-auto divide-y divide-gray-100">
+                  {pickerResults.length === 0 && (
+                    <p className="py-2 text-[12px] text-gray-400">没有匹配商品</p>
+                  )}
+                  {pickerResults.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setTarget({ id: p.id, title: p.title }); setPickerOpen(false); }}
+                      className="flex w-full items-center justify-between gap-2 py-2 text-left text-[13px] text-gray-700"
+                    >
+                      <span className="truncate">{p.title}</span>
+                      <span className="shrink-0 text-[11px] text-gray-400">{p.status}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           <label className="mt-2 flex cursor-pointer items-center justify-between rounded-2xl border-2 border-dashed border-emerald-300 bg-emerald-50 px-4 py-3 active:scale-[0.99]">
             <span className="flex items-center gap-2 text-[14px] font-bold text-emerald-700">
-              {uploading ? '⏳ 正在传货上架...' : '🎥 手机实拍视频/图片 → 一键上架'}
+              {uploading
+                ? '⏳ 正在上传...'
+                : target
+                  ? '📷 拍照替换该商品主图'
+                  : '🎥 手机实拍视频/图片 → 一键上架'}
             </span>
             <span className="rounded-full bg-emerald-600 px-4 py-1.5 text-xs font-black text-white">
               选择文件
             </span>
             <input
               type="file"
-              accept="video/*,image/*"
+              accept={target ? 'image/*' : 'video/*,image/*'}
+              capture={target ? 'environment' : undefined}
               onChange={uploadVideo}
               disabled={uploading}
               className="hidden"

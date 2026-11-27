@@ -141,7 +141,7 @@
 	#   防漂移门禁: `pytest tests/test_gateway_route_coverage.py`
 	#   数据源:    `python scripts/export_route_prefixes.py`
 	#   审计依据: P0-2 (缺 /payments /ext /ai /ws … 导致支付回调 404)。
-	@omodul path_regexp api ^/(aftersales|ai|auth|batch|cache|cart|catalog|checkout|community|customers|domain|eventsourcing|ext|fulfillment|growth|inventory|marketing|membership|orders|payments|push|redoc|risk|search|settings|settlement|supply-chain|ws)(/.*)?$
+	@omodul path_regexp api ^/(aftersales|ai|auth|batch|cache|cart|catalog|checkout|community|customers|domain|eventsourcing|ext|fulfillment|growth|inventory|marketing|membership|orders|payments|push|redoc|risk|search|settings|settlement|staff|supply-chain|ws)(/.*)?$
 	handle @omodul {
 		reverse_proxy {$HEMALL_API_CONTAINER}:8000 {
 			import trusted_upstream

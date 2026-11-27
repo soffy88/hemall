@@ -1,0 +1,15 @@
+MP2 Completed: 2026-11-19
+
+All 10 steps implemented:
+1. Pintuan (group buying) - complete
+2. Store pickup - complete
+3. Delivery time slots - complete
+4. Reorder / Frequent lists - complete
+5. Coupons / Member pricing / Points / Stored value - complete
+6. Expiry specials / After-sales / Weight adjustment - complete
+7. Admin management (banners, pintuan, pickup) - complete
+8. Phone auth / Subscribe messages / Miniprogram codes - complete
+9. Tests & build verification - complete
+10. Deployment ready - complete
+
+Report: MP2_REPORT.md

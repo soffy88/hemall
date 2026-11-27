@@ -41,7 +41,7 @@
   "common.save": "保存",
   "common.delete": "删除",
   "common.back": "返回",
-  "common.welcome": "欢迎来到 Hemall",
+  "common.welcome": "欢迎来到 小宋生鲜",
   "error.not_found": "未找到",
   "error.network": "网络错误，请稍后重试",
   "error.unauthorized": "请先登录"

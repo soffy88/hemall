@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # 公开 (无鉴权) 创建 app_user (管理员) 的引导开关。默认关闭——create_user 需
     # 管理员 JWT。仅在首个管理员引导期临时置 true, 建成后立即关回 false。
     allow_public_admin_registration: bool = False
+    # 管理员强制 TOTP：production 默认开启。关闭只允许在完成风险评估后临时
+    # 使用；登录页已有 /login/totp-setup 绑定引导。
+    require_admin_totp: bool = True
 
     # ── 数据库 (obase.persistence.PgPool) ──────────────────────────────
     pg_dsn: str = "postgresql://postgres:test@localhost:5432/hemall"
@@ -157,6 +160,23 @@ class Settings(BaseSettings):
     # provider: manual | wechat | stripe。沙盒/生产无缝切换 = 改这一个变量 +
     # 对应密钥，bootstrap 按此注册；真实密钥缺失时诚实回退 manual。
     payment_gateway_provider: str = "manual"
+    # P0-09 + 2026-11-08 用户决定：酒类保留线上上架（线上范围比门店更广）。
+    # 上架不等于放宽保护：年龄确认、未成年人禁售与理性饮酒提示始终生效，
+    # 前台仍需通过 /store/alcohol/verify-age 取得签名年龄凭证。
+    alcohol_sales_enabled: bool = True
+    alcohol_min_age: int = 18
+    alcohol_age_cookie_days: int = 30
+    # 2026-11-08 用户决定：商品资料（保质期/产地/储存条件）缺失不再自动隐藏。
+    # 默认 "提示不拦截"：后台标「待补资料」并出清单，前台照常展示；只有
+    # 质检未通过批次和明确的测试商品会被隐藏。需要恢复严格门禁时把此开关
+    # 设为 true（或 HEMALL_CATALOG_STRICT_DATA_GATE=true）。
+    catalog_strict_data_gate: bool = False
+    # 称重定价：前台统一按“斤”展示，内部以克与分计算；履约称重后的
+    # 多退少补容差（占预估金额百分比）。超出容差须顾客确认。
+    weigh_price_unit: str = "jin"  # jin=500g（展示单位）
+    weigh_diff_tolerance_percent: int = 10
+    # 预授权未接入时，多出预估价的部分只记「待补收」，不伪造二次扣款。
+    weigh_extra_charge_enabled: bool = False
     # 微信支付 v3 (值可为文件路径或内联 PEM 内容；用 str 而非 Path——
     # pathlib 会把 base64 里的 // 折叠成 / 破坏密钥)
     wechat_pay_appid: str = ""
@@ -196,6 +216,11 @@ class Settings(BaseSettings):
     # 根日志级别 (INFO/WARNING/DEBUG)。引擎 tick 状态日志 (爬虫/证书轮换)
     # 依赖它不被 WARNING 默认值吞掉。
     log_level: str = "INFO"
+
+    # /metrics 防护：优先使用 token；未配置 token 时只允许回环/内网来源。
+    # 公网入口仍需 Caddy 的 private_ranges 规则作为第一道边界。
+    metrics_access_token: str = ""
+    metrics_allow_private: bool = True
 
     @property
     def effective_pg_dsn(self) -> str:
@@ -253,6 +278,44 @@ class Settings(BaseSettings):
     default_search_provider: str = "log"
     default_notification_provider: str = "log"
     default_tax_provider: str = "flat"
+    # 上线 P0：未配置真实收款通道时仍允许人工确认的线下收款模式。
+    manual_payment_enabled: bool = True
+    # 超时关单：pending/draft 超过该分钟数仍未支付则取消并释放 reservation。
+    order_payment_timeout_minutes: int = 30
+    order_timeout_engine_interval_seconds: int = 60
+
+    # 运费只由服务端计算；客户端提交的 price_cents 仅保留兼容，不参与计价。
+    shipping_standard_cents: int = 1500
+    shipping_express_cents: int = 3000
+    shipping_next_day_cents: int = 4500
+    shipping_free_threshold_cents: int = 0
+    shipping_delivery_windows: str = "10:00-12:00,14:00-18:00"
+    shipping_service_area: str = ""
+
+    # ── 上线合规与顾客通知 ─────────────────────────────────────────────
+    # 法定页面文本必须由经营主体/法务提供。默认只展示占位并标记“未正式营业”；
+    # 只有 manifest 中全部必需文档已发布，且此开关显式打开，才显示正式营业。
+    compliance_manifest_path: str = "content/compliance/manifest.json"
+    site_official_open: bool = False
+    # 短信验证码默认关闭。启用时必须由用户提供真实 provider/webhook 与模板；
+    # disabled 模式不发送、不生成、不记录验证码。
+    sms_provider: str = "disabled"
+    sms_webhook_url: str = ""
+    sms_webhook_token: str = ""
+
+    # ── 商家新订单通知 ─────────────────────────────────────────────────
+    # disabled/log 只用于本地开发，后台会明确显示“未配置真实通知”。
+    merchant_notification_provider: str = "disabled"
+    merchant_notification_webhook_url: str = ""
+    merchant_notification_webhook_token: str = ""
+    merchant_smtp_host: str = ""
+    merchant_smtp_port: int = 587
+    merchant_smtp_username: str = ""
+    merchant_smtp_password: str = ""
+    merchant_smtp_from: str = ""
+    merchant_smtp_to: str = ""
+    merchant_smtp_starttls: bool = True
+
     # FlatRateTaxProvider 必填 rate_percent (无凭据 fallback 的固定税率)
     flat_tax_rate_percent: float = 10.0
     # VLM 视觉 provider (拍照识货/以图比对/判损): "manual" (内存桩) /

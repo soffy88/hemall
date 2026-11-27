@@ -28,7 +28,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from prometheus_client import make_asgi_app
 
 # Phase 0 Week 2: 限流
@@ -55,7 +55,7 @@ from .ext.oservi_lifecycle import build_ext_oservi
 from .i18n.service import CurrencyConverter, LocalizedPaymentRouter, TranslationManager
 from .inventory.router import router as inventory_router
 from .middleware.logging import LoggingMiddleware, configure_structlog
-from .middleware.metrics import MetricsMiddleware
+from .middleware.metrics import MetricsMiddleware, metrics_access_allowed
 
 # 补天计划 Task 1.2: 零登录公开端点令牌桶限流 (IP + Device_ID)
 from .middleware.ratelimit import TokenBucketRateLimitMiddleware
@@ -87,6 +87,7 @@ from .security.rate_limit import limiter
 
 # 补天计划 Task 1.1: Webhook 验签装甲 (HMAC-SHA256, ASGI 层强制)
 from .security.webhook import WebhookSignatureMiddleware
+from .store_ops import router as store_ops_router
 
 # Phase 0: 配置结构化日志 (进程启动期一次)
 configure_structlog()
@@ -169,13 +170,13 @@ def _render_landing(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hemall 商城</title>
+<title>小宋生鲜 · 社区生鲜</title>
 <style>{_LANDING_CSS}</style>
 </head>
 <body>
   <main class="card">
-    <div class="brand">Hemall <em>商城</em></div>
-    <div class="subtitle">Headless Commerce 服务端 · v{version}</div>
+    <div class="brand">小宋生鲜 <em>社区生鲜</em></div>
+    <div class="subtitle">xs fresh mall 小宋生鲜 Headless Commerce · v{version}</div>
     <span class="badge {status_class}">{badge}</span>
     <div class="status">
       <div class="status-item">{db_dot}<div class="stack">
@@ -536,6 +537,23 @@ def create_app() -> FastAPI:
     # CORS: 允许前端 dev server (默认 localhost:3000) 跨域调用。
     # Cookie 认证需 allow_credentials=True。
     settings = get_settings()
+
+    @app.middleware("http")
+    async def metrics_guard(request: Request, call_next):
+        """纵深防御：即使 Caddy 规则误配，/metrics 也不对公网裸奔。"""
+        if request.url.path.startswith("/metrics"):
+            auth = request.headers.get("authorization", "")
+            bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            supplied = request.headers.get("x-metrics-token", "") or bearer
+            if not metrics_access_allowed(
+                client_host=request.client.host if request.client else None,
+                expected_token=settings.metrics_access_token,
+                supplied_token=supplied,
+                allow_private=settings.metrics_allow_private,
+            ):
+                return JSONResponse({"detail": "metrics access denied"}, status_code=403)
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -575,12 +593,7 @@ def create_app() -> FastAPI:
     # 路径→校验器按路径注册：真实微信模式 (HEMALL_PAYMENT_GATEWAY_PROVIDER
     # =wechat) 下 /payments/wechat/notify 改由平台证书验签 (WechatPayNative
     # Gateway.verify_callback 在 handler 内完成)，不再套本域 HMAC 契约。
-    protected_webhook_paths = {
-        "/payments/alipay/notify",
-        "/growth/douyin_callback",
-    }
-    if settings.payment_gateway_provider != "wechat":
-        protected_webhook_paths.add("/payments/wechat/notify")
+    protected_webhook_paths = _webhook_protected_paths(settings)
     app.add_middleware(
         WebhookSignatureMiddleware,
         secret=settings.webhook_secret,
@@ -612,6 +625,12 @@ def create_app() -> FastAPI:
     spider_root = settings.output_root / "ext_bespoke" / "spider_media"
     spider_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media/spider", StaticFiles(directory=spider_root), name="spider_media")
+
+    # 店员实拍商品图 (product_photo 输出): /media/product_photo/<yyyymm>/<hash>.jpg
+    # 落 hemall_output 命名卷 (docker-compose.mall-old.yml) —— 容器重建不丢。
+    photo_root = settings.output_root / "product_photo"
+    photo_root.mkdir(parents=True, exist_ok=True)
+    app.mount("/media/product_photo", StaticFiles(directory=photo_root), name="product_photo")
 
     # Phase 0 Week 2: 挂载支付路由
     app.include_router(payment_router)
@@ -651,6 +670,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_chat_router)
 
     app.include_router(build_router())
+    app.include_router(store_ops_router)
 
     @app.get("/", tags=["system"], include_in_schema=False)
     async def root(request: Request) -> HTMLResponse:
@@ -686,6 +706,24 @@ def create_app() -> FastAPI:
         return HTMLResponse(content=html, status_code=200)
 
     return app
+
+
+def _webhook_protected_paths(settings: Settings) -> set[str]:
+    """返回由本域 HMAC 中间件保护的路径。
+
+    真实支付网关回调由各自的厂商验签器校验：支付宝用 RSA2 表单签名，微信
+    用平台证书 + wechatpay-* 头。它们不会携带 X-Hemall-* 头，因此配置成
+    对应 provider 时必须从通用 HMAC 中间件放行，否则真实回调在进入 handler
+    前就会被 403。未启用的 provider 路径仍保留 HMAC 保护，避免沙箱/遗留
+    路径被匿名请求直接触达。
+    """
+    provider = settings.payment_gateway_provider.strip().lower()
+    protected = {"/growth/douyin_callback"}
+    if provider != "alipay":
+        protected.add("/payments/alipay/notify")
+    if provider != "wechat":
+        protected.add("/payments/wechat/notify")
+    return protected
 
 
 app = create_app()

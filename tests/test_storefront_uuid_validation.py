@@ -94,7 +94,14 @@ def customer_token(db_client):
     email = f"uuid-{uuid7()}@test.local"
     r = db_client.post(
         "/store/customers/register",
-        json={"email": email, "password": "UuidTest123", "name": "uuid校验"},
+        json={
+            "email": email,
+            "password": "UuidTest123",
+            "name": "uuid校验",
+            "privacy_consent": True,
+            "terms_consent": True,
+            "consent_version": "2026-11-08-placeholder",
+        },
     )
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]

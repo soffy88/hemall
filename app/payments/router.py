@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..db_recovery import kick_pool_recovery
@@ -221,7 +222,7 @@ async def _settle_payment_and_order(
     paid_amount_cents: int | None = None,
     expected_provider: str | None = None,
     paid_currency: str | None = None,
-) -> None:
+) -> bool:
     """支付成功回调的统一收尾：验证 intent 后原子推进订单。
 
     幂等：仅当会话仍是 pending 时才翻转并推进订单 (RETURNING 拿 order_id);
@@ -236,7 +237,7 @@ async def _settle_payment_and_order(
         logger.warning(
             "payment settlement rejected: missing verified amount session=%s", session_id
         )
-        return
+        return False
     settled_order_id: str | None = None
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -254,10 +255,10 @@ async def _settle_payment_and_order(
             )
             if intent is None:
                 logger.warning("payment intent not found: %s", session_id)
-                return
+                return False
             if expected_provider and intent["provider"] != expected_provider:
                 logger.warning("payment provider mismatch: %s", session_id)
-                return
+                return False
             if intent["status"] not in {
                 PaymentStatus.PENDING.value,
                 "provider_pending",
@@ -268,7 +269,7 @@ async def _settle_payment_and_order(
                     session_id,
                     intent["status"],
                 )
-                return
+                return False
             if int(intent["amount_cents"]) != int(paid_amount_cents):
                 logger.warning(
                     "payment amount mismatch: session=%s expected=%s got=%s",
@@ -276,19 +277,19 @@ async def _settle_payment_and_order(
                     intent["amount_cents"],
                     paid_amount_cents,
                 )
-                return
+                return False
             callback_currency = (paid_currency or intent["currency"]).upper()
             if callback_currency != str(intent["currency"]).upper():
                 logger.warning("payment currency mismatch: %s", session_id)
-                return
+                return False
             if intent["order_id"] is None or intent["grand_total_cents"] is None:
-                return
+                return False
             if int(intent["grand_total_cents"]) != int(intent["amount_cents"]):
                 logger.warning("order total no longer matches payment intent: %s", session_id)
-                return
+                return False
             if str(intent["order_currency"]).upper() != str(intent["currency"]).upper():
                 logger.warning("order currency no longer matches payment intent: %s", session_id)
-                return
+                return False
 
             # Duplicate provider callbacks are successful no-ops. The order
             # transition and reservation wiring are in the same DB transaction.
@@ -388,6 +389,7 @@ async def _settle_payment_and_order(
                     "voucher redemption finalize failed for order %s",
                     settled_order_id,
                 )
+        return True
 
 
 @router.post("/wechat/notify")
@@ -410,7 +412,7 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
         success = notify.get("trade_state") == "SUCCESS"
         if success and out_trade_no:
             pool = getattr(request.app.state, "pool", None)
-            await _settle_payment_and_order(
+            settled = await _settle_payment_and_order(
                 pool,
                 out_trade_no,
                 notify.get("transaction_id"),
@@ -420,6 +422,8 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
                 if isinstance(notify.get("amount"), dict)
                 else None,
             )
+            if not settled:
+                raise HTTPException(status_code=400, detail="wechat notify settlement failed")
         return {"code": "SUCCESS", "message": "ok"}
 
     # 遗留沙箱路径：生产环境拒绝，避免内存态订单被伪造回调标 paid。
@@ -431,32 +435,76 @@ async def wechat_pay_notify(request: Request) -> dict[str, str]:
 
     if notify.is_success:
         pool = getattr(request.app.state, "pool", None)
-        await _settle_payment_and_order(
+        settled = await _settle_payment_and_order(
             pool,
             notify.out_trade_no,
             notify.transaction_id,
             notify.amount,
             expected_provider=PaymentProvider.WECHAT.value,
         )
+        if not settled:
+            raise HTTPException(status_code=400, detail="wechat notify settlement failed")
 
     return {"code": "SUCCESS", "message": "ok"}
 
 
 @router.post("/alipay/notify")
-async def alipay_notify(request: Request) -> str:
-    """支付宝异步通知处理。"""
-    if get_settings().environment.lower() == "production":
-        return "fail"
-    form = await request.form()
-    params = {k: v for k, v in form.items() if isinstance(v, str)}
+async def alipay_notify(request: Request) -> PlainTextResponse:
+    """支付宝异步通知：RSA2 验签、app_id/金额/币种校验后幂等入账。"""
+    settings = get_settings()
+    configured = settings.payment_gateway_provider.strip().lower()
+    body = await request.body()
+    headers = dict(request.headers)
 
+    if configured == "alipay":
+        from obase.provider_registry import ProviderRegistry
+
+        try:
+            gateway = ProviderRegistry.get().generic("payment_gateway", "alipay")
+            notify = await gateway.verify_callback(headers, body)
+        except Exception as exc:  # noqa: BLE001 - callback must fail closed
+            logger.warning("alipay callback verification failed: %s", exc)
+            return PlainTextResponse("fail")
+        if not notify:
+            return PlainTextResponse("fail")
+
+        out_trade_no = str(notify.get("out_trade_no") or "")
+        trade_status = str(notify.get("trade_status") or "")
+        if trade_status not in {"TRADE_SUCCESS", "TRADE_FINISHED"}:
+            # 已验签的非成功状态（如 WAIT_BUYER_PAY/TRADE_CLOSED）确认收到即可，
+            # 不应让支付宝无休止重推，也绝不推进订单。
+            return PlainTextResponse("success")
+        if not out_trade_no:
+            return PlainTextResponse("fail")
+        pool = getattr(request.app.state, "pool", None)
+        settled = await _settle_payment_and_order(
+            pool,
+            out_trade_no,
+            str(notify.get("trade_no") or ""),
+            _alipay_notify_amount_cents(notify.get("total_amount")),
+            expected_provider=PaymentProvider.ALIPAY.value,
+            paid_currency="CNY",
+        )
+        return PlainTextResponse("success" if settled else "fail")
+
+    # 非 alipay 配置绝不接受回调，避免“配置了 manual 却有人伪造支付宝通知”。
+    if configured != "manual":
+        logger.warning("alipay callback rejected for provider=%s", configured)
+        return PlainTextResponse("fail")
+    if settings.environment.lower() == "production":
+        return PlainTextResponse("fail")
+
+    # 非生产环境的遗留内存沙箱路径，仅用于本地测试。
+    from urllib.parse import parse_qs
+
+    params = {k: v[0] for k, v in parse_qs(body.decode("utf-8")).items()}
     notify = await _alipay_provider.handle_notify(params)
     if notify is None:
-        return "fail"
+        return PlainTextResponse("fail")
 
     if notify.is_success:
         pool = getattr(request.app.state, "pool", None)
-        await _settle_payment_and_order(
+        settled = await _settle_payment_and_order(
             pool,
             notify.out_trade_no,
             notify.trade_no,
@@ -464,8 +512,10 @@ async def alipay_notify(request: Request) -> str:
             expected_provider=PaymentProvider.ALIPAY.value,
             paid_currency="CNY",
         )
+        if not settled:
+            return PlainTextResponse("fail")
 
-    return "success"
+    return PlainTextResponse("success")
 
 
 @router.post("/stripe/webhook")
@@ -522,7 +572,7 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
             provider_intent_id,
         )
         raise HTTPException(status_code=400, detail="stripe payment intent mismatch")
-    await _settle_payment_and_order(
+    settled = await _settle_payment_and_order(
         pool,
         str(intent["id"]),
         provider_intent_id,
@@ -530,4 +580,6 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
         expected_provider=PaymentProvider.STRIPE.value,
         paid_currency=currency,
     )
+    if not settled:
+        raise HTTPException(status_code=400, detail="stripe payment settlement failed")
     return {"received": True}

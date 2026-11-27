@@ -85,6 +85,29 @@ def test_alert_rules_file_exists_and_has_rules():
         )
 
 
+def test_required_launch_alerts_are_present():
+    data = yaml.safe_load(RULES_YML.read_text(encoding="utf-8"))
+    names = {r.get("alert") for g in data.get("groups", []) for r in g.get("rules", [])}
+    assert {
+        "HemallBackendDown",
+        "HemallDatabasePoolMissing",
+        "HemallRedisDisconnected",
+        "HemallDiskUsageAbove90",
+        "HemallBackupFailedOrStale",
+    } <= names
+
+
+def test_backup_alert_uses_the_metrics_written_by_the_backup_script():
+    rules = RULES_YML.read_text(encoding="utf-8")
+    script = (REPO_ROOT / "scripts" / "ops" / "hemall-backup.sh").read_text(encoding="utf-8")
+    for metric in (
+        "hemal_backup_last_run_failed",
+        "hemal_backup_last_success_timestamp_seconds",
+    ):
+        assert metric in rules, f"备份告警没有使用 {metric}"
+        assert metric in script, f"备份脚本没有写入 {metric}"
+
+
 def test_rule_files_globs_are_declared():
     for cfg in (PROM_YML, PROM_DEV_YML):
         data = yaml.safe_load(cfg.read_text(encoding="utf-8"))

@@ -41,7 +41,7 @@
   "common.save": "저장",
   "common.delete": "삭제",
   "common.back": "뒤로",
-  "common.welcome": "Hemall에 오신 것을 환영합니다",
+  "common.welcome": "xs fresh mall에 오신 것을 환영합니다",
   "error.not_found": "찾을 수 없습니다",
   "error.network": "네트워크 오류가 발생했습니다. 잠시 후 다시 시도해 주세요",
   "error.unauthorized": "먼저 로그인해 주세요"

@@ -5,10 +5,26 @@ import { api } from '@/lib/api-client';
 import { formatMoney } from '@/lib/format';
 import type { Product, ProductVariant } from '@/types/api';
 import { errMessage } from '@/lib/errors';
+import ProductPhotoEditor from '@/components/ProductPhotoEditor';
 
 /** 商品/变体的“最低价”本身没有单独的币种字段，取第一个批次的币种做展示。 */
 function fmt(cents: number | null, currency?: string): string {
   return formatMoney(cents, currency);
+}
+
+function productCover(p: Product): string | null {
+  for (const v of p.variants || []) {
+    for (const b of v.batches || []) {
+      if (b.shelf_image_url) return b.shelf_image_url;
+      const first = b.media_assets?.[0];
+      if (first) return first;
+    }
+  }
+  return null;
+}
+
+function isReferenceImage(url: string | null): boolean {
+  return !!url && (url.startsWith('/media/spider/') || url.startsWith('/products/'));
 }
 
 export default function ProductsPage() {
@@ -18,6 +34,7 @@ export default function ProductsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [search, setSearch] = useState('');
+  const [photoProduct, setPhotoProduct] = useState<Product | null>(null);
 
   // Create product form state
   const [title, setTitle] = useState('');
@@ -38,6 +55,12 @@ export default function ProductsPage() {
   const [costPrice, setCostPrice] = useState(5000);
   const [locationId, setLocationId] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
+  const [expirationTime, setExpirationTime] = useState('');
+  const [originRegion, setOriginRegion] = useState('');
+  const [storageCondition, setStorageCondition] = useState('');
+  const [shelfLifeDays, setShelfLifeDays] = useState('');
+  const [qualityCertificateUrl, setQualityCertificateUrl] = useState('');
+  const [isTestBatch, setIsTestBatch] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
 
   function load() {
@@ -142,6 +165,45 @@ export default function ProductsPage() {
     }
   }
 
+  async function handleChangePrice(batchId: string, currentCents: number, batchNo: string) {
+    const yuan = prompt(`批次 ${batchNo} 新售价（元）：`, (currentCents / 100).toFixed(2));
+    if (yuan == null || yuan.trim() === '') return;
+    const cents = Math.round(Number(yuan) * 100);
+    if (!Number.isFinite(cents) || cents < 0) {
+      alert('请输入有效价格');
+      return;
+    }
+    const reason = prompt('改价原因（可留空）：') || '';
+    try {
+      const res = await api.updateBatchPrice(batchId, cents, reason);
+      if (res.changed) {
+        alert(`已改价：¥${(res.old_price_cents / 100).toFixed(2)} → ¥${(res.new_price_cents / 100).toFixed(2)}\n操作人：${res.operator || '—'}`);
+      } else {
+        alert('价格未变化');
+      }
+      setLoading(true);
+      load();
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
+  async function handlePriceHistory(batchId: string) {
+    try {
+      const res = await api.batchPriceHistory(batchId);
+      if (res.changes.length === 0) {
+        alert('该批次暂无改价记录');
+        return;
+      }
+      const lines = res.changes.map((c) =>
+        `${new Date(c.created_at).toLocaleString('zh-CN')}  ¥${(c.old_price_cents / 100).toFixed(2)} → ¥${(c.new_price_cents / 100).toFixed(2)}  ${c.operator_name || c.operator_id || '—'}${c.reason ? `（${c.reason}）` : ''}`,
+      );
+      alert(lines.join('\n'));
+    } catch (e) {
+      alert(errMessage(e));
+    }
+  }
+
   async function handleAddOption(productId: string) {
     const name = prompt('新属性键名称（如 颜色 / 尺码）：');
     if (!name) return;
@@ -191,9 +253,17 @@ export default function ProductsPage() {
         retail_price_cents: retailPrice,
         cost_price_cents: costPrice,
         video_url: videoUrl,
+        expiration_time: expirationTime ? new Date(expirationTime).toISOString() : undefined,
+        origin_region: originRegion || undefined,
+        storage_condition: storageCondition || undefined,
+        shelf_life_days: shelfLifeDays ? Number(shelfLifeDays) : undefined,
+        quality_certificate_url: qualityCertificateUrl || undefined,
+        is_test_batch: isTestBatch,
       });
       if (res.status === 'failed') throw new Error(res.error?.message || '创建批次失败');
-      setBatchNo(''); setVideoUrl('');
+      setBatchNo(''); setVideoUrl(''); setExpirationTime('');
+      setOriginRegion(''); setStorageCondition(''); setShelfLifeDays('');
+      setQualityCertificateUrl(''); setIsTestBatch(false);
       setShowBatchForm(false);
       setLoading(true);
       load();
@@ -316,6 +386,34 @@ export default function ProductsPage() {
             <label className="text-xs text-gray-500">溯源视频 URL（质检凭证，必填）</label>
             <input placeholder="https://..." value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} required className="w-full px-3 py-2 border rounded-lg text-sm" />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500">到期时间（食品必填）</label>
+              <input type="datetime-local" value={expirationTime} onChange={(e) => setExpirationTime(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">保质期（天，食品必填）</label>
+              <input type="number" min="1" value={shelfLifeDays} onChange={(e) => setShelfLifeDays(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">产地（食品必填）</label>
+              <input placeholder="如：山东寿光" value={originRegion} onChange={(e) => setOriginRegion(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">储存条件（食品必填）</label>
+              <input placeholder="如：0-4℃冷藏" value={storageCondition} onChange={(e) => setStorageCondition(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500">检测证明 URL</label>
+              <input placeholder="https://..." value={qualityCertificateUrl} onChange={(e) => setQualityCertificateUrl(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-gray-600 pt-5">
+              <input type="checkbox" checked={isTestBatch} onChange={(e) => setIsTestBatch(e.target.checked)} />
+              标记为测试批次（不会在前台售卖）
+            </label>
+          </div>
           <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700">创建批次</button>
         </form>
       )}
@@ -344,8 +442,27 @@ export default function ProductsPage() {
               {products.map((p) => (
                 <tr key={p.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
-                    <div className="font-medium">{p.title}</div>
+                    <div className="flex items-start gap-2">
+                      <div className="w-12 h-12 shrink-0 rounded-lg bg-gray-50 overflow-hidden">
+                        {productCover(p) ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={productCover(p)!} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-lg">🥬</div>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                    <div className="font-medium flex items-center gap-1.5 flex-wrap">
+                      {p.title}
+                      {p.is_test && <span className="px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 text-[11px]">测试商品</span>}
+                      {p.needs_data && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[11px]">待补资料</span>}
+                    </div>
                     <div className="text-xs text-gray-400">{p.slug}</div>
+                    {isReferenceImage(productCover(p)) && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[11px]">参考图</span>
+                    )}
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded text-xs ${p.status === 'published' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
@@ -386,8 +503,16 @@ export default function ProductsPage() {
                           </div>
                           {(v.batches || []).map((b) => (
                             <div key={b.id} className="flex items-center justify-between gap-2 text-gray-400 pl-2 mt-0.5">
-                              <span>批次 {b.batch_no}: 可售 {b.available_qty}</span>
-                              <button onClick={() => handleAdjustStock(b.id)} className="text-emerald-600 hover:underline shrink-0">调库存</button>
+                              <span>
+                                批次 {b.batch_no}: 可售 {b.available_qty} · ¥{(b.retail_price_cents / 100).toFixed(2)}
+                                {b.needs_data && <span className="ml-1 text-amber-600">待补资料</span>}
+                                {b.is_test_batch && <span className="ml-1 text-fuchsia-600">测试批次</span>}
+                              </span>
+                              <span className="flex gap-1.5 shrink-0">
+                                <button onClick={() => handleChangePrice(b.id, b.retail_price_cents, b.batch_no)} className="text-blue-600 hover:underline">改价</button>
+                                <button onClick={() => handlePriceHistory(b.id)} className="text-gray-500 hover:underline">记录</button>
+                                <button onClick={() => handleAdjustStock(b.id)} className="text-emerald-600 hover:underline">调库存</button>
+                              </span>
                             </div>
                           ))}
                         </div>
@@ -400,6 +525,7 @@ export default function ProductsPage() {
                       <button onClick={() => handlePublish(p)} className="text-xs text-blue-600 hover:underline">
                         {p.status === 'published' ? '下架' : '发布'}
                       </button>
+                      <button onClick={() => setPhotoProduct(p)} className="text-xs text-emerald-700 hover:underline">拍照/图片</button>
                       <button onClick={() => handleDelete(p.id)} className="text-xs text-red-600 hover:underline">删除</button>
                     </div>
                   </td>
@@ -410,6 +536,19 @@ export default function ProductsPage() {
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {photoProduct && (
+        <div className="fixed inset-0 z-50 bg-black/30 flex items-start justify-center overflow-y-auto p-3 sm:p-6">
+          <div className="w-full max-w-2xl">
+            <ProductPhotoEditor
+              productId={photoProduct.id}
+              productTitle={photoProduct.title}
+              onClose={() => setPhotoProduct(null)}
+              onChanged={() => { setLoading(true); load(); }}
+            />
+          </div>
         </div>
       )}
     </div>

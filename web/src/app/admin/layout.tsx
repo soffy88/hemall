@@ -5,12 +5,17 @@ import { useRouter, usePathname } from 'next/navigation';
 import { OAppShell, OSideBar } from '@helios/oui';
 import type { SideBarNavItem } from '@helios/oui';
 import { logout } from '@/lib/auth-store';
+import AdminOrderAlerts from '@/components/ops/AdminOrderAlerts';
 
 const navItems: SideBarNavItem[] = [
   { id: 'dashboard', label: '仪表盘', href: '/admin' },
+  { id: 'today', label: '今日待办', href: '/admin/today' },
   { id: 'products', label: '商品管理', href: '/admin/products' },
+  { id: 'photo', label: '拍照换图', href: '/admin/photo' },
   { id: 'catalog', label: '分类与合集', href: '/admin/catalog' },
   { id: 'orders', label: '订单管理', href: '/admin/orders' },
+  { id: 'reports', label: '每日报表', href: '/admin/reports' },
+  { id: 'journal', label: '进销存日记', href: '/admin/journal' },
   { id: 'draft-orders', label: '草稿订单', href: '/admin/draft-orders' },
   { id: 'preorders', label: '预订配货', href: '/admin/preorders' },
   { id: 'manual-order', label: '代客下单', href: '/admin/manual-order' },
@@ -52,9 +57,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         topbar={
           <div className="flex items-center justify-between w-full px-4 h-14 bg-white border-b border-gray-200">
             <div className="flex items-center gap-3">
-              <span className="text-lg font-semibold text-gray-900">Hemall 商家后台</span>
+              <span className="text-lg font-semibold text-gray-900">小宋生鲜 商家后台</span>
             </div>
             <div className="flex items-center gap-3">
+              <AdminOrderAlerts />
               <a href="/shop" target="_blank" className="text-sm text-blue-600 hover:underline">访问商城</a>
               <button onClick={handleLogout} className="text-sm text-gray-500 hover:text-red-600">退出</button>
             </div>

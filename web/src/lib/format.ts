@@ -14,3 +14,6 @@ export function formatMoney(cents: number | null | undefined, currency: string =
   const symbol = CURRENCY_SYMBOLS[currency] || `${currency} `;
   return `${symbol}${(cents / 100).toFixed(2)}`;
 }
+
+/** 兼容别名：POS/拣货称重页面使用 formatCurrency */
+export const formatCurrency = formatMoney;

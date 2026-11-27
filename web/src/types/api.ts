@@ -85,6 +85,13 @@ export interface InventoryBatch {
   currency: string;
   location_id: string;
   status: string;
+  inspection_status?: 'pending' | 'passed' | 'failed' | string;
+  expiration_time?: string | null;
+  origin_region?: string | null;
+  storage_condition?: string | null;
+  shelf_life_days?: number | null;
+  quality_certificate_url?: string | null;
+  is_test_batch?: boolean;
   shelf_image_url?: string | null;
   media_assets?: string[] | null;
 }
@@ -102,6 +109,13 @@ export interface ProductVariant {
   sku_code: string;
   option_values: Record<string, string>;
   reference_price_cents: number | null;
+  pricing_mode?: 'piece' | 'weight';
+  /** 按重量计价时的元/斤价格（分/斤），按件商品为 null */
+  unit_price_cents?: number | null;
+  price_basis_grams?: number;
+  weight_options?: { label: string; grams: number }[];
+  /** 无库存时仍可用于展示的图片（后端取任一有效批次首图） */
+  image_url?: string | null;
   status: string;
   batches: InventoryBatch[];
   total_stock: number;
@@ -120,6 +134,8 @@ export interface Product {
   description: string | null;
   category_id: string | null;
   status: string;
+  is_test?: boolean;
+  needs_data?: boolean;
   created_at: string;
   updated_at: string | null;
   options: ProductOption[];
@@ -138,6 +154,14 @@ export interface OrderLineItem {
   preorder_qty: number;
   unit_price_cents: number;
   line_total_cents: number;
+  pricing_mode?: 'piece' | 'weight';
+  unit_price_cents_per_jin?: number | null;
+  estimated_weight_grams?: number | null;
+  actual_weight_grams?: number | null;
+  estimated_amount_cents?: number | null;
+  actual_amount_cents?: number | null;
+  weight_diff_cents?: number | null;
+  settlement_status?: string;
   product_title: string | null;
   variant_sku: string | null;
   option_values: Record<string, string> | null;
@@ -209,6 +233,12 @@ export interface Order {
   updated_at: string | null;
   promised_delivery_at: string | null;
   sla_compensated_at: string | null;
+  /** delivery / pickup / standard / express / next_day（历史订单可能为空） */
+  shipping_method_code?: string | null;
+  /** 称重差额状态：pending_customer / charge_pending / settled / ... */
+  weigh_status?: string | null;
+  /** 自提顾客点“我已到店”的时间 */
+  pickup_arrived_at?: string | null;
   line_items: OrderLineItem[];
 }
 
@@ -226,6 +256,10 @@ export interface Customer {
   total_spent_cents: number;
   /** 商家账号标记：商家可用专属「商家预订」常购清单快速下单 */
   is_merchant?: boolean;
+  /** 测试/停用账号：从报表与顾客统计排除 */
+  excluded_from_reports?: boolean;
+  /** 员工标记：用于门店工作台权限判断 */
+  is_staff?: boolean;
 }
 
 // ── Cart types ──────────────────────────────────────────────────
@@ -237,6 +271,12 @@ export interface CartLineItem {
   quantity: number;
   unit_price_cents: number;
   line_total_cents: number;
+  pricing_mode?: 'piece' | 'weight';
+  unit_price_cents_per_jin?: number | null;
+  price_basis_grams?: number;
+  estimated_weight_grams?: number | null;
+  weight_step_grams?: number | null;
+  weight_option_label?: string | null;
   product_title: string | null;
   variant_sku: string | null;
   option_values: Record<string, string> | null;
@@ -270,12 +310,19 @@ export interface Cart {
   tax_cents: number;
   shipping_cents: number;
   grand_total_cents: number;
+  shipping_method_code?: string | null;
   billing_address: Address | null;
   shipping_address: Address | null;
   created_at: string;
   line_items: CartLineItem[];
   discounts: CartDiscount[];
   gift_cards: CartGiftCard[];
+  /** 会员 9 折（合资格金额的 10%），仅预览 */
+  member_discount_cents?: number;
+  /** none / member / night / voucher / applied */
+  preview_discount_kind?: string;
+  preview_discount_cents?: number;
+  preview_grand_total_cents?: number;
 }
 
 // ── 客户预订 ────────────────────────────────────────────────────
@@ -422,7 +469,16 @@ export interface InventoryBatch {
   reserved_qty: number;
   available_qty: number;
   status: string;
-  inspection_status: 'pending' | 'passed' | 'failed' | string;
+  inspection_status?: 'pending' | 'passed' | 'failed' | string;
+  category_slug?: string | null;
+  product_is_test?: boolean;
+  expiration_time?: string | null;
+  origin_region?: string | null;
+  storage_condition?: string | null;
+  shelf_life_days?: number | null;
+  quality_certificate_url?: string | null;
+  is_test_batch?: boolean;
+  needs_data?: boolean;
   created_at: string;
 }
 
@@ -858,6 +914,7 @@ export interface AppUser {
   email: string;
   name: string | null;
   status: string;
+  totp_enabled: boolean;
   created_at: string;
   updated_at: string | null;
 }
@@ -983,4 +1040,250 @@ export interface RefundCreateBody {
   reason?: RefundReason;
   reason_detail?: string | null;
   requested_amount: number;
+}
+
+// ── 线上称重结算 ─────────────────────────────────────────────────
+
+export interface MerchantWeighSettlement {
+  id: string;
+  order_id: string;
+  order_line_item_id: string;
+  weight_grams: number;
+  unit_price_cents_per_jin: number;
+  price_basis_grams: number;
+  estimated_weight_grams: number | null;
+  estimated_amount_cents: number;
+  actual_amount_cents: number;
+  diff_cents: number;
+  tolerance_percent: number;
+  within_tolerance: boolean;
+  status: string;
+  refund_id: string | null;
+  note: string;
+  created_at: string | null;
+  settled_at: string | null;
+}
+
+export interface MerchantWeighRow {
+  order_line_item_id: string;
+  order_id: string;
+  order_status: string;
+  customer_id: string | null;
+  product_title: string | null;
+  sku_code: string | null;
+  quantity: number;
+  unit_price_cents_per_jin: number | null;
+  price_basis_grams: number;
+  estimated_weight_grams: number | null;
+  estimated_amount_cents: number;
+  actual_weight_grams: number | null;
+  actual_amount_cents: number | null;
+  weight_diff_cents: number | null;
+  line_status: string;
+  settlement_id: string | null;
+  settlement_status: string | null;
+  settlement_note: string | null;
+}
+
+// ── 店员拍照（core3）────────────────────────────────────────────────
+
+export interface ProductPhoto {
+  id: string;
+  product_id: string;
+  variant_id: string | null;
+  url: string;
+  thumb_url: string | null;
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  original_filename: string;
+  source: string;
+  is_primary: boolean;
+  position: number;
+  status: 'active' | 'replaced' | 'deleted' | string;
+  previous_images: Record<string, string | null>;
+  created_by: string;
+  created_at: string;
+  updated_at: string | null;
+  deleted_at: string | null;
+}
+
+export interface PhotoReferenceItem {
+  id: string;
+  title: string;
+  slug: string;
+  category_name: string | null;
+  batch_id: string | null;
+  batch_no: string | null;
+  shelf_image_url: string | null;
+  image_url: string | null;
+  is_reference: boolean;
+}
+
+export interface PhotoReferenceResponse {
+  scope: 'all' | 'store';
+  items: PhotoReferenceItem[];
+  progress: {
+    replaced: number;
+    total: number;
+    reference_remaining: number;
+    store_replaced: number;
+    store_total: number;
+  };
+}
+
+export interface PhotoDraftResult {
+  product_id: string;
+  variant_id: string;
+  batch_id: string;
+  title: string;
+  status: string;
+  category: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  photo: ProductPhoto;
+}
+
+// ── Scale / POS / Pick Weigh types ─────────────────────────────────
+
+export interface ScaleDevice {
+  id: string;
+  name: string;
+  port_path: string;
+  baud_rate: number;
+  protocol: string;
+  parser_config: Record<string, unknown>;
+  stable_count: number;
+  stable_threshold_g: number;
+  tare_enabled: boolean;
+  zero_enabled: boolean;
+  bridge_enabled: boolean;
+  bridge_ws_port: number | null;
+  location_id: string | null;
+  note: string;
+  status: string;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface ScaleReading {
+  weight_grams: number;
+  unit: 'g' | 'kg';
+  raw: string;
+  stable: boolean;
+  timestamp: number;
+}
+
+export interface ScaleParseResponse {
+  reading: ScaleReading | null;
+}
+
+export interface RecognitionCandidate {
+  variant_id: string;
+  score: number;
+  name: string;
+  sku: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  image_url?: string;
+  matched?: boolean;
+}
+
+export interface RecognizeResponse {
+  candidates: RecognitionCandidate[];
+  model_configured: boolean;
+  matched?: boolean;
+}
+
+export interface ProductSearchResult {
+  variant_id: string;
+  name: string;
+  sku: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  image_url?: string;
+}
+
+export interface SearchProductResponse {
+  products: ProductSearchResult[];
+}
+
+export interface TicketLine {
+  id: string;
+  variant_id: string;
+  name: string;
+  sku: string;
+  weight_grams: number;
+  unit_price_cents: number;
+  price_basis_grams: number;
+  amount_cents: number;
+  pricing_mode: 'piece' | 'weight';
+}
+
+export interface SettleRequest {
+  lines: {
+    variant_id: string;
+    weight_grams: number;
+    unit_price_cents: number;
+    price_basis_grams: number;
+    amount_cents: number;
+    pricing_mode: 'piece' | 'weight';
+  }[];
+  customer_id: string | null;
+  payment_method: 'cash' | 'qr';
+  cash_received: number;
+}
+
+export interface SettleResponse {
+  order_no: string;
+  lines: Array<{
+    name: string;
+    quantity: number;
+    amount_cents: number;
+  }>;
+}
+
+export interface PickOrderLine {
+  id: string;
+  variant_id: string;
+  name: string;
+  sku: string;
+  quantity: number;
+  unit: string;
+  price_cents: number;
+  pricing_mode: 'piece' | 'weight';
+  estimated_weight_grams?: number;
+  actual_weight_grams?: number;
+  estimated_amount_cents: number;
+  actual_amount_cents?: number;
+  diff_cents?: number;
+  settled: boolean;
+}
+
+export interface PickOrder {
+  id: string;
+  order_no: string;
+  customer_name: string;
+  customer_phone: string;
+  status: string;
+  lines: PickOrderLine[];
+  created_at: string;
+}
+
+export interface PickOrdersResponse {
+  orders: PickOrder[];
+}
+
+export interface RecordPickWeightRequest {
+  order_id: string;
+  line_id: string;
+  weight_grams: number;
+  confirmed_variant_id: string;
+}
+
+export interface SkipPickLineRequest {
+  order_id: string;
+  line_id: string;
+  reason: string;
 }
