@@ -27,7 +27,9 @@
 - `points_ledger`：append-only，`kind` 为 `accrual`/`reversal`，`status` 恒为
   `posted`（本批无持有/冻结态）；`idempotency_key` 唯一，重复结算/冲回不重复记账。
   余额缓存列 `customer.points_balance` 与账本同事务维护；`balance_after` 回填。
-- `stored_value_ledger`：append-only，`kind` 恒为 `topup`；同一顾客下
+- `stored_value_ledger`：append-only，`kind` 为 `topup`（充值）或 `spend`
+  （柜台结算扣款，幂等键 `stored-spend:{ticket_id}`，同一单据不重复扣）；
+  `amount_cents` 记变动绝对值，方向看 `kind`。同一顾客下
   `(customer_id, external_payment_ref)` 唯一，同一凭证号重复提交只返回已记账。
   余额缓存列 `customer.stored_value_balance_cents` 与账本同事务维护。
 - 等级缓存：`customer.member_tier` 与 `customer.lifetime_eligible_cents`
@@ -37,10 +39,18 @@
   与消费等级 `member_tier` 无关；本模块不读不写 `membership` 表。
   `calculate_membership_dividend`（`app/ext/oskill.py`）仍是零调用死代码，本批未动。
 
-## 触发方式（本批不挂钩子）
+## 触发方式（柜台结算已挂钩子）
 
-本批不碰 `app/orders`、`app/payments` 与 checkout：积分累积与退款冲回均由
-商家端点显式触发（幂等），是否接入订单完成/退款钩子待后续批次另行决定。
+- 积分累积：柜台结算建单成功后在同一事务内自动累积
+  （`app.storefront._create_counter_order` 调 `accrue_points_conn`，幂等键
+  `points-accrual:{order_id}`）；散客无顾客关联时跳过，结算回滚时同滚。
+  MP2 结算（`POST /admin/scale/settle`）复用同一建单函数，同样累积。
+  商家端点 `POST /orders/{id}/points-accrue` 仍保留作补记/修复入口。
+- 储值扣款：柜台结算选 `stored_value` 时在同一事务内扣顾客余额
+  （`spend_stored_value_conn`，幂等键 `stored-spend:{ticket_id}`）；余额不足
+  422，不建单不扣库存；绝不凭空生储值。
+- 退款冲回：柜台无退款端点，自动冲回无挂点，不新建退款流程；冲回仍走商家端点
+  `POST /orders/{id}/points-reverse` 显式触发（幂等，`refund_id` 唯一）。
 储值充值是纯记账：商家在线下或外部渠道收到顾客付款后，凭外部支付凭证号
 在系统内记账；系统不发起、不校验任何真实支付。
 
