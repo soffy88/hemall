@@ -99,11 +99,19 @@ def test_build_script_rejects_floating_or_short_revisions():
 
 
 def test_deploy_composes_pin_the_known_production_baseline():
-    for name in ("docker-compose.deploy.yml", "docker-compose.mall-old.yml"):
+    # deploy.yml 的 web 钉跟随 MP 侧部署基线 sha-5ff6c01 (core3 拍照上传);
+    # mall-old.yml 仍钉旧基线 0.5.10-prod。
+    expected_web = {
+        "docker-compose.deploy.yml": (
+            "registry.sxueji.com/hemall/frontend:sha-5ff6c017d3fd0fd83424060a0b246d1786a6cf98"
+        ),
+        "docker-compose.mall-old.yml": ("registry.sxueji.com/hemall/frontend:0.5.10-prod"),
+    }
+    for name, web_image in expected_web.items():
         data = yaml.safe_load((ROOT / name).read_text(encoding="utf-8"))
         services = data["services"]
         assert services["api"]["image"] == ("registry.sxueji.com/hemall/backend:0.6.18-prod")
-        assert services["web"]["image"] == ("registry.sxueji.com/hemall/frontend:0.5.10-prod")
+        assert services["web"]["image"] == web_image
 
 
 def test_rollback_override_is_pinned_to_the_known_production_baseline():
