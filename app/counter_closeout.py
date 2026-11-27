@@ -21,8 +21,10 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
-#: 结算方式：首期只收现金；其它方式调用方必须 422 拒绝，绝不静默记成现金。
+#: 结算方式：现金 + 会员储值（储值扣顾客已充值余额，无支付网关）；
+#: 其它方式调用方必须 422 拒绝，绝不静默记成现金。
 SETTLE_METHOD_CASH = "cash"
+SETTLE_METHOD_STORED_VALUE = "stored_value"
 
 COUNTER_CLOSEOUT_DDL = """
 -- ── 柜台收尾件：现金结算记录（一单一结算，UNIQUE 防重结）──
@@ -30,7 +32,8 @@ CREATE TABLE IF NOT EXISTS counter_settlement (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     ticket_id UUID NOT NULL UNIQUE REFERENCES counter_ticket(id),
     cashier_id TEXT NOT NULL,
-    method VARCHAR(20) NOT NULL DEFAULT 'cash' CHECK (method = 'cash'),
+    method VARCHAR(20) NOT NULL DEFAULT 'cash'
+        CHECK (method IN ('cash', 'stored_value')),
     amount_due_cents INT NOT NULL CHECK (amount_due_cents >= 0),
     amount_received_cents INT NOT NULL CHECK (amount_received_cents >= 0),
     change_cents INT NOT NULL CHECK (change_cents >= 0),
@@ -41,6 +44,29 @@ CREATE INDEX IF NOT EXISTS idx_counter_settlement_cashier
     ON counter_settlement(cashier_id, settled_at);
 CREATE INDEX IF NOT EXISTS idx_counter_settlement_day
     ON counter_settlement(settled_at);
+
+-- 储值结算：method 允许值从 cash 拓到 cash/stored_value（既有库幂等迁移）。
+DO $$
+DECLARE
+    _con TEXT;
+BEGIN
+    SELECT conname INTO _con FROM pg_constraint
+     WHERE conrelid = 'counter_settlement'::regclass AND contype = 'c'
+       AND pg_get_constraintdef(oid) LIKE '%cash%'
+       AND pg_get_constraintdef(oid) NOT LIKE '%stored_value%';
+    IF _con IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE counter_settlement DROP CONSTRAINT %I', _con);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'counter_settlement'::regclass
+           AND conname = 'counter_settlement_method_check'
+    ) THEN
+        ALTER TABLE counter_settlement
+            ADD CONSTRAINT counter_settlement_method_check
+            CHECK (method IN ('cash', 'stored_value'));
+    END IF;
+END $$;
 
 -- ── 柜台收尾件：交接班账本 ──
 CREATE TABLE IF NOT EXISTS counter_shift (

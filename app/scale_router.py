@@ -20,12 +20,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from PIL import Image
 from pydantic import BaseModel
 
-from .counter_settlement_order import (
-    COUNTER_ORDER_STATUS,
-    ORDER_CHANNEL_COUNTER,
-    require_weigh_line_pricing,
-    weigh_stock_units,
-)
+from .counter_settlement_order import require_weigh_line_pricing
 from .deps import require_staff_role
 from .product_photo import _actor
 from .scale import (
@@ -112,7 +107,7 @@ class ParseLineRequest(BaseModel):
 class SettleRequest(BaseModel):
     lines: list[dict]
     customer_id: str | None = None
-    payment_method: str = "cash"  # cash | qr
+    payment_method: str = "cash"  # cash only；qr 已下掉（无支付核验，等接核验再放行）
     cash_received: int = 0
 
 
@@ -145,12 +140,10 @@ async def list_devices(
 @router.post("/devices")
 async def create_device(
     data: DeviceCreate,
-    request: Request,
     service: ScaleService = Depends(_scale_service),
-    _=Depends(require_staff_role(*_STAFF_ROLES)),
+    principal: dict = Depends(require_staff_role(*_STAFF_ROLES)),
 ):
-    actor = _actor(await require_staff_role(*_STAFF_ROLES)(request))
-    return await service.create_device(data.model_dump(), actor)
+    return await service.create_device(data.model_dump(), _actor(principal))
 
 
 @router.patch("/devices/{device_id}")
@@ -385,12 +378,29 @@ async def search_product(
 async def settle_pos(
     request: Request,
     data: SettleRequest,
-    _=Depends(require_staff_role(*_STAFF_ROLES)),
+    principal: dict = Depends(require_staff_role(*_STAFF_ROLES)),
 ):
-    """POS 收银结算：建单、扣库存、生成线下订单"""
-    pool = _pool(request)
-    actor = _actor(await require_staff_role(*_STAFF_ROLES)(request))
+    """POS 收银结算：复用柜台结算建单（建单 + 直接扣库存），只收现金。
 
+    本端点不再自写建单/扣库存：先把行项写成已计价 hardware_event，再调
+    app.storefront._create_counter_order（与柜台结算同一函数），行为与柜台
+    一致——建 customer_order（渠道 counter、状态 completed）+ 直接扣库存，
+    有顾客时同一事务内累积分；另落一条现金结算记录（counter_settlement）。
+    qr 已下掉：此前只收参数、无任何支付核验；聚合支付无供应商，等接了核验
+    再放行。拣货称重逻辑（record-pick-weight 等）不在本端点，不动。
+    """
+    from asyncpg import UniqueViolationError
+
+    from app.counter_closeout import compute_change_cents
+    from app.storefront import _create_counter_order
+
+    pool = _pool(request)
+    actor = _actor(principal)
+
+    if data.payment_method != "cash":
+        raise HTTPException(
+            422, f"only cash settlement is supported, got payment_method={data.payment_method}"
+        )
     if not data.lines:
         raise HTTPException(400, "empty ticket")
 
@@ -406,183 +416,96 @@ async def settle_pos(
 
     # 计算合计
     total_cents = sum(int(line.get("amount_cents", 0)) for line in data.lines)
-    if data.payment_method == "cash" and data.cash_received < total_cents:
+    if data.cash_received < total_cents:
         raise HTTPException(400, "cash received less than total")
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # 1. 创建 counter_ticket
-            ticket_id = await conn.fetchval(
-                """
-                INSERT INTO counter_ticket (status, tote_id, customer_id, created_by, note)
-                VALUES ('pending_settlement', $1, $2, $3, $4)
-                RETURNING id
-                """,
-                None,  # tote_id
-                data.customer_id,
-                actor,
-                f"POS 结算: {len(data.lines)} 项",
-            )
-
-            # 2. 写入 hardware_event (称重行) 并扣库存
-            order_line_ids = []
-            for line in data.lines:
-                # 硬件事件
-                _hw_id = await conn.fetchval(
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. 创建 counter_ticket
+                ticket_id = await conn.fetchval(
                     """
-                    INSERT INTO hardware_event
-                    (event_type, device_id, payload, session_id, settlement_status,
-                     weight_grams, unit_price_cents, price_basis_grams, amount_cents,
-                     source, ticket_id, created_by)
-                    VALUES ('weigh', $1, $2, $3, 'settled', $4, $5, $6, $7, 'scale', $8, $9)
+                    INSERT INTO counter_ticket (status, tote_id, customer_id, created_by, note)
+                    VALUES ('pending_settlement', $1, $2, $3, $4)
                     RETURNING id
                     """,
-                    line.get("device_id") or "pos",
-                    json.dumps(line),
-                    f"pos_{uuid.uuid4().hex[:8]}",
-                    line.get("weight_grams"),
-                    line.get("unit_price_cents"),
-                    line.get("price_basis_grams"),
-                    line.get("amount_cents"),
-                    ticket_id,
+                    None,  # tote_id
+                    data.customer_id,
                     actor,
+                    f"POS 结算: {len(data.lines)} 项",
+                )
+                ticket = await conn.fetchrow(
+                    'SELECT * FROM "counter_ticket" WHERE id = $1', ticket_id
                 )
 
-                # 扣库存 (按份)
-                if line.get("batch_id") and line.get("weight_grams"):
-                    weight_g = int(line["weight_grams"])
-                    basis_g = int(line.get("price_basis_grams", 500))
-                    stock_units = weigh_stock_units(weight_g, basis_g)
-                    # 预留并标记 consumed
-                    _res_id = await conn.fetchval(
-                        """
-                        INSERT INTO inventory_reservation
-                        (batch_id, qty, status, created_by)
-                        VALUES ($1, $2, 'consumed', $3)
-                        RETURNING id
-                        """,
-                        line["batch_id"],
-                        stock_units,
-                        actor,
-                    )
-                    # 扣批次库存
+                # 2. 写入 hardware_event（已计价行），供柜台建单函数消费
+                for line in data.lines:
                     await conn.execute(
                         """
-                        UPDATE inventory_batch
-                        SET stock_qty = stock_qty - $1, updated_at = NOW()
-                        WHERE id = $2 AND stock_qty >= $1
+                        INSERT INTO hardware_event
+                        (message_id, event_type, payload, session_id,
+                         settlement_status, weight_grams, unit_price_cents,
+                         price_basis_grams, amount_cents, source, ticket_id, batch_id, status)
+                        VALUES ($1, 'weigh', $2, $3, 'unsettled', $4, $5, $6, $7,
+                            'scale', $8, $9, 'processed')
                         """,
-                        stock_units,
-                        line["batch_id"],
-                    )
-                    # 记录 stock_movement
-                    await conn.execute(
-                        """
-                        INSERT INTO stock_movement
-                        (batch_id, movement_type, qty, reference_id, reference_type, created_by)
-                        VALUES ($1, 'shipment', -$2, $3, 'counter_ticket', $4)
-                        """,
-                        line["batch_id"],
-                        stock_units,
+                        f"pos-{uuid.uuid4().hex}",
+                        json.dumps(line),
+                        f"pos_{uuid.uuid4().hex[:8]}",
+                        line.get("weight_grams"),
+                        line.get("unit_price_cents"),
+                        line.get("price_basis_grams"),
+                        line.get("amount_cents"),
                         ticket_id,
-                        actor,
-                    )
-
-            # 3. 创建 customer_order (channel=counter, status=completed)
-            order_id = await conn.fetchval(
-                """
-                INSERT INTO customer_order
-                (customer_id, channel, status, discount_cents, discount_kind,
-                 voucher_redeemed_cents, counter_ticket_id, created_by)
-                VALUES ($1, $2, $3, 0, 'none', 0, $4, $5)
-                RETURNING id
-                """,
-                data.customer_id,
-                ORDER_CHANNEL_COUNTER,
-                COUNTER_ORDER_STATUS,
-                ticket_id,
-                actor,
-            )
-
-            # 4. 创建 order_line_item
-            for line in data.lines:
-                pricing_mode = line.get("pricing_mode", "piece")
-                weight_g = line.get("weight_grams")
-                basis_g = line.get("price_basis_grams", 500)
-                unit_price = int(line.get("unit_price_cents", 0))
-                amount = int(line.get("amount_cents", 0))
-
-                if pricing_mode == "weight":
-                    stock_units = weigh_stock_units(weight_g, basis_g)
-                    oli_id = await conn.fetchval(
-                        """
-                        INSERT INTO order_line_item
-                        (order_id, batch_id, variant_id, quantity, unit_price_cents,
-                         line_total_cents, pricing_mode, unit_price_cents_per_jin,
-                         price_basis_grams, estimated_weight_grams, estimated_amount_cents,
-                         actual_weight_grams, actual_amount_cents, weight_diff_cents,
-                         settlement_status, created_by)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                            $9, $10, $11, $12, $13, 0, 'not_required', $14)
-                        RETURNING id
-                        """,
-                        order_id,
                         line.get("batch_id"),
-                        line.get("variant_id"),
-                        stock_units,
-                        unit_price,
-                        amount,
-                        "weight",
-                        unit_price,
-                        basis_g,
-                        weight_g,
-                        amount,
-                        weight_g,
-                        amount,
-                        actor,
                     )
-                else:
-                    oli_id = await conn.fetchval(
-                        """
-                        INSERT INTO order_line_item
-                        (order_id, batch_id, variant_id, quantity, unit_price_cents,
-                         line_total_cents, pricing_mode, settlement_status, created_by)
-                        VALUES ($1, $2, $3, $4, $5, $6, 'piece', 'not_required', $7)
-                        RETURNING id
-                        """,
-                        order_id,
-                        line.get("batch_id"),
-                        line.get("variant_id"),
-                        1,
-                        unit_price,
-                        amount,
-                        actor,
-                    )
-                order_line_ids.append(str(oli_id))
 
-            # 5. 更新 ticket 状态
-            await conn.execute(
-                "UPDATE counter_ticket SET status = 'settled', updated_at = NOW() WHERE id = $1",
-                ticket_id,
-            )
+                # 3. 复用柜台结算建单：建 customer_order（渠道 counter、状态
+                # completed）+ 直接扣库存；有顾客时同一事务内累积分。
+                try:
+                    order = await _create_counter_order(conn, ticket=ticket, due_cents=total_cents)
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+                if order is None:
+                    raise HTTPException(409, "ticket has no priced lines")
 
-            # 6. 生成订单号
-            order_no = await conn.fetchval(
-                "SELECT order_no FROM customer_order WHERE id = $1", order_id
-            )
+                # 4. 现金结算记录（与柜台结算同一本账）
+                change = compute_change_cents(total_cents, data.cash_received)
+                await conn.execute(
+                    'INSERT INTO "counter_settlement" '
+                    "(ticket_id, cashier_id, method, amount_due_cents, "
+                    "amount_received_cents, change_cents) VALUES ($1, $2, 'cash', $3, $4, $5)",
+                    ticket_id,
+                    actor,
+                    total_cents,
+                    data.cash_received,
+                    change,
+                )
+
+                # 5. 称重行与单据落 settled
+                await conn.execute(
+                    "UPDATE \"hardware_event\" SET settlement_status = 'settled' "
+                    "WHERE ticket_id = $1 AND event_type = 'weigh' AND status = 'processed'",
+                    ticket_id,
+                )
+                await conn.execute(
+                    "UPDATE counter_ticket SET status = 'settled', updated_at = NOW() "
+                    "WHERE id = $1",
+                    ticket_id,
+                )
+
+    except UniqueViolationError:
+        raise HTTPException(409, "ticket already settled: duplicate settlement or order") from None
 
     return {
-        "order_id": str(order_id),
-        "order_no": order_no,
+        "order_id": str(order["order_id"]),
+        # customer_order 在仓内 schema 里没有 order_no 列（旧代码查的是不存在的列）；
+        # 订单号机制另立项前返回 None，键保留以免调用方 KeyError。
+        "order_no": None,
         "ticket_id": str(ticket_id),
         "total_cents": total_cents,
-        "lines": order_line_ids,
+        "lines": [str(item["line_id"]) for item in order["lines"]],
     }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 拣货单列表
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 @router.get("/pick-orders")

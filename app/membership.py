@@ -5,17 +5,19 @@
 1. 等级只作身份与统计，不给价格折扣（折扣仍只有 9 折，互斥规则一字不动）。
 2. 积分按规则 2 合资格口径 1 元积 1 分；独立账本，永不过期、不可转让、
    无现金价值；本批只积不兑，不接 checkout、不发明兑换比例。
-3. 储值独立账本 + 商家记账式充值（带外部支付凭证号，只记账，不调用任何
-   支付网关）；余额可查，不可提现、不可转让。短信一律不做（无网关/凭证）。
+3. 储值独立账本：商家记账式充值（带外部支付凭证号，只记账，不调用任何
+   支付网关）与柜台结算扣款（kind='spend'，幂等键 stored-spend:{ticket_id}）；
+   余额可查，不可提现、不可转让。短信一律不做（无网关/凭证）。
 
 与既有概念的区分（勿混淆）：
 - membership 表是付费订阅（process_subscription 收算力费、给进场权限），
   与本模块的消费等级 member_tier 无关；本模块不读不写 membership 表。
 - 绝不复用 customer.system_balance（SLA/UGC 算力金）与 voucher_ledger
   （购物券账本）；积分、储值各走自己的 append-only 账本。
-- 积分累积不自动挂订单完成钩子：本批不碰 app/orders 与 checkout，结算
-  触发走商家端点 POST /store/orders/{id}/points-accrue（幂等），待后续
-  批次另行决定是否接完成钩子。退款冲回同理走商家端点显式触发。
+- 积分累积已挂柜台结算钩子：柜台结算建单成功后在同一事务内自动累积
+  （见 app.storefront._create_counter_order），散客无顾客关联时跳过；
+  商家端点 POST /store/orders/{id}/points-accrue（幂等）仍保留作补记入口。
+  退款冲回仍走商家端点显式触发——柜台无退款端点，无自动冲回挂点。
 
 本模块只含试点逻辑与幂等 DDL，不 import 任何 app 内模块，避免循环导入；
 合资格口径复用 app.cangzhu.compute_eligible_base（函数内懒导入，与券账本
@@ -87,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_points_ledger_order ON points_ledger(order_id, ki
 CREATE TABLE IF NOT EXISTS stored_value_ledger (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id UUID NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('topup')),
+    kind TEXT NOT NULL CHECK (kind IN ('topup', 'spend')),
     status TEXT NOT NULL CHECK (status IN ('posted', 'void')),
     external_payment_ref TEXT NOT NULL CHECK (external_payment_ref <> ''),
     operator_id UUID,
@@ -121,12 +123,40 @@ CREATE INDEX IF NOT EXISTS idx_membership_fee_status
 """
 
 
+STORED_VALUE_SPEND_DDL = """
+-- 储值结算扣款：stored_value_ledger kind 允许值从 topup 拓到 topup/spend
+--（既有库幂等迁移；新库由 MEMBERSHIP_DDL 直接建出新约束）。
+DO $$
+DECLARE
+    _con TEXT;
+BEGIN
+    SELECT conname INTO _con FROM pg_constraint
+     WHERE conrelid = 'stored_value_ledger'::regclass AND contype = 'c'
+       AND pg_get_constraintdef(oid) LIKE '%topup%'
+       AND pg_get_constraintdef(oid) NOT LIKE '%spend%';
+    IF _con IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE stored_value_ledger DROP CONSTRAINT %I', _con);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'stored_value_ledger'::regclass
+           AND conname = 'stored_value_ledger_kind_check'
+    ) THEN
+        ALTER TABLE stored_value_ledger
+            ADD CONSTRAINT stored_value_ledger_kind_check
+            CHECK (kind IN ('topup', 'spend'));
+    END IF;
+END $$;
+"""
+
+
 async def ensure_membership_schema(pool: Any) -> None:
     """幂等创建会员补齐所需表、列、索引。"""
 
     async with pool.acquire() as conn:
         await conn.execute(MEMBERSHIP_DDL)
         await conn.execute(MEMBERSHIP_FEE_DDL)
+        await conn.execute(STORED_VALUE_SPEND_DDL)
 
 
 # ── 纯计算（无 DB，可单元测试）─────────────────────────────────────────
@@ -227,65 +257,74 @@ async def _refresh_tier(conn: Any, customer_id: str, lifetime_cents: int) -> str
 # ── 积分累积与冲回 ──────────────────────────────────────────────────────
 
 
-async def accrue_points(pool: Any, order_id: str) -> dict[str, Any]:
+async def accrue_points_conn(conn: Any, order_id: str) -> dict[str, Any]:
     """订单完成态后按合资格口径累积积分（买家本人得积分）。
 
-    幂等（points-accrual:{order_id}）；订单未完成/基数为 0/不足 1 元时跳过
-    不记账。须由商家端点显式触发，本批不挂订单完成钩子。
+    幂等（points-accrual:{order_id}）；订单未完成/无顾客/基数为 0/不足 1 元
+    时跳过不记账。调用方须已在事务内（柜台结算建单后同一事务内调用），
+    结算回滚时积分同滚，不产生孤账。
     """
 
     from app.cangzhu import compute_eligible_base
 
+    order = await conn.fetchrow(
+        "SELECT id, customer_id FROM customer_order WHERE id = $1 AND status = 'completed'",
+        order_id,
+    )
+    if order is None:
+        return {"accrued": False, "reason": "order not completed"}
+    if order["customer_id"] is None:
+        return {"accrued": False, "reason": "no customer"}
+    customer_id = str(order["customer_id"])
+    base = await compute_eligible_base(conn, order_id)
+    points = points_for_eligible(base)
+    if points <= 0:
+        return {"accrued": False, "reason": "zero eligible base", "base_cents": base}
+    entry_id = await _insert_points_row(
+        conn,
+        customer_id=customer_id,
+        kind="accrual",
+        points=points,
+        order_id=order_id,
+        ref_id=None,
+        base_cents=base,
+        idempotency_key=f"points-accrual:{order_id}",
+    )
+    if entry_id is None:
+        return {"accrued": False, "reason": "already accrued", "base_cents": base}
+    updated = await conn.fetchrow(
+        'UPDATE "customer" SET points_balance = points_balance + $1, '
+        "lifetime_eligible_cents = lifetime_eligible_cents + $2 "
+        "WHERE id = $3 RETURNING points_balance, lifetime_eligible_cents",
+        points,
+        base,
+        customer_id,
+    )
+    if updated is None:
+        raise ValueError(f"customer not found: {customer_id}")
+    tier = await _refresh_tier(conn, customer_id, int(updated["lifetime_eligible_cents"]))
+    await conn.execute(
+        "UPDATE points_ledger SET balance_after = $1, updated_at = NOW() WHERE id = $2",
+        int(updated["points_balance"]),
+        entry_id,
+    )
+    return {
+        "accrued": True,
+        "customer_id": customer_id,
+        "base_cents": base,
+        "points": points,
+        "points_balance": int(updated["points_balance"]),
+        "lifetime_eligible_cents": int(updated["lifetime_eligible_cents"]),
+        "member_tier": tier,
+    }
+
+
+async def accrue_points(pool: Any, order_id: str) -> dict[str, Any]:
+    """商家端点显式触发的积分累积（幂等）；柜台结算走同一事务内的钩子。"""
+
     async with pool.acquire() as conn:
         async with conn.transaction():
-            order = await conn.fetchrow(
-                "SELECT id, customer_id FROM customer_order WHERE id = $1 AND status = 'completed'",
-                order_id,
-            )
-            if order is None:
-                return {"accrued": False, "reason": "order not completed"}
-            customer_id = str(order["customer_id"])
-            base = await compute_eligible_base(conn, order_id)
-            points = points_for_eligible(base)
-            if points <= 0:
-                return {"accrued": False, "reason": "zero eligible base", "base_cents": base}
-            entry_id = await _insert_points_row(
-                conn,
-                customer_id=customer_id,
-                kind="accrual",
-                points=points,
-                order_id=order_id,
-                ref_id=None,
-                base_cents=base,
-                idempotency_key=f"points-accrual:{order_id}",
-            )
-            if entry_id is None:
-                return {"accrued": False, "reason": "already accrued", "base_cents": base}
-            updated = await conn.fetchrow(
-                'UPDATE "customer" SET points_balance = points_balance + $1, '
-                "lifetime_eligible_cents = lifetime_eligible_cents + $2 "
-                "WHERE id = $3 RETURNING points_balance, lifetime_eligible_cents",
-                points,
-                base,
-                customer_id,
-            )
-            if updated is None:
-                raise ValueError(f"customer not found: {customer_id}")
-            tier = await _refresh_tier(conn, customer_id, int(updated["lifetime_eligible_cents"]))
-            await conn.execute(
-                "UPDATE points_ledger SET balance_after = $1, updated_at = NOW() WHERE id = $2",
-                int(updated["points_balance"]),
-                entry_id,
-            )
-            return {
-                "accrued": True,
-                "customer_id": customer_id,
-                "base_cents": base,
-                "points": points,
-                "points_balance": int(updated["points_balance"]),
-                "lifetime_eligible_cents": int(updated["lifetime_eligible_cents"]),
-                "member_tier": tier,
-            }
+            return await accrue_points_conn(conn, order_id)
 
 
 async def reverse_points_for_refund(
@@ -450,6 +489,90 @@ async def topup_stored_value(
                 "amount_cents": amount_cents,
                 "stored_value_balance_cents": int(updated),
             }
+
+
+async def spend_stored_value_conn(
+    conn: Any, *, customer_id: str, order_id: str, ticket_id: str, amount_cents: int
+) -> dict[str, Any]:
+    """柜台结算储值扣款（调用方须已在事务内）。
+
+    幂等键 stored-spend:{ticket_id}：同一单据重复结算不重复扣。先插账本行
+    （冲突即已扣过，直接返回），再以余额守卫扣缓存列；余额不足 raise
+    ValueError（调用方转 422，整笔结算回滚，不建单不扣库存）。绝不凭空生
+    储值：余额只来自已记账的 topup 行。amount_cents 记扣款绝对值，方向看
+    kind='spend'。
+    """
+
+    if amount_cents <= 0:
+        raise ValueError("amount_cents must be positive")
+    idempotency_key = f"stored-spend:{ticket_id}"
+    existing = await conn.fetchrow(
+        "SELECT id, amount_cents, balance_after_cents FROM stored_value_ledger "
+        "WHERE idempotency_key = $1",
+        idempotency_key,
+    )
+    if existing is not None:
+        balance = await conn.fetchval(
+            'SELECT stored_value_balance_cents FROM "customer" WHERE id = $1',
+            customer_id,
+        )
+        return {
+            "spent": False,
+            "reason": "already spent",
+            "entry_id": str(existing["id"]),
+            "amount_cents": int(existing["amount_cents"]),
+            "stored_value_balance_cents": int(balance or 0),
+        }
+    row = await conn.fetchrow(
+        """
+        INSERT INTO stored_value_ledger
+            (customer_id, kind, status, external_payment_ref, operator_id,
+             amount_cents, balance_after_cents, idempotency_key, metadata)
+        VALUES ($1, 'spend', 'posted', $2, NULL, $3, 0, $4, $5::jsonb)
+        RETURNING id
+        """,
+        customer_id,
+        f"counter-order:{order_id}",
+        amount_cents,
+        idempotency_key,
+        json.dumps({"ticket_id": str(ticket_id)}, ensure_ascii=False),
+    )
+    updated = await conn.fetchval(
+        'UPDATE "customer" SET stored_value_balance_cents = '
+        "stored_value_balance_cents - $1 WHERE id = $2 AND stored_value_balance_cents >= $1 "
+        "RETURNING stored_value_balance_cents",
+        amount_cents,
+        customer_id,
+    )
+    if updated is None:
+        raise ValueError("insufficient stored value balance")
+    await conn.execute(
+        "UPDATE stored_value_ledger SET balance_after_cents = $1, updated_at = NOW() WHERE id = $2",
+        int(updated),
+        row["id"],
+    )
+    return {
+        "spent": True,
+        "entry_id": str(row["id"]),
+        "amount_cents": amount_cents,
+        "stored_value_balance_cents": int(updated),
+    }
+
+
+async def spend_stored_value(
+    pool: Any, *, customer_id: str, order_id: str, ticket_id: str, amount_cents: int
+) -> dict[str, Any]:
+    """独立触发的储值扣款（幂等）；柜台结算走同一事务内的版本。"""
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await spend_stored_value_conn(
+                conn,
+                customer_id=customer_id,
+                order_id=order_id,
+                ticket_id=ticket_id,
+                amount_cents=amount_cents,
+            )
 
 
 # ── 会费账本 ────────────────────────────────────────────────────────────

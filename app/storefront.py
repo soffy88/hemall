@@ -6254,7 +6254,8 @@ async def counter_products(
                    pv.id AS variant_id, pv.option_values, pv.reference_price_cents,
                    best.id AS batch_id, best.retail_price_cents,
                    best.shelf_image_url, best.media_assets,
-                   GREATEST(best.stock_qty - best.reserved_qty, 0)::int AS available_qty
+                   GREATEST(best.stock_qty - best.reserved_qty, 0)::int AS available_qty,
+                   COALESCE(p.night_clearance, false) AS night_clearance
             FROM product p
             JOIN product_variant pv ON pv.product_id = p.id AND pv.deleted_at IS NULL
             JOIN LATERAL (
@@ -6270,6 +6271,7 @@ async def counter_products(
             LIMIT 200
             """
         )
+    now = night_now()
     products = []
     for row in rows:
         price = row["retail_price_cents"]
@@ -6283,6 +6285,8 @@ async def counter_products(
         image = _counter_first_media_ref(row["shelf_image_url"]) or _counter_first_media_ref(
             row["media_assets"]
         )
+        night_clearance = bool(row["night_clearance"])
+        night_price = night_price_cents(int(price), now) if night_clearance else None
         products.append(
             {
                 "batch_id": str(row["batch_id"]),
@@ -6293,6 +6297,8 @@ async def counter_products(
                 "unit_price_cents": int(price),
                 "price_basis_grams": int(basis),
                 "available_qty": int(row["available_qty"]),
+                "night_clearance": night_clearance,
+                "night_price_cents": night_price,
             }
         )
     return {"products": products}
@@ -6304,7 +6310,11 @@ async def counter_create_ticket(
     body: dict,
     principal: dict = Depends(get_current_customer),
 ) -> dict:
-    """开一张柜台单据（open 态）。tote_id 为可选的现场筐/台号标签。"""
+    """开一张柜台单据（open 态）。tote_id 为可选的现场筐/台号标签；
+
+    customer_id 可选：给了须为已存在顾客——会员单据结算时自动累积分，
+    储值结算必须挂顾客；不给即散客，结算不计分、不能走储值。
+    """
     await _require_merchant(request, principal)
     pool = _pool(request)
     tote_id = body.get("tote_id")
@@ -6313,13 +6323,28 @@ async def counter_create_ticket(
         raise HTTPException(400, "tote_id must be a string")
     if len(note) > 200:
         raise HTTPException(400, "note too long")
+    customer_id = body.get("customer_id")
+    if customer_id is not None:
+        import uuid as _uuid
+
+        try:
+            _uuid.UUID(str(customer_id))
+        except ValueError:
+            raise HTTPException(400, "customer_id must be a valid UUID") from None
     async with pool.acquire() as conn:
+        if customer_id is not None:
+            exists = await conn.fetchval(
+                'SELECT id FROM "customer" WHERE id = $1', str(customer_id)
+            )
+            if exists is None:
+                raise HTTPException(404, "customer not found")
         row = await conn.fetchrow(
-            'INSERT INTO "counter_ticket" (status, tote_id, created_by, note) '
-            "VALUES ('open', $1, $2, $3) RETURNING *",
+            'INSERT INTO "counter_ticket" (status, tote_id, created_by, note, customer_id) '
+            "VALUES ('open', $1, $2, $3, $4) RETURNING *",
             tote_id,
             str(principal["customer_id"]),
             note,
+            str(customer_id) if customer_id is not None else None,
         )
     return _counter_ticket_dict(row, 0)
 
@@ -6359,7 +6384,8 @@ async def counter_get_ticket(
     async with pool.acquire() as conn:
         ticket = await _counter_require_ticket(conn, ticket_id, str(principal["customer_id"]))
         lines = await conn.fetch(
-            'SELECT he.*, p.title FROM "hardware_event" he '
+            "SELECT he.*, p.title, COALESCE(p.night_clearance, false) AS night_clearance "
+            'FROM "hardware_event" he '
             "LEFT JOIN inventory_batch ib ON ib.id = he.batch_id "
             "LEFT JOIN product_variant pv ON pv.id = ib.variant_id "
             "LEFT JOIN product p ON p.id = pv.product_id "
@@ -6368,9 +6394,22 @@ async def counter_get_ticket(
             ticket["id"],
         )
         total = await _counter_ticket_total(conn, ticket["id"])
+    now = night_now()
+    priced_lines = []
+    for row in lines:
+        line = _weigh_event_dict(row)
+        clearance = bool(row["night_clearance"])
+        unit_price = line.get("unit_price_cents")
+        line["night_clearance"] = clearance
+        line["night_price_cents"] = (
+            night_price_cents(int(unit_price), now)
+            if clearance and unit_price is not None
+            else None
+        )
+        priced_lines.append(line)
     return {
         "ticket": _counter_ticket_dict(ticket, total),
-        "lines": [_weigh_event_dict(row) for row in lines],
+        "lines": priced_lines,
     }
 
 
@@ -6606,6 +6645,7 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
     """结算事务内建柜台订单并直接扣库存（调用方须已在同一事务内）。
 
     只取已计价行（status='processed'）；无计价行时返回 None（不造空单）。
+    有顾客时同一事务内累积分（幂等，散客跳过；积分记账失败只记日志，不挡结算）。
     每行按重量/计价基准向上取整折算库存份数（见
     app/counter_settlement_order.weigh_stock_units），先按预留账本协议写
     inventory_reservation，再随即标记 consumed 并写 shipment movement、扣
@@ -6764,6 +6804,14 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
                 "line_total_cents": int(line["amount_cents"]),
             }
         )
+    points_accrual: dict[str, Any] | None = None
+    if customer_id is not None:
+        try:
+            from app.membership import accrue_points_conn
+
+            points_accrual = await accrue_points_conn(conn, str(order_id))
+        except Exception as exc:  # noqa: BLE001 - 积分是附属账，失败只记日志
+            logger.warning("counter points accrual failed for order %s: %s", order_id, exc)
     return {
         "order_id": str(order_id),
         "status": COUNTER_ORDER_STATUS,
@@ -6774,6 +6822,7 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
         "discount_cents": 0,
         "grand_total_cents": subtotal,
         "lines": lines_out,
+        "points_accrual": points_accrual,
     }
 
 
@@ -6784,31 +6833,44 @@ async def counter_settle_ticket(
     body: dict,
     principal: dict = Depends(get_current_customer),
 ) -> dict:
-    """现金结算：open/pending_settlement → settled，落一条结算记录，并在同一
+    """现金/储值结算：open/pending_settlement → settled，落一条结算记录，并在同一
     事务内建 customer_order（渠道 counter）与直接扣库存。
 
-    只收现金：method 缺失 400、非 cash 422。应收取自服务端重算的单据合计，
-    实收小于应收 422，找零 = 实收 - 应收。建单不碰券账本与 9 折逻辑
-    （discount 0 / kind none / 券核销 0），不伪造 payment_intent，散客订单
-    customer_id 为空。幂等：单据行锁 + 状态守卫 + counter_settlement /
-    counter_ticket_id 唯一约束，重结 409；任一称重行缺价/缺批次/库存不足
-    时整笔回滚（409），单据保持可结算态。
+    method（或 payment_method）：cash（默认主路径）或 stored_value。method 缺失
+    400、其它值 422。现金：实收小于应收 422，找零 = 实收 - 应收。储值：单据须挂
+    顾客，扣该顾客已充值余额，不足 422（不建单不扣库存）；实收即应收，找零 0。
+    建单后同一事务内自动累积分（有顾客时；散客跳过）。建单不碰券账本与 9 折逻辑
+    （discount 0 / kind none / 券核销 0），不伪造 payment_intent。幂等：单据行锁
+    + 状态守卫 + counter_settlement / counter_ticket_id 唯一约束，重结 409；
+    任一称重行缺价/缺批次/库存不足时整笔回滚（409），单据保持可结算态。
     """
     from asyncpg import UniqueViolationError
 
-    from app.counter_closeout import SETTLE_METHOD_CASH, compute_change_cents
+    from app.counter_closeout import (
+        SETTLE_METHOD_CASH,
+        SETTLE_METHOD_STORED_VALUE,
+        compute_change_cents,
+    )
 
     await _require_merchant(request, principal)
-    method = body.get("method")
+    method = body.get("payment_method") or body.get("method")
     if method is None:
         raise HTTPException(400, "method is required")
-    if method != SETTLE_METHOD_CASH:
-        raise HTTPException(422, f"only cash settlement is supported, got method={method}")
+    if method not in (SETTLE_METHOD_CASH, SETTLE_METHOD_STORED_VALUE):
+        raise HTTPException(
+            422, f"only cash and stored_value settlement are supported, got method={method}"
+        )
     received = body.get("amount_received_cents")
-    if not isinstance(received, int) or isinstance(received, bool) or received < 0:
+    if method == SETTLE_METHOD_CASH:
+        if not isinstance(received, int) or isinstance(received, bool) or received < 0:
+            raise HTTPException(400, "amount_received_cents must be a non-negative integer")
+    elif received is not None and (
+        not isinstance(received, int) or isinstance(received, bool) or received < 0
+    ):
         raise HTTPException(400, "amount_received_cents must be a non-negative integer")
     pool = _pool(request)
     cashier_id = str(principal["customer_id"])
+    stored_value_spend: dict[str, Any] | None = None
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -6828,21 +6890,56 @@ async def counter_settle_ticket(
                 if existing_order is not None:
                     raise HTTPException(409, "ticket already has an order")
                 due = await _counter_ticket_total(conn, ticket["id"])
-                try:
-                    change = compute_change_cents(due, received)
-                except ValueError as exc:
-                    raise HTTPException(422, str(exc)) from exc
+                if method == SETTLE_METHOD_STORED_VALUE:
+                    # 储值结算：先验顾客与余额（不足 422，不建单不扣库存）；
+                    # 扣款在建单后同一事务内执行，失败整笔回滚。
+                    if not ticket["customer_id"]:
+                        raise HTTPException(
+                            422, "stored_value settlement requires a customer on the ticket"
+                        )
+                    balance = await conn.fetchval(
+                        'SELECT stored_value_balance_cents FROM "customer" WHERE id = $1',
+                        ticket["customer_id"],
+                    )
+                    if balance is None:
+                        raise HTTPException(422, "customer not found")
+                    if int(balance) < due:
+                        raise HTTPException(
+                            422,
+                            f"insufficient stored value balance: balance={int(balance)} due={due}",
+                        )
+                    received = due
+                    change = 0
+                else:
+                    try:
+                        change = compute_change_cents(due, received)
+                    except ValueError as exc:
+                        raise HTTPException(422, str(exc)) from exc
                 try:
                     order = await _create_counter_order(conn, ticket=ticket, due_cents=due)
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from exc
+                if method == SETTLE_METHOD_STORED_VALUE and order is not None and due > 0:
+                    from app.membership import spend_stored_value_conn
+
+                    try:
+                        stored_value_spend = await spend_stored_value_conn(
+                            conn,
+                            customer_id=str(ticket["customer_id"]),
+                            order_id=str(order["order_id"]),
+                            ticket_id=str(ticket["id"]),
+                            amount_cents=due,
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(422, str(exc)) from exc
                 row = await conn.fetchrow(
                     'INSERT INTO "counter_settlement" '
                     "(ticket_id, cashier_id, method, amount_due_cents, "
-                    "amount_received_cents, change_cents) VALUES ($1, $2, 'cash', $3, $4, $5) "
+                    "amount_received_cents, change_cents) VALUES ($1, $2, $3, $4, $5, $6) "
                     "RETURNING *",
                     ticket["id"],
                     cashier_id,
+                    method,
                     due,
                     received,
                     change,
@@ -6859,10 +6956,15 @@ async def counter_settle_ticket(
                 )
     except UniqueViolationError:
         raise HTTPException(409, "ticket already settled: duplicate settlement or order") from None
-    return _counter_ticket_dict(updated, due) | {
+    result: dict[str, Any] = _counter_ticket_dict(updated, due) | {
         "settlement": _counter_settlement_dict(row),
         "order": order,
     }
+    if order is not None:
+        result["points_accrual"] = order.get("points_accrual")
+    if stored_value_spend is not None:
+        result["stored_value"] = stored_value_spend
+    return result
 
 
 @router.post("/counter/shifts")
