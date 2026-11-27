@@ -443,7 +443,7 @@ export default function POSPage() {
         .qr{width:120px;height:120px;margin:8px auto}
       </style>
       </head><body>
-        <div class="center bold">宋鲜生 社区生鲜店</div>
+        <div class="center bold">小宋生鲜 社区生鲜店</div>
         <div class="center">收银小票</div>
         <div>单号: ${order.order_no}</div>
         <div>时间: ${new Date().toLocaleString()}</div>

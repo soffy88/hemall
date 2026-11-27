@@ -50,7 +50,7 @@ def default_banner_settings() -> dict[str, Any]:
                 "image_url": "/static/images/banner-placeholder-1.png",
                 "link_type": "none",
                 "link_target": "",
-                "title": "宋鲜生 · 新鲜到家",
+                "title": "小宋生鲜 · 新鲜到家",
                 "subtitle": "社区生鲜 30 分钟送达",
                 "sort_order": 0,
                 "is_active": True,

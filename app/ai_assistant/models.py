@@ -213,7 +213,7 @@ class AIConfig(BaseModel):
     # 对话配置
     max_history_turns: int = 10
     system_prompt: str = (
-        "You are a helpful shopping assistant for SongMall (宋鲜生) e-commerce platform."
+        "You are a helpful shopping assistant for xs fresh mall (小宋生鲜) e-commerce platform."
     )
 
     # 安全配置

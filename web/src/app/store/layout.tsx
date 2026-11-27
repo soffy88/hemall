@@ -74,7 +74,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         topbar={
           <div className="flex items-center justify-between w-full px-4 h-14 bg-white border-b border-gray-200">
             <div className="flex items-center gap-3">
-              <span className="text-lg font-semibold text-gray-900">宋鲜生 门店工作台</span>
+              <span className="text-lg font-semibold text-gray-900">小宋生鲜 门店工作台</span>
             </div>
             <div className="flex items-center gap-3">
               <a href="/shop" target="_blank" className="text-sm text-blue-600 hover:underline">访问商城</a>

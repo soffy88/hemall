@@ -188,7 +188,7 @@ def _generate_csrf_token() -> str:
 _TOTP_TIME_STEP = 30
 _TOTP_DIGITS = 6
 _TOTP_ALGORITHM = hashlib.sha1
-_TOTP_ISSUER = "SongMall"
+_TOTP_ISSUER = "xs fresh mall"
 _RECOVERY_CODE_COUNT = 10
 _RECOVERY_CODE_LENGTH = 16
 

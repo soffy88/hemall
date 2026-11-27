@@ -3,8 +3,8 @@ import AuthInit from '@/components/auth-init';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '宋鲜生 · 社区生鲜',
-  description: 'SongMall 宋鲜生 — 社区生鲜电商平台',
+  title: '小宋生鲜 · 社区生鲜',
+  description: 'xs fresh mall 小宋生鲜 — 社区生鲜电商平台',
   icons: {
     icon: '/favicon.ico',
     shortcut: '/favicon-16.png',
@@ -16,11 +16,11 @@ export const metadata: Metadata = {
     ],
   },
   openGraph: {
-    title: '宋鲜生 · 社区生鲜',
-    description: 'SongMall 宋鲜生 — 社区生鲜电商平台',
+    title: '小宋生鲜 · 社区生鲜',
+    description: 'xs fresh mall 小宋生鲜 — 社区生鲜电商平台',
     type: 'website',
     locale: 'zh_CN',
-    siteName: '宋鲜生',
+    siteName: '小宋生鲜',
   },
 };
 

@@ -1,7 +1,7 @@
 {
-  "name": "宋鲜生 · 社区生鲜",
-  "short_name": "宋鲜生",
-  "description": "SongMall 宋鲜生 — 社区生鲜电商平台",
+  "name": "小宋生鲜 · 社区生鲜",
+  "short_name": "小宋生鲜",
+  "description": "xs fresh mall 小宋生鲜 — 社区生鲜电商平台",
   "start_url": "/shop",
   "display": "standalone",
   "background_color": "#ffffff",

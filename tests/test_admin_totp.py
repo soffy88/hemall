@@ -112,7 +112,7 @@ def test_totp_uri_shape():
     uri = _totp_uri(secret, "admin@hemall.test")
     assert uri.startswith("otpauth://totp/")
     assert f"secret={secret}" in uri
-    assert "issuer=SongMall" in uri
+    assert "issuer=xs fresh mall" in uri
     assert "algorithm=SHA1" in uri
     assert "digits=6" in uri
     assert "period=30" in uri

@@ -46,7 +46,7 @@ def notification_status(settings: Settings) -> dict[str, Any]:
 
 def _order_text(order: dict[str, Any]) -> str:
     return (
-        "宋鲜生 新订单\n"
+        "小宋生鲜 新订单\n"
         f"订单号: {order.get('order_id', '')}\n"
         f"金额: {order.get('grand_total_cents', 0)} 分\n"
         f"状态: {order.get('status', 'pending')}\n"
@@ -74,7 +74,7 @@ async def _send_webhook(settings: Settings, order: dict[str, Any]) -> None:
 
 def _send_email_sync(settings: Settings, order: dict[str, Any]) -> None:
     message = EmailMessage()
-    message["Subject"] = f"宋鲜生 新订单 {order.get('order_id', '')}"
+    message["Subject"] = f"小宋生鲜 新订单 {order.get('order_id', '')}"
     message["From"] = settings.merchant_smtp_from
     message["To"] = settings.merchant_smtp_to
     message.set_content(_order_text(order))

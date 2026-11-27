@@ -170,13 +170,13 @@ def _render_landing(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>宋鲜生 · 社区生鲜</title>
+<title>小宋生鲜 · 社区生鲜</title>
 <style>{_LANDING_CSS}</style>
 </head>
 <body>
   <main class="card">
-    <div class="brand">宋鲜生 <em>社区生鲜</em></div>
-    <div class="subtitle">SongMall 宋鲜生 Headless Commerce · v{version}</div>
+    <div class="brand">小宋生鲜 <em>社区生鲜</em></div>
+    <div class="subtitle">xs fresh mall 小宋生鲜 Headless Commerce · v{version}</div>
     <span class="badge {status_class}">{badge}</span>
     <div class="status">
       <div class="status-item">{db_dot}<div class="stack">
