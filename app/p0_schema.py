@@ -15,6 +15,7 @@ from .counter_vision import COUNTER_VISION_DDL
 from .ext.spider_hygiene import OCR_GATE_DDL
 from .membership import MEMBERSHIP_DDL, MEMBERSHIP_FEE_DDL
 from .night_pintuan import NIGHT_PINTUAN_DDL
+from .sorting import SORTING_DDL
 from .supplier import SUPPLIER_DDL
 from .weigh import WEIGH_DDL
 
@@ -253,3 +254,6 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         # 供应商管理（B 部分）：供应商/报价/周评分
         # （幂等，见 app/supplier.py）。
         await conn.execute(SUPPLIER_DDL)
+        # 分拣交付表 + 损耗表（V1.0 落地任务 C；只记账，不扣库存）
+        # （幂等，见 app/sorting.py）。
+        await conn.execute(SORTING_DDL)

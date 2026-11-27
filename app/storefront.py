@@ -2649,6 +2649,43 @@ class SupplierEvaluationRequest(SupplierEvaluationScoresRequest):
     week: str  # 周次 YYYY-Www，如 2026-W47
 
 
+# ── 分拣交付表 + 损耗表（V1.0 落地任务 C）请求模型 ─────────────────────
+
+
+class SortingCreateRequest(BaseModel):
+    order_id: str  # 订单 id（UUID，一单一表头）
+    delivery_method: str  # pickup（自提）或 delivery（配送）
+    note: str = ""
+
+
+class SortingUpdateRequest(BaseModel):
+    status: str | None = None  # 流转目标状态（非法流转 409）
+    note: str | None = None  # 只改备注（不碰状态）
+
+
+class SortingLineCreateRequest(BaseModel):
+    product_id: str  # 商品 id（UUID，须存在）
+    expected_qty: int  # 应配数量（> 0）
+    note: str = ""
+
+
+class SortingLineReviewRequest(BaseModel):
+    actual_qty: int | None = None  # 实配数量（改则须留复核人）
+    reviewer: str | None = None  # 复核人
+    note: str | None = None
+
+
+class SpoilageCreateRequest(BaseModel):
+    product_id: str  # 商品 id（UUID，须存在）
+    sku: str  # SKU（必填）
+    batch_no: str = ""  # 批次
+    quantity: int  # 数量（> 0）
+    cost_cents: int  # 成本金额（分，>= 0）
+    reason: str  # 闭合词表：expired/spoiled/damaged/weigh_error/other
+    handling: str = ""  # 处理结果
+    recorded_date: str | None = None  # 损耗日期 YYYY-MM-DD（缺省当天）
+
+
 def _cangzhu_bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(400, str(exc))
 
@@ -2661,6 +2698,18 @@ def _supplier_error(exc: ValueError) -> HTTPException:
     if isinstance(exc, SupplierNotFoundError):
         return HTTPException(404, str(exc))
     if isinstance(exc, SupplierConflictError):
+        return HTTPException(409, str(exc))
+    return HTTPException(400, str(exc))
+
+
+def _sorting_error(exc: ValueError) -> HTTPException:
+    """分拣 / 损耗模块错误映射：不存在 404、冲突 409、其余 400。"""
+
+    from app.sorting import SortingConflictError, SortingNotFoundError
+
+    if isinstance(exc, SortingNotFoundError):
+        return HTTPException(404, str(exc))
+    if isinstance(exc, SortingConflictError):
         return HTTPException(409, str(exc))
     return HTTPException(400, str(exc))
 
@@ -3083,6 +3132,231 @@ async def update_supplier_evaluation(
         )
     except ValueError as exc:
         raise _supplier_error(exc) from exc
+
+
+# ── 分拣交付表 + 损耗表（V1.0 落地任务 C）────────────────────────────────
+# 商家端点：须商家身份（_require_merchant）；无鉴权 401、非商家 403。
+# 损耗只记账，不扣库存。daily-summary 路由须在 /spoilage/{id} 之前注册。
+
+
+@router.post("/sorting-deliveries")
+async def create_sorting_endpoint(
+    body: SortingCreateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.sorting import create_sorting
+
+    merchant = await _require_merchant(request, principal)
+    try:
+        return await create_sorting(
+            _pool(request),
+            order_id=body.order_id,
+            delivery_method=body.delivery_method,
+            operator_id=str(merchant["customer_id"]),
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+
+
+@router.get("/sorting-deliveries")
+async def list_sortings_endpoint(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    status: str | None = Query(None),
+    delivery_method: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.sorting import list_sortings
+
+    await _require_merchant(request, principal)
+    try:
+        items = await list_sortings(
+            _pool(request),
+            status=status,
+            delivery_method=delivery_method,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+    return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.get("/sorting-deliveries/{sorting_id}")
+async def get_sorting_endpoint(
+    sorting_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.sorting import get_sorting
+
+    await _require_merchant(request, principal)
+    try:
+        return await get_sorting(_pool(request), sorting_id)
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+
+
+@router.patch("/sorting-deliveries/{sorting_id}")
+async def update_sorting_endpoint(
+    sorting_id: str,
+    body: SortingUpdateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.sorting import update_sorting_note, update_sorting_status
+
+    await _require_merchant(request, principal)
+    try:
+        if body.status is not None:
+            return await update_sorting_status(_pool(request), sorting_id, status=body.status)
+        if body.note is not None:
+            return await update_sorting_note(_pool(request), sorting_id, note=body.note)
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+    raise HTTPException(400, "nothing to update")
+
+
+@router.post("/sorting-deliveries/{sorting_id}/lines")
+async def add_sorting_line_endpoint(
+    sorting_id: str,
+    body: SortingLineCreateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.sorting import add_line
+
+    await _require_merchant(request, principal)
+    try:
+        return await add_line(
+            _pool(request),
+            sorting_id,
+            product_id=body.product_id,
+            expected_qty=body.expected_qty,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+
+
+@router.get("/sorting-deliveries/{sorting_id}/lines")
+async def list_sorting_lines_endpoint(
+    sorting_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.sorting import list_lines
+
+    await _require_merchant(request, principal)
+    try:
+        items = await list_lines(_pool(request), sorting_id)
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+    return {"items": items}
+
+
+@router.patch("/sorting-deliveries/{sorting_id}/lines/{line_id}")
+async def review_sorting_line_endpoint(
+    sorting_id: str,
+    line_id: str,
+    body: SortingLineReviewRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.sorting import review_line
+
+    await _require_merchant(request, principal)
+    try:
+        return await review_line(
+            _pool(request),
+            sorting_id,
+            line_id,
+            actual_qty=body.actual_qty,
+            reviewer=body.reviewer,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+
+
+@router.post("/spoilage")
+async def record_spoilage_endpoint(
+    body: SpoilageCreateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.sorting import record_spoilage
+
+    merchant = await _require_merchant(request, principal)
+    try:
+        return await record_spoilage(
+            _pool(request),
+            product_id=body.product_id,
+            sku=body.sku,
+            batch_no=body.batch_no,
+            quantity=body.quantity,
+            cost_cents=body.cost_cents,
+            reason=body.reason,
+            handling=body.handling,
+            recorded_by=str(merchant["customer_id"]),
+            recorded_date=body.recorded_date,
+        )
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+
+
+@router.get("/spoilage")
+async def list_spoilage_endpoint(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    recorded_date: str | None = Query(None),
+    reason: str | None = Query(None),
+    product_id: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.sorting import list_spoilage
+
+    await _require_merchant(request, principal)
+    try:
+        items = await list_spoilage(
+            _pool(request),
+            recorded_date=recorded_date,
+            reason=reason,
+            product_id=product_id,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+    return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.get("/spoilage/daily-summary")
+async def spoilage_daily_summary_endpoint(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    date: str = Query(...),
+):
+    from app.sorting import spoilage_daily_summary
+
+    await _require_merchant(request, principal)
+    try:
+        return await spoilage_daily_summary(_pool(request), date)
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
+
+
+@router.get("/spoilage/{spoilage_id}")
+async def get_spoilage_endpoint(
+    spoilage_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.sorting import get_spoilage
+
+    await _require_merchant(request, principal)
+    try:
+        return await get_spoilage(_pool(request), spoilage_id)
+    except ValueError as exc:
+        raise _sorting_error(exc) from exc
 
 
 @router.post("/orders/{order_id}/points-accrue")
