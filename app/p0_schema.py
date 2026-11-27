@@ -13,6 +13,7 @@ from .counter_closeout import COUNTER_CLOSEOUT_DDL
 from .counter_settlement_order import COUNTER_SETTLEMENT_ORDER_DDL
 from .counter_vision import COUNTER_VISION_DDL
 from .ext.spider_hygiene import OCR_GATE_DDL
+from .meal_package import MEAL_PACKAGE_DDL
 from .membership import MEMBERSHIP_DDL, MEMBERSHIP_FEE_DDL
 from .night_pintuan import NIGHT_PINTUAN_DDL
 from .sorting import SORTING_DDL
@@ -257,3 +258,6 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         # 分拣交付表 + 损耗表（V1.0 落地任务 C；只记账，不扣库存）
         # （幂等，见 app/sorting.py）。
         await conn.execute(SORTING_DDL)
+        # 家庭套餐（V1.0 落地任务 D）：套餐定义 + 明细（只定义与展示，不接下单）
+        # （幂等，见 app/meal_package.py）。
+        await conn.execute(MEAL_PACKAGE_DDL)
