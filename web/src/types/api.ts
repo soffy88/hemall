@@ -376,6 +376,8 @@ export interface CounterProduct {
   unit_price_cents: number;
   price_basis_grams: number;
   available_qty: number;
+  night_clearance: boolean;
+  night_price_cents: number | null;
 }
 
 /** 称重行项（hardware_event event_type='weigh'，title 仅详情接口带） */
@@ -395,6 +397,8 @@ export interface CounterWeighLine {
   node_id: string | null;
   title?: string | null;
   created_at: string | null;
+  night_clearance?: boolean | null;
+  night_price_cents?: number | null;
 }
 
 /** 柜台单据头（行项在详情接口里，合计为已计价行项金额之和） */
@@ -422,6 +426,58 @@ export interface CounterSettlement {
   amount_received_cents: number;
   change_cents: number;
   settled_at: string | null;
+}
+
+/** 柜台识别一帧的返回：前 3 候选 {variant_id, score}，分数原样取自服务端，绝不现编 */
+export interface CounterRecognizeCandidate {
+  variant_id: string;
+  score: number;
+}
+
+export interface CounterRecognizeResult {
+  recognition_id: string;
+  frame_id: string;
+  candidates: CounterRecognizeCandidate[];
+  weight_grams: number;
+  model_configured: boolean;
+}
+
+/** 柜台会员总览（GET /store/customers/{id}/membership，商家可查） */
+export interface CounterMembershipSummary {
+  customer_id: string;
+  member_tier: string;
+  member_tier_label: string;
+  points_balance: number;
+  stored_value_balance_cents: number;
+  lifetime_eligible_cents: number;
+}
+
+/** 柜台结算自动计积分的返回（accrue_points_conn 原样） */
+export interface CounterPointsAccrual {
+  accrued: boolean;
+  reason?: string;
+  base_cents?: number;
+  points?: number;
+  points_balance?: number;
+  lifetime_eligible_cents?: number;
+  member_tier?: string;
+}
+
+/** 柜台结算储值扣款的返回（spend_stored_value_conn 原样） */
+export interface CounterStoredValueSpend {
+  spent: boolean;
+  reason?: string;
+  entry_id?: string;
+  amount_cents?: number;
+  stored_value_balance_cents?: number;
+}
+
+/** 柜台结算建的订单（只取前端展示用的字段） */
+export interface CounterOrder {
+  order_id: string;
+  status: string;
+  grand_total_cents: number;
+  points_accrual?: CounterPointsAccrual | null;
 }
 
 /** 柜台收尾件：交接班（差异正负如实记，不抹平） */

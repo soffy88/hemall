@@ -34,6 +34,11 @@ import type {
   CounterSettlement,
   CounterShift,
   CounterDailyReport,
+  CounterRecognizeResult,
+  CounterMembershipSummary,
+  CounterPointsAccrual,
+  CounterStoredValueSpend,
+  CounterOrder,
   MerchantReserveItem,
   MerchantReserveOrderResult,
   MyReferral,
@@ -867,7 +872,7 @@ export const api = {
   counterProducts: () =>
     request<{ products: CounterProduct[] }>('/store/counter/products', {}, 'customer'),
 
-  counterCreateTicket: (data: { tote_id?: string; note?: string }) =>
+  counterCreateTicket: (data: { tote_id?: string; note?: string; customer_id?: string }) =>
     request<CounterTicket>('/store/counter/tickets', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -922,9 +927,14 @@ export const api = {
 
   counterSettleTicket: (ticketId: string, data: {
     method: string;
-    amount_received_cents: number;
+    amount_received_cents?: number;
   }) =>
-    request<CounterTicket & { settlement: CounterSettlement }>(
+    request<CounterTicket & {
+      settlement: CounterSettlement;
+      order?: CounterOrder | null;
+      points_accrual?: CounterPointsAccrual | null;
+      stored_value?: CounterStoredValueSpend | null;
+    }>(
       `/store/counter/tickets/${ticketId}/settle`,
       {
         method: 'POST',
@@ -932,6 +942,19 @@ export const api = {
       },
       'customer',
     ),
+
+  /** 柜台识别一帧：multipart（file + weight_grams + ticket_id），无模型时 200 空候选 */
+  counterRecognize: (file: File, weightGrams: number, ticketId?: string) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('weight_grams', String(weightGrams));
+    if (ticketId) form.append('ticket_id', ticketId);
+    return requestForm<CounterRecognizeResult>('/store/counter/recognize', form, 'customer');
+  },
+
+  /** 商家查某顾客会员总览（等级/积分/储值余额），不存在 404 */
+  counterCustomerMembership: (customerId: string) =>
+    request<CounterMembershipSummary>(`/store/customers/${customerId}/membership`, {}, 'customer'),
 
   counterOpenShift: (data: { opening_float_cents: number; note?: string }) =>
     request<{ shift: CounterShift }>('/store/counter/shifts', {
