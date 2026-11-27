@@ -2686,6 +2686,38 @@ class SpoilageCreateRequest(BaseModel):
     recorded_date: str | None = None  # 损耗日期 YYYY-MM-DD（缺省当天）
 
 
+# ── 家庭套餐（V1.0 落地任务 D）请求模型 ────────────────────────────────
+
+
+class MealPackageItemRequest(BaseModel):
+    product_id: str  # 商品 id（UUID，须存在）
+    quantity: int  # 数量（> 0）
+
+
+class MealPackageCreateRequest(BaseModel):
+    name: str  # 套餐名称
+    serves: str  # 适用人数：single（1 人）/ couple（双人）/ family（家庭）
+    price_cents: int  # 套餐价（分，> 0）
+    items: list[MealPackageItemRequest]  # 包含商品明细（非空）
+    net_weight_note: str = ""  # 净重说明
+    packing_note: str = ""  # 分装说明
+    processing_date_note: str = ""  # 加工日期要求
+    storage_note: str = ""  # 储存条件
+    allergen_note: str = ""  # 过敏原提示
+
+
+class MealPackageUpdateRequest(BaseModel):
+    name: str | None = None
+    serves: str | None = None
+    price_cents: int | None = None
+    items: list[MealPackageItemRequest] | None = None  # 传即整单替换明细
+    net_weight_note: str | None = None
+    packing_note: str | None = None
+    processing_date_note: str | None = None
+    storage_note: str | None = None
+    allergen_note: str | None = None
+
+
 def _cangzhu_bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(400, str(exc))
 
@@ -2710,6 +2742,18 @@ def _sorting_error(exc: ValueError) -> HTTPException:
     if isinstance(exc, SortingNotFoundError):
         return HTTPException(404, str(exc))
     if isinstance(exc, SortingConflictError):
+        return HTTPException(409, str(exc))
+    return HTTPException(400, str(exc))
+
+
+def _meal_package_error(exc: ValueError) -> HTTPException:
+    """家庭套餐模块错误映射：不存在 404、冲突 409、其余 400。"""
+
+    from app.meal_package import MealPackageConflictError, MealPackageNotFoundError
+
+    if isinstance(exc, MealPackageNotFoundError):
+        return HTTPException(404, str(exc))
+    if isinstance(exc, MealPackageConflictError):
         return HTTPException(409, str(exc))
     return HTTPException(400, str(exc))
 
@@ -3357,6 +3401,179 @@ async def get_spoilage_endpoint(
         return await get_spoilage(_pool(request), spoilage_id)
     except ValueError as exc:
         raise _sorting_error(exc) from exc
+
+
+# ── 家庭套餐（V1.0 落地任务 D）────────────────────────────────────────
+# 套餐只做定义与展示，不接下单结算。商家端点须商家身份
+# （_require_merchant）；无鉴权 401、非商家 403。顾客端列表与详情公开，
+# 只读已上架的。manage 路由须在 /meal-packages/{package_id} 之前注册。
+
+
+@router.post("/meal-packages")
+async def create_meal_package_endpoint(
+    body: MealPackageCreateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.meal_package import create_meal_package
+
+    await _require_merchant(request, principal)
+    try:
+        return await create_meal_package(
+            _pool(request),
+            name=body.name,
+            serves=body.serves,
+            price_cents=body.price_cents,
+            items=[{"product_id": i.product_id, "quantity": i.quantity} for i in body.items],
+            net_weight_note=body.net_weight_note,
+            packing_note=body.packing_note,
+            processing_date_note=body.processing_date_note,
+            storage_note=body.storage_note,
+            allergen_note=body.allergen_note,
+        )
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+
+
+@router.get("/meal-packages")
+async def list_meal_packages_public_endpoint(
+    request: Request,
+    serves: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.meal_package import list_meal_packages
+
+    try:
+        items = await list_meal_packages(
+            _pool(request),
+            serves=serves,
+            listed_only=True,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+    return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.get("/meal-packages/manage")
+async def list_meal_packages_manage_endpoint(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    serves: str | None = Query(None),
+    listed_only: bool = Query(False),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.meal_package import list_meal_packages
+
+    await _require_merchant(request, principal)
+    try:
+        items = await list_meal_packages(
+            _pool(request),
+            serves=serves,
+            listed_only=listed_only,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+    return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.get("/meal-packages/manage/{package_id}")
+async def get_meal_package_manage_endpoint(
+    package_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.meal_package import get_meal_package
+
+    await _require_merchant(request, principal)
+    try:
+        return await get_meal_package(_pool(request), package_id)
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+
+
+@router.get("/meal-packages/{package_id}")
+async def get_meal_package_public_endpoint(package_id: str, request: Request):
+    from app.meal_package import get_meal_package
+
+    try:
+        return await get_meal_package(_pool(request), package_id, listed_only=True)
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+
+
+@router.patch("/meal-packages/{package_id}")
+async def update_meal_package_endpoint(
+    package_id: str,
+    body: MealPackageUpdateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.meal_package import update_meal_package
+
+    await _require_merchant(request, principal)
+    try:
+        return await update_meal_package(
+            _pool(request),
+            package_id,
+            name=body.name,
+            serves=body.serves,
+            price_cents=body.price_cents,
+            items=(
+                [{"product_id": i.product_id, "quantity": i.quantity} for i in body.items]
+                if body.items is not None
+                else None
+            ),
+            net_weight_note=body.net_weight_note,
+            packing_note=body.packing_note,
+            processing_date_note=body.processing_date_note,
+            storage_note=body.storage_note,
+            allergen_note=body.allergen_note,
+        )
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+
+
+@router.delete("/meal-packages/{package_id}")
+async def delete_meal_package_endpoint(
+    package_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.meal_package import delete_meal_package
+
+    await _require_merchant(request, principal)
+    try:
+        return await delete_meal_package(_pool(request), package_id)
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+
+
+@router.post("/meal-packages/{package_id}/list")
+async def list_meal_package_endpoint(
+    package_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.meal_package import set_listed
+
+    await _require_merchant(request, principal)
+    try:
+        return await set_listed(_pool(request), package_id, listed=True)
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
+
+
+@router.post("/meal-packages/{package_id}/unlist")
+async def unlist_meal_package_endpoint(
+    package_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.meal_package import set_listed
+
+    await _require_merchant(request, principal)
+    try:
+        return await set_listed(_pool(request), package_id, listed=False)
+    except ValueError as exc:
+        raise _meal_package_error(exc) from exc
 
 
 @router.post("/orders/{order_id}/points-accrue")
