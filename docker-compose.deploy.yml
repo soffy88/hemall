@@ -1,14 +1,22 @@
 services:
   api:
     image: registry.sxueji.com/hemall/backend:0.6.18-prod
+    volumes:
+      - hemall-spider-media:/app/var/omodul_output/ext_bespoke/spider_media
     environment:
       # VLM 截图填价通道 (宿主机 hemal-shotd, 令牌在 .env 插值, 不落明文)
       HEMALL_VLM_SCREENSHOT_URL: http://172.17.0.1:8799/shot
-      HEMALL_VLM_SCREENSHOT_TOKEN: ${HEMALL_VLM_SCREENSHOT_TOKEN}
+      HEMALL_VLM_SCREENSHOT_TOKEN: ${HEMALL_VLM_SCREENSHOT_TOKEN:?set shotd token in .env}
+      # /metrics 仅带 Bearer/X-Metrics-Token 可读（P0-13，Caddy 之后仍兜底）
+      HEMALL_METRICS_ACCESS_TOKEN: ${HEMALL_METRICS_ACCESS_TOKEN:?set metrics token in .env}
   web:
-    image: registry.sxueji.com/hemall/frontend:0.5.10-prod
+    image: registry.sxueji.com/hemall/frontend:sha-5ff6c017d3fd0fd83424060a0b246d1786a6cf98
     environment:
       HEMALL_BACKEND_URL: http://hemal-api-1:8000
+      # BFF 同源闸门放行真实浏览器来源: NextRequest.nextUrl.origin 在
+      # Caddy(plain HTTP)+Cloudflare Tunnel 链路下与公网 https origin 不一致,
+      # 不设此变量时全部浏览器 POST 被 403 (2026-11-02 实查)。
+      HEMALL_BFF_ORIGINS: "https://mall.sxueji.com,https://www.mall.sxueji.com"
   caddy:
     environment:
       HEMALL_API_CONTAINER: hemal-api-1
@@ -18,3 +26,6 @@ services:
     # + 自编译 pgvector），RAG 的 ai_product_embeddings 需要 vector 扩展。
     # 构建配方: build-pgvector/Dockerfile；换底前备份在 backup/。
     image: hemall/postgres-pgvector:16-alpine-0.8.0
+
+volumes:
+  hemall-spider-media:

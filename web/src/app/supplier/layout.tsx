@@ -15,7 +15,7 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
           <Link href="/supplier" className="text-lg font-bold text-amber-700">
-            🌾 Hemall 供应商门户
+            🌾 宋鲜生 供应商门户
           </Link>
           <nav className="flex items-center gap-4">
             <Link href="/supplier/register" className="text-sm text-gray-600 hover:text-gray-900">
@@ -33,7 +33,7 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
       </main>
 
       <footer className="border-t border-gray-200 mt-12 py-6 text-center text-xs text-gray-400">
-        Hemall Commerce · Powered by 3O
+        宋鲜生 · 社区生鲜 | Powered by 3O
       </footer>
     </div>
   );

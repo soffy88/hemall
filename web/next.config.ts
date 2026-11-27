@@ -8,22 +8,41 @@ import type { NextConfig } from 'next';
 //   confirmPayment 上行 api.stripe.com，回跳 hooks.stripe.com——漏放行会断支付。
 // - img-src 含 https:：admin 的 media_url / video_url 为自由文本，可填外部地址，
 //   拦截会破坏既有内容；图片不执行脚本，风险可控。
+// - Cloudflare Web Analytics 会自动注入 beacon.min.js 并 POST 到
+//   cloudflareinsights.com；不放行会在控制台报 CSP 拦截。
 // - connect-src 'self'：浏览器侧已统一走同源 /api（F-01），无外部 XHR。
 // dev (next dev) 不下发，避免 HMR websocket / 评估脚本被拦。
 const isDevServer =
   process.argv.includes('dev') || process.env.npm_lifecycle_event === 'dev';
+
+// Chatwoot 客服子域名（NEXT_PUBLIC_CHATWOOT_BASE_URL）需在 CSP 放行：
+// sdk.js 是外部脚本、会话在 iframe 内渲染、消息走 XHR/WebSocket。
+// 未配置时 origin 为空，CSP 保持原样。
+const chatwootOrigin = (() => {
+  const raw = (process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.origin : '';
+  } catch {
+    return '';
+  }
+})();
+const chatwootWs = chatwootOrigin ? chatwootOrigin.replace(/^http/, 'ws') : '';
+const chatwootScriptSrc = chatwootOrigin ? ` ${chatwootOrigin}` : '';
+const chatwootConnectSrc = chatwootOrigin ? ` ${chatwootOrigin}${chatwootWs ? ` ${chatwootWs}` : ''}` : '';
 
 const csp = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
   "frame-ancestors 'self'",
-  "script-src 'self' 'unsafe-inline' https://js.stripe.com",
+  `script-src 'self' 'unsafe-inline' https://js.stripe.com https://static.cloudflareinsights.com${chatwootScriptSrc}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https://api.stripe.com",
-  "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://m.stripe.network",
+  `connect-src 'self' https://api.stripe.com https://cloudflareinsights.com${chatwootConnectSrc}`,
+  `frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://m.stripe.network${chatwootScriptSrc}`,
   "form-action 'self' https://js.stripe.com",
 ].join('; ');
 

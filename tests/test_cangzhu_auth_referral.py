@@ -22,6 +22,12 @@ TEST_DSN = os.environ.get("TEST_PG_DSN")
 
 pytestmark = pytest.mark.skipif(not TEST_DSN, reason="TEST_PG_DSN not set; skipping DB integration")
 
+CONSENT = {
+    "privacy_consent": True,
+    "terms_consent": True,
+    "consent_version": "2026-11-08-placeholder",
+}
+
 
 @pytest.fixture
 def db_client(monkeypatch):
@@ -92,7 +98,12 @@ class TestAuthRegisterReferral:
         referrer_email = _email("referrer")
         r = db_client.post(
             "/auth/customer/register",
-            json={"email": referrer_email, "password": "CzAuthTest123", "name": "CZ Referrer"},
+            json={
+                "email": referrer_email,
+                "password": "CzAuthTest123",
+                "name": "CZ Referrer",
+                **CONSENT,
+            },
         )
         assert r.status_code == 200, r.text
         referrer = _run(_customer_row(referrer_email))
@@ -108,6 +119,7 @@ class TestAuthRegisterReferral:
                 "password": "CzAuthTest123",
                 "name": "CZ Referred",
                 "referral_code": code,
+                **CONSENT,
             },
         )
         assert r.status_code == 200, r.text
@@ -125,6 +137,7 @@ class TestAuthRegisterReferral:
                 "password": "CzAuthTest123",
                 "name": "CZ Bad",
                 "referral_code": "HM000000",
+                **CONSENT,
             },
         )
         assert r.status_code == 400, r.text
@@ -134,7 +147,12 @@ class TestAuthRegisterReferral:
         email = _email("nocode")
         r = db_client.post(
             "/auth/customer/register",
-            json={"email": email, "password": "CzAuthTest123", "name": "CZ NoCode"},
+            json={
+                "email": email,
+                "password": "CzAuthTest123",
+                "name": "CZ NoCode",
+                **CONSENT,
+            },
         )
         assert r.status_code == 200, r.text
         row = _run(_customer_row(email))
@@ -151,6 +169,7 @@ class TestAuthRegisterReferral:
                 "password": "CzAuthTest123",
                 "name": "CZ Bad SF",
                 "referral_code": "HM000000",
+                **CONSENT,
             },
         )
         assert r.status_code == 400, r.text

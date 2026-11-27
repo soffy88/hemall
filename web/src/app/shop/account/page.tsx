@@ -78,6 +78,13 @@ export default function AccountPage() {
   const [profile, setProfile] = useState<Customer | null>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  type CustomerSettlement = {
+    id: string; order_id: string; order_line_item_id: string;
+    weight_grams: number; estimated_weight_grams: number | null;
+    estimated_amount_cents: number; actual_amount_cents: number;
+    diff_cents: number; status: string; product_title?: string;
+  };
+  const [weighByOrder, setWeighByOrder] = useState<Record<string, CustomerSettlement[]>>({});
   const [preorders, setPreorders] = useState<CustomerPreorder[]>([]);
   const [claims, setClaims] = useState<RmaClaim[]>([]);
   const [refunds, setRefunds] = useState<RefundRequest[]>([]);
@@ -102,8 +109,10 @@ export default function AccountPage() {
   const [uploadStock, setUploadStock] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<IngestResult | null>(null);
+  const [canIngest, setCanIngest] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   // 申请售后（退款状态机入口）——一次只展开一个订单行的表单。
   const [refundingLineItemId, setRefundingLineItemId] = useState<string | null>(null);
@@ -148,6 +157,7 @@ export default function AccountPage() {
         api.customerMyClaims(),
         api.customerMyRefunds(),
       ]);
+      api.myCapabilities().then((cap) => setCanIngest(!!cap.can_ingest)).catch(() => setCanIngest(false));
       setProfile(p);
       setName(p.name || '');
       setPhone(p.phone || '');
@@ -156,6 +166,18 @@ export default function AccountPage() {
       setPreorders(po);
       setClaims(c);
       setRefunds(r);
+      const weighEntries = await Promise.all(
+        o.filter((order) => (order.line_items || []).some((li) => li.pricing_mode === 'weight'))
+          .map(async (order) => {
+            try {
+              const data = await api.customerWeighSettlements(order.id);
+              return [order.id, data.items] as const;
+            } catch {
+              return [order.id, []] as const;
+            }
+          }),
+      );
+      setWeighByOrder(Object.fromEntries(weighEntries));
     } catch (e) {
       setError(errMessage(e));
     } finally {
@@ -287,6 +309,41 @@ export default function AccountPage() {
       setAddrRecipient(''); setAddrPhone(''); setAddrLine1(''); setAddrCity(''); setAddrRegion(''); setAddrPostal('');
       setShowAddrForm(false);
       load();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
+  async function handleCancelOrder(orderId: string) {
+    if (!confirm('确认取消这个未支付订单？')) return;
+    setCancellingId(orderId);
+    try {
+      await api.customerCancelOrder(orderId);
+      showToast('订单已取消');
+      await load();
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    } finally {
+      setCancellingId(null);
+    }
+  }
+
+  async function handlePickupArrived(orderId: string) {
+    try {
+      await api.customerPickupArrived(orderId);
+      showToast('已提醒门店：您已到店', 'info');
+      const o = await api.customerMyOrders();
+      setOrders(o);
+    } catch (e) {
+      showToast(errMessage(e), 'error');
+    }
+  }
+
+  async function handleWeighDecision(orderId: string, settlementId: string, accept: boolean) {
+    try {
+      await api.customerConfirmWeigh(orderId, settlementId, accept);
+      showToast(accept ? '已确认差额' : '已拒绝补差，按预估重量出货');
+      await load();
     } catch (e) {
       showToast(errMessage(e), 'error');
     }
@@ -463,6 +520,7 @@ export default function AccountPage() {
             {purchaseRequests.length === 0 && <div className="text-sm text-gray-400">暂无点货记录。</div>}
           </div>
         </div>
+        {canIngest && (
         <div className="border-t pt-4 space-y-2">
           <h3 className="font-medium text-sm">拍照/短视频传货上架</h3>
           <p className="text-xs text-gray-500">上传商品照片或短视频：与既有商品同名时自动更新图/价格/库存，不建重复品；否则新建上架。价格、库存不填则新建时用默认价 ¥12.99 / 30 件，更新时保持原值。</p>
@@ -478,6 +536,7 @@ export default function AccountPage() {
             <p className="text-sm text-gray-700">结果：{uploadResult.status === 'updated' ? '已更新' : '已新建'}「{uploadResult.title}」，售价 {formatMoney(uploadResult.retail_price_cents, 'CNY')}，库存 {uploadResult.stock_qty} 件。</p>
           )}
         </div>
+        )}
       </div>
 
       {/* Addresses */}
@@ -529,7 +588,52 @@ export default function AccountPage() {
                 <span className="text-xs px-2 py-0.5 rounded bg-gray-100">{o.status}</span>
                 <span className="font-medium">{formatMoney(o.grand_total_cents, o.currency)}</span>
               </div>
-              <div className="text-xs text-gray-400 mt-1 mb-2">{new Date(o.created_at).toLocaleString('zh-CN')}</div>
+              <div className="flex items-center justify-between mt-1 mb-2">
+                <span className="text-xs text-gray-400">{new Date(o.created_at).toLocaleString('zh-CN')}</span>
+                <span className="flex items-center gap-3">
+                  {o.shipping_method_code === 'pickup' &&
+                    ['paid', 'confirmed', 'processing', 'packed', 'shipped', 'delivered'].includes(o.status) &&
+                    !o.pickup_arrived_at && (
+                      <button
+                        onClick={() => handlePickupArrived(o.id)}
+                        className="text-xs text-emerald-700 hover:underline"
+                      >
+                        我已到店
+                      </button>
+                    )}
+                  {o.shipping_method_code === 'pickup' && o.pickup_arrived_at && (
+                    <span className="text-xs text-emerald-600">已提醒到店</span>
+                  )}
+                  {['pending', 'draft'].includes(o.status) && (
+                    <button
+                      onClick={() => handleCancelOrder(o.id)}
+                      disabled={cancellingId === o.id}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      {cancellingId === o.id ? '取消中...' : '取消订单'}
+                    </button>
+                  )}
+                </span>
+              </div>
+              {(weighByOrder[o.id] || []).some((w) => w.status === 'needs_customer_confirmation') && (
+                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 space-y-1">
+                  <div className="font-medium">待顾客确认补差</div>
+                  {(weighByOrder[o.id] || []).filter((w) => w.status === 'needs_customer_confirmation').map((w) => (
+                    <div key={w.id} className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        {w.product_title || '称重商品'}：预估 {w.estimated_weight_grams ?? 0} 克 / ¥
+                        {(w.estimated_amount_cents / 100).toFixed(2)}，实称 {w.weight_grams} 克 / ¥
+                        {(w.actual_amount_cents / 100).toFixed(2)}，
+                        {w.diff_cents > 0 ? `需补收 ¥${(w.diff_cents / 100).toFixed(2)}` : `需退款 ¥${(-w.diff_cents / 100).toFixed(2)}`}
+                      </span>
+                      <span className="flex gap-2">
+                        <button onClick={() => handleWeighDecision(o.id, w.id, true)} className="px-2 py-0.5 bg-emerald-600 text-white rounded">确认</button>
+                        <button onClick={() => handleWeighDecision(o.id, w.id, false)} className="px-2 py-0.5 bg-white border border-amber-300 rounded">拒绝（按预估出货）</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* 履约 SLA：时效承诺 + 超时赔付 (P1 冲刺) */}
               {o.promised_delivery_at && (
@@ -554,6 +658,20 @@ export default function AccountPage() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-gray-600">
                           {li.product_title || li.variant_sku || '商品'} × {li.quantity}
+                          {li.pricing_mode === 'weight' && (
+                            <span className="ml-2 text-emerald-700">
+                              ¥{((li.unit_price_cents_per_jin ?? 0) / 100).toFixed(2)}/斤
+                              {li.actual_weight_grams != null
+                                ? ` · 实称 ${li.actual_weight_grams} 克`
+                                : ` · 预估 ${li.estimated_weight_grams ?? 0} 克`}
+                              {li.weight_diff_cents != null && li.weight_diff_cents !== 0 && (
+                                <span className={li.weight_diff_cents > 0 ? 'text-amber-700' : 'text-emerald-700'}>
+                                  {li.weight_diff_cents > 0 ? ' · 待补收' : ' · 已退/待退'} ¥
+                                  {(Math.abs(li.weight_diff_cents) / 100).toFixed(2)}
+                                </span>
+                              )}
+                            </span>
+                          )}
                           {(li.preorder_qty ?? 0) > 0 && (
                             <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
                               预订 ×{li.preorder_qty} 待配货

@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -31,13 +33,30 @@ from obase.uuid7 import uuid7
 from pydantic import BaseModel
 
 from app import queries
+from app.alcohol import (
+    ALCOHOL_AGE_COOKIE,
+    ALCOHOL_NOTICE,
+    age_verified,
+    alcohol_access_allowed,
+    calculate_age,
+    issue_age_token,
+    require_alcohol_access,
+)
 from app.cangzhu import (
     choose_discount,
     get_voucher_balance,
     hold_redemption,
+    member_discount_cents,
     night_discount_cents,
     night_now,
     night_price_cents,
+)
+from app.compliance import (
+    document_payload,
+    load_manifest,
+    record_consents,
+    sms_status,
+    validate_consent,
 )
 from app.db_recovery import kick_pool_recovery
 from app.deps import get_current_customer, get_settings
@@ -217,6 +236,58 @@ async def _authorize_cart(
             if current_owner is None or str(current_owner) != customer_id:
                 raise HTTPException(404, "cart not found")
         return customer_id
+
+
+async def _require_alcohol_line_access(
+    request: Request,
+    pool: Any,
+    *,
+    batch_id: str | None = None,
+    variant_id: str | None = None,
+) -> None:
+    """酒类行在加购前即校验开关与年龄凭证，避免绕过商品列表直调 API。"""
+    async with pool.acquire() as conn:
+        category_slug = await conn.fetchval(
+            """
+            SELECT pc.slug
+            FROM product_variant pv
+            JOIN product p ON p.id = pv.product_id
+            LEFT JOIN product_category pc
+              ON pc.id = p.category_id AND pc.deleted_at IS NULL
+            WHERE pv.id = COALESCE(
+                $2::uuid,
+                (SELECT ib.variant_id FROM inventory_batch ib WHERE ib.id = $1::uuid)
+            )
+            """,
+            batch_id,
+            variant_id,
+        )
+    if str(category_slug or "").lower() == "drinks":
+        require_alcohol_access(request)
+
+
+async def _require_cart_alcohol_access(request: Request, pool: Any, cart_id: str) -> None:
+    async with pool.acquire() as conn:
+        has_alcohol = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM cart_line_item cli
+                LEFT JOIN inventory_batch ib ON ib.id = cli.batch_id
+                JOIN product_variant pv
+                  ON pv.id = COALESCE(cli.variant_id, ib.variant_id)
+                JOIN product p ON p.id = pv.product_id
+                LEFT JOIN product_category pc
+                  ON pc.id = p.category_id AND pc.deleted_at IS NULL
+                WHERE cli.cart_id = $1
+                  AND cli.deleted_at IS NULL
+                  AND pc.slug = 'drinks'
+            )
+            """,
+            cart_id,
+        )
+    if has_alcohol:
+        require_alcohol_access(request)
 
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -514,6 +585,101 @@ async def _route_add_line_item(
     return {"line_item_id": str(line_item_id), "new_quantity": new_qty}
 
 
+# ── 称重商品加购 ────────────────────────────────────────────────────────
+
+
+async def _route_add_weight_line_item(
+    pool: Any,
+    *,
+    cart_id: str,
+    batch_id: Any | None,
+    variant_id: Any,
+    quantity: int,
+    weight_step_grams: int,
+    unit_price_cents_per_jin: int,
+    price_basis_grams: int,
+    weight_option_label: str,
+) -> dict[str, Any]:
+    """称重商品加购：一行 = 一个重量档 × 份数，金额按预估重量四舍五入到分。
+
+    同一批次不同重量档各自成行（唯一键含 weight_step_grams）；同一档重复
+    加购只累加份数。库存预留与现货/预订拆分留到结算时按 **克** 做，加购
+    本身不动批次计数器（与预订行一致）。
+    """
+    from app.weigh_price import weigh_amount_cents
+
+    unit_estimate = weigh_amount_cents(
+        weight_step_grams, unit_price_cents_per_jin, price_basis_grams=price_basis_grams
+    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cart = await conn.fetchrow(
+                "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                cart_id,
+            )
+            if cart is None:
+                raise HTTPException(404, "cart not found")
+            existing = await conn.fetchrow(
+                """
+                SELECT * FROM cart_line_item
+                WHERE cart_id = $1 AND batch_id = $2 AND weight_step_grams = $3
+                  AND deleted_at IS NULL
+                FOR UPDATE
+                """,
+                cart_id,
+                batch_id,
+                weight_step_grams,
+            )
+            if existing is not None:
+                line_item_id = existing["id"]
+                new_qty = int(existing["quantity"]) + quantity
+                await conn.execute(
+                    """
+                    UPDATE cart_line_item
+                    SET quantity = $1, unit_price_cents = $2, line_total_cents = $3,
+                        estimated_weight_grams = $4, unit_price_cents_per_jin = $5,
+                        price_basis_grams = $6, weight_option_label = $7,
+                        pricing_mode = 'weight', updated_at = NOW()
+                    WHERE id = $8
+                    """,
+                    new_qty,
+                    unit_estimate,
+                    unit_estimate * new_qty,
+                    weight_step_grams * new_qty,
+                    unit_price_cents_per_jin,
+                    price_basis_grams,
+                    weight_option_label,
+                    line_item_id,
+                )
+            else:
+                line_item_id = uuid7()
+                new_qty = quantity
+                await conn.execute(
+                    """
+                    INSERT INTO cart_line_item
+                        (id, cart_id, batch_id, variant_id, quantity,
+                         unit_price_cents, line_total_cents, pricing_mode,
+                         unit_price_cents_per_jin, price_basis_grams,
+                         estimated_weight_grams, weight_step_grams, weight_option_label)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'weight', $8, $9, $10, $11, $12)
+                    """,
+                    line_item_id,
+                    cart_id,
+                    batch_id,
+                    variant_id,
+                    quantity,
+                    unit_estimate,
+                    unit_estimate * quantity,
+                    unit_price_cents_per_jin,
+                    price_basis_grams,
+                    weight_step_grams * quantity,
+                    weight_step_grams,
+                    weight_option_label,
+                )
+            await _recompute_cart_totals(conn, cart)
+    return {"line_item_id": str(line_item_id), "new_quantity": new_qty}
+
+
 # ── 购物车 ──────────────────────────────────────────────────────────────
 
 
@@ -670,6 +836,56 @@ class AddLineItemRequest(BaseModel):
     batch_id: str | None = None
     variant_id: str | None = None
     quantity: int = 1
+    # 称重商品：二选一。weight_grams 为自定义克数；weight_option_label 命中
+    # 商品配置的档位（如“约1斤”）。都不传则取第一个档位。
+    weight_grams: int | None = None
+    weight_option_label: str | None = None
+
+
+async def _load_variant_pricing(conn: Any, variant_id: str) -> Any | None:
+    return await conn.fetchrow(
+        """
+        SELECT pv.id, pv.product_id, pv.reference_price_cents, pv.option_values,
+               COALESCE(pv.pricing_mode, 'piece') AS pricing_mode,
+               pv.unit_price_cents, COALESCE(pv.price_basis_grams, 500)
+                   AS price_basis_grams,
+               COALESCE(pv.weight_options, '[]'::jsonb) AS weight_options
+        FROM product_variant pv
+        JOIN product p ON p.id = pv.product_id AND p.deleted_at IS NULL
+        WHERE pv.id = $1 AND pv.deleted_at IS NULL
+        """,
+        variant_id,
+    )
+
+
+def _resolve_weight_selection(
+    *,
+    weight_grams: int | None,
+    weight_option_label: str | None,
+    weight_options: object,
+) -> tuple[int, str]:
+    """把自定义克数/档位标签解析成 (每份克数, 档位文案)。"""
+    from app.weigh_price import DEFAULT_WEIGHT_OPTIONS, parse_weight_options
+
+    options = parse_weight_options(weight_options) or [
+        dict(item) for item in DEFAULT_WEIGHT_OPTIONS
+    ]
+    if weight_grams is not None:
+        from app.weigh_price import validate_weight_grams
+
+        grams = validate_weight_grams(weight_grams)
+        label = f"自定义{grams}克"
+        for option in options:
+            if int(option["grams"]) == grams:
+                return grams, str(option["label"])
+        return grams, label
+    if weight_option_label:
+        for option in options:
+            if str(option["label"]) == weight_option_label:
+                return int(option["grams"]), str(option["label"])
+        raise HTTPException(400, f"unknown weight option: {weight_option_label}")
+    option = options[0]
+    return int(option["grams"]), str(option["label"])
 
 
 @router.post("/carts/line-items")
@@ -701,6 +917,79 @@ async def add_line_item(
     if body.batch_id is None and body.variant_id is None:
         raise HTTPException(400, "batch_id or variant_id is required")
     pool = _pool(request)
+    await _require_alcohol_line_access(
+        request, pool, batch_id=body.batch_id, variant_id=body.variant_id
+    )
+
+    # ── 称重商品：走独立加购路径（按克预留，按斤计价） ──────────────
+    async with pool.acquire() as conn:
+        resolved_variant_id = body.variant_id
+        if resolved_variant_id is None and body.batch_id is not None:
+            resolved_variant_id = await conn.fetchval(
+                "SELECT variant_id FROM inventory_batch WHERE id = $1 AND deleted_at IS NULL",
+                body.batch_id,
+            )
+        pricing = (
+            await _load_variant_pricing(conn, resolved_variant_id)
+            if resolved_variant_id is not None
+            else None
+        )
+    if pricing is not None and pricing["pricing_mode"] == "weight":
+        from app.weigh_price import weigh_amount_cents
+
+        if body.batch_id is not None:
+            async with pool.acquire() as conn:
+                weight_batch = await conn.fetchrow(
+                    "SELECT id, variant_id, retail_price_cents, status, inspection_status "
+                    "FROM inventory_batch WHERE id = $1 AND deleted_at IS NULL",
+                    body.batch_id,
+                )
+            if weight_batch is None:
+                raise HTTPException(404, "batch not found")
+            if str(weight_batch["variant_id"]) != str(pricing["id"]):
+                raise HTTPException(400, "batch does not belong to variant")
+            if weight_batch["inspection_status"] == "failed":
+                raise HTTPException(400, "该商品质检未通过，无法购买")
+        else:
+            async with pool.acquire() as conn:
+                weight_batch = await _pick_best_batch(conn, str(pricing["id"]))
+                if weight_batch is None:
+                    weight_batch = await _pick_pending_batch(conn, str(pricing["id"]))
+        weight_step_grams, weight_label = _resolve_weight_selection(
+            weight_grams=body.weight_grams,
+            weight_option_label=body.weight_option_label,
+            weight_options=pricing["weight_options"],
+        )
+        unit_per_jin = pricing["unit_price_cents"]
+        if unit_per_jin is None and weight_batch is not None:
+            unit_per_jin = weight_batch["retail_price_cents"]
+        if unit_per_jin is None:
+            raise HTTPException(400, "该商品暂无称重价格，无法下单")
+        # 先算一次，确保价格/重量组合可计价（非法输入在这里 400，不落脏行）。
+        weigh_amount_cents(
+            weight_step_grams,
+            int(unit_per_jin),
+            price_basis_grams=int(pricing["price_basis_grams"]),
+        )
+        response = await _route_add_weight_line_item(
+            pool,
+            cart_id=body.cart_id,
+            batch_id=weight_batch["id"] if weight_batch is not None else None,
+            variant_id=pricing["id"],
+            quantity=body.quantity,
+            weight_step_grams=weight_step_grams,
+            unit_price_cents_per_jin=int(unit_per_jin),
+            price_basis_grams=int(pricing["price_basis_grams"]),
+            weight_option_label=weight_label,
+        )
+        if customer_id is not None:
+            try:
+                _log_recommend_behavior(
+                    customer_id, str(pricing["product_id"]), UserBehaviorType.CART_ADD
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("recommend weight cart_add logging failed", exc_info=True)
+        return response
 
     batch_id = body.batch_id
     variant_row = None
@@ -862,17 +1151,52 @@ async def update_line_item(
     )
 
     pool = _pool(request)
+    await _require_cart_alcohol_access(request, pool, body.cart_id)
     # 改量前先读本行数量与已记占位：omodul 按 (cart_id, batch_id) 定位行，
     # 并按 delta 同步调整批次 reserved_qty；成功后把行上记录的占位量按
     # 同一 delta 同步，结算转正才准确。
     async with pool.acquire() as conn:
         prior_line = await conn.fetchrow(
-            "SELECT id, batch_id, quantity, reserved_qty FROM cart_line_item "
+            "SELECT id, batch_id, quantity, reserved_qty, pricing_mode, "
+            "weight_step_grams, unit_price_cents_per_jin, price_basis_grams "
+            "FROM cart_line_item "
             "WHERE cart_id = $1 AND deleted_at IS NULL AND (id = $2 OR batch_id = $2) "
             "ORDER BY CASE WHEN batch_id = $2 THEN 0 ELSE 1 END LIMIT 1",
             body.cart_id,
             body.line_item_id,
         )
+    if prior_line is not None and prior_line["pricing_mode"] == "weight":
+        from app.weigh_price import weigh_amount_cents
+
+        new_qty = int(body.quantity)
+        if new_qty <= 0:
+            raise HTTPException(400, "quantity must be positive")
+        step = int(prior_line["weight_step_grams"] or 0)
+        if step <= 0:
+            raise HTTPException(400, "weight line missing weight_step_grams")
+        unit_per_jin = int(prior_line["unit_price_cents_per_jin"] or 0)
+        basis = int(prior_line["price_basis_grams"] or 500)
+        unit_estimate = weigh_amount_cents(step, unit_per_jin, price_basis_grams=basis)
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                cart = await conn.fetchrow(
+                    "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                    body.cart_id,
+                )
+                if cart is None:
+                    raise HTTPException(404, "cart not found")
+                await conn.execute(
+                    "UPDATE cart_line_item SET quantity = $1, unit_price_cents = $2, "
+                    "line_total_cents = $3, estimated_weight_grams = $4, updated_at = NOW() "
+                    "WHERE id = $5",
+                    new_qty,
+                    unit_estimate,
+                    unit_estimate * new_qty,
+                    step * new_qty,
+                    prior_line["id"],
+                )
+                await _recompute_cart_totals(conn, cart)
+        return {"line_item_id": str(prior_line["id"]), "new_quantity": new_qty}
     # 对外字段叫 line_item_id，前端传的是行 id、omodul 要的是 batch_id：
     # 命中行时统一解析成该行批次再走原路（传批次 id 的旧调用方不受影响）；
     # 无批次行（只绑变体）没有 batch_key，删除走路由层、改量维持原 400。
@@ -975,6 +1299,76 @@ async def delete_line_item(
     return {"ok": True}
 
 
+async def _cart_discount_preview(pool: Any, cart: dict[str, Any]) -> dict[str, Any]:
+    """购物车展示的会员/夜市/券折扣预览，口径与下单时 choose_discount 一致。
+
+    只在购物车尚无其他折扣时预览（下单时同样只在 discount_cents == 0 时计算）。
+    返回字段：member_discount_cents / preview_discount_kind /
+    preview_discount_cents / preview_grand_total_cents。
+    """
+    cart["member_discount_cents"] = 0
+    cart["preview_discount_kind"] = "none"
+    cart["preview_discount_cents"] = 0
+    cart["preview_grand_total_cents"] = int(cart.get("grand_total_cents") or 0)
+    customer_id = cart.get("customer_id")
+    lines = cart.get("line_items") or []
+    if not customer_id or not lines:
+        return cart
+
+    variant_ids = [str(line["variant_id"]) for line in lines if line.get("variant_id")]
+    if not variant_ids:
+        return cart
+
+    async with pool.acquire() as conn:
+        flags = {
+            str(row["id"]): row
+            for row in await conn.fetch(
+                "SELECT pv.id, COALESCE(p.voucher_excluded, false) AS voucher_excluded, "
+                "COALESCE(p.night_clearance, false) AS night_clearance "
+                "FROM product_variant pv JOIN product p ON p.id = pv.product_id "
+                "WHERE pv.id = ANY($1::uuid[])",
+                variant_ids,
+            )
+        }
+        balance = await get_voucher_balance(conn, str(customer_id))
+
+    excluded = {
+        vid for vid, row in flags.items() if row["voucher_excluded"] or row["night_clearance"]
+    }
+    eligible = sum(
+        int(line.get("line_total_cents") or 0)
+        for line in lines
+        if str(line.get("variant_id") or "") not in excluded
+    )
+    night_total = sum(
+        int(line.get("line_total_cents") or 0)
+        for line in lines
+        if flags.get(str(line.get("variant_id") or ""))
+        and flags[str(line["variant_id"])]["night_clearance"]
+    )
+    member_cents = member_discount_cents(eligible)
+    if int(cart.get("discount_cents") or 0) > 0:
+        kind, amount = "applied", int(cart["discount_cents"])
+    else:
+        kind, amount = choose_discount(
+            eligible,
+            balance,
+            is_member=True,
+            night_cents=night_discount_cents(night_total, night_now()),
+        )
+    cart["member_discount_cents"] = member_cents
+    cart["preview_discount_kind"] = kind
+    cart["preview_discount_cents"] = amount
+    cart["preview_grand_total_cents"] = max(
+        0,
+        int(cart.get("subtotal_cents") or 0)
+        - amount
+        + int(cart.get("tax_cents") or 0)
+        + int(cart.get("shipping_cents") or 0),
+    )
+    return cart
+
+
 @router.get("/carts/{cart_id}")
 async def get_cart(
     cart_id: str, request: Request, principal: dict[str, Any] | None = Depends(_optional_customer)
@@ -983,7 +1377,7 @@ async def get_cart(
     cart = await queries.get_cart(_pool(request), cart_id)
     if cart is None:
         raise HTTPException(404, "cart not found")
-    return cart
+    return await _cart_discount_preview(_pool(request), cart)
 
 
 # ── 地址 + 客户 ──────────────────────────────────────────────────────────
@@ -1188,7 +1582,8 @@ async def _create_draft_order_with_reservations(
                     (id, cart_id, customer_id, region_code, currency, status,
                      subtotal_cents, discount_cents, tax_cents, shipping_cents,
                      grand_total_cents, billing_address, shipping_address)
-                VALUES ($1, NULL, $2, $3, $4, 'draft', $5, 0, 0, 0, $5, $6::jsonb, $7::jsonb)
+                VALUES ($1, NULL, $2, $3, $4, 'draft', $5, 0, 0, 0, $5,
+                        $6::text::jsonb, $7::text::jsonb)
                 """,
                 order_id,
                 customer_id,
@@ -1275,6 +1670,8 @@ async def _create_order_from_cart(
     *,
     cart_id: str,
     customer_id: str | None = None,
+    consent_version: str | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     """把购物车快照原子转为 pending 订单，但不捕获支付。
 
@@ -1290,7 +1687,8 @@ async def _create_order_from_cart(
                 """
                 SELECT id, customer_id, region_code, currency, status,
                        subtotal_cents, discount_cents, tax_cents, shipping_cents,
-                       grand_total_cents, billing_address, shipping_address
+                       grand_total_cents, billing_address, shipping_address,
+                       shipping_method_code
                 FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
                 """,
                 cart_id,
@@ -1315,6 +1713,10 @@ async def _create_order_from_cart(
                 SELECT cli.id, cli.batch_id, cli.variant_id, cli.quantity,
                        cli.reserved_qty AS cart_held_qty,
                        cli.unit_price_cents, cli.line_total_cents,
+                       COALESCE(cli.pricing_mode, 'piece') AS pricing_mode,
+                       cli.unit_price_cents_per_jin,
+                       COALESCE(cli.price_basis_grams, 500) AS price_basis_grams,
+                       cli.estimated_weight_grams,
                        ib.variant_id AS batch_variant_id
                 FROM cart_line_item cli
                 LEFT JOIN inventory_batch ib ON ib.id = cli.batch_id
@@ -1333,6 +1735,25 @@ async def _create_order_from_cart(
                 quantity = int(line["quantity"])
                 if quantity <= 0:
                     raise ValueError("quantity must be positive")
+                weight_mode = line["pricing_mode"] == "weight"
+                if weight_mode:
+                    from app.weigh_price import weigh_amount_cents
+
+                    estimated_grams = int(line["estimated_weight_grams"] or 0)
+                    if estimated_grams <= 0:
+                        raise ValueError("weight line has no estimated_weight_grams")
+                    unit_per_jin = int(line["unit_price_cents_per_jin"] or 0)
+                    basis = int(line["price_basis_grams"] or 500)
+                    line_total_cents = weigh_amount_cents(
+                        estimated_grams, unit_per_jin, price_basis_grams=basis
+                    )
+                    reserved_wanted = estimated_grams
+                else:
+                    estimated_grams = None
+                    unit_per_jin = None
+                    basis = 500
+                    line_total_cents = int(line["line_total_cents"])
+                    reserved_wanted = quantity
                 variant_id = line["variant_id"] or line["batch_variant_id"]
                 if variant_id is None:
                     raise ValueError("cart line has no variant")
@@ -1371,19 +1792,25 @@ async def _create_order_from_cart(
                     if cart_held > 0 and line["batch_id"] is not None and own_held == 0
                     else None
                 )
-                reserve_qty = min(quantity, _batch_available(batch) + own_held)
+                reserve_qty = min(reserved_wanted, _batch_available(batch) + own_held)
                 prepared.append(
                     {
                         "variant_id": variant_id,
                         "batch": batch,
                         "quantity": quantity,
                         "reserve_qty": reserve_qty,
-                        "preorder_qty": quantity - reserve_qty,
+                        "preorder_qty": reserved_wanted - reserve_qty,
                         "own_held": own_held,
                         "cart_held": cart_held,
                         "release_batch_id": release_batch_id,
-                        "unit_price_cents": int(line["unit_price_cents"]),
-                        "line_total_cents": int(line["line_total_cents"]),
+                        "unit_price_cents": (
+                            int(line["unit_price_cents"]) if not weight_mode else unit_per_jin
+                        ),
+                        "line_total_cents": line_total_cents,
+                        "pricing_mode": "weight" if weight_mode else "piece",
+                        "unit_price_cents_per_jin": unit_per_jin,
+                        "price_basis_grams": basis,
+                        "estimated_weight_grams": estimated_grams,
                     }
                 )
 
@@ -1457,9 +1884,9 @@ async def _create_order_from_cart(
                     (id, cart_id, customer_id, region_code, currency, status,
                      subtotal_cents, discount_cents, tax_cents, shipping_cents,
                      grand_total_cents, billing_address, shipping_address,
-                     discount_kind, voucher_redeemed_cents)
+                     discount_kind, voucher_redeemed_cents, shipping_method_code)
                 VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10,
-                        $11::jsonb, $12::jsonb, $13, $14)
+                        $11::text::jsonb, $12::text::jsonb, $13, $14, $15)
                 """,
                 order_id,
                 cart["id"],
@@ -1479,7 +1906,16 @@ async def _create_order_from_cart(
                 json.dumps(cart["shipping_address"] or {}, ensure_ascii=False),
                 _cz_discount_kind,
                 _cz_discount_cents if _cz_discount_kind == "voucher" else 0,
+                cart["shipping_method_code"],
             )
+            if consent_version:
+                await record_consents(
+                    conn,
+                    subject_type="order",
+                    subject_id=str(order_id),
+                    version=consent_version,
+                    request=request,
+                )
             for prep in prepared:
                 batch = prep["batch"]
                 line_id = uuid7()
@@ -1487,8 +1923,12 @@ async def _create_order_from_cart(
                     """
                     INSERT INTO order_line_item
                         (id, order_id, batch_id, variant_id, quantity, preorder_qty,
-                         unit_price_cents, line_total_cents, location_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                         unit_price_cents, line_total_cents, location_id,
+                         pricing_mode, unit_price_cents_per_jin, price_basis_grams,
+                         estimated_weight_grams, estimated_amount_cents,
+                         settlement_status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                            $10, $11, $12, $13, $14, $15)
                     """,
                     line_id,
                     order_id,
@@ -1499,6 +1939,12 @@ async def _create_order_from_cart(
                     prep["unit_price_cents"],
                     prep["line_total_cents"],
                     batch["location_id"] if batch is not None else None,
+                    prep["pricing_mode"],
+                    prep["unit_price_cents_per_jin"],
+                    prep["price_basis_grams"],
+                    prep["estimated_weight_grams"],
+                    prep["line_total_cents"] if prep["pricing_mode"] == "weight" else None,
+                    "pending" if prep["pricing_mode"] == "weight" else "not_required",
                 )
                 if prep["release_batch_id"] is not None:
                     # 本行在原批次上的占位无法转正（批次被替换/不可售）：
@@ -1577,6 +2023,14 @@ class CheckoutRequest(BaseModel):
     shipping_address: AddressPayload | None = None
     customer_id: str | None = None
     provider: str | None = None
+    privacy_consent: bool = False
+    terms_consent: bool = False
+    consent_version: str = ""
+    # 自营配送（cart.shipping_method_code='local' 时必填）
+    delivery_lat: float | None = None
+    delivery_lon: float | None = None
+    delivery_slot: str | None = None
+    delivery_note: str = ""
 
 
 @router.post("/checkout")
@@ -1593,10 +2047,51 @@ async def checkout(
         raise HTTPException(403, "customer_id does not match authenticated customer")
     if body.customer_id is not None:
         _require_uuid(body.customer_id, "customer_id")
-    pool = _pool(request)
     cfg_store = request.app.state.config
+    consent_version = validate_consent(
+        cfg_store,
+        privacy_consent=body.privacy_consent,
+        terms_consent=body.terms_consent,
+        consent_version=body.consent_version,
+    )
+    pool = _pool(request)
     out_root = _output_dir(request, "checkout")
     await _authorize_cart(request, body.cart_id, principal)
+    await _require_cart_alcohol_access(request, pool, body.cart_id)
+    # 0. 未选配送方式时按标准配送在服务端计价（防止直连客户端默认 0 运费）。
+    async with pool.acquire() as conn:
+        cart_fee = await conn.fetchrow(
+            "SELECT shipping_method_code, subtotal_cents FROM cart WHERE id = $1",
+            body.cart_id,
+        )
+    if cart_fee is not None and not cart_fee["shipping_method_code"]:
+        from omodul.add_shipping_method_to_cart import (
+            AddShippingMethodToCartConfig,
+            AddShippingMethodToCartInput,
+            add_shipping_method_to_cart,
+        )
+
+        from app.shipping import load_shipping_rules, quote_shipping
+
+        quote = quote_shipping(
+            await load_shipping_rules(pool, cfg_store),
+            method_name="standard",
+            subtotal_cents=int(cart_fee["subtotal_cents"] or 0),
+        )
+        await add_shipping_method_to_cart(
+            _cfg(request, AddShippingMethodToCartConfig),
+            AddShippingMethodToCartInput(
+                cart_id=body.cart_id, method_name="standard", price_cents=quote["price_cents"]
+            ),
+            _step_dir(out_root, "default_shipping_method"),
+            pool=pool,
+        )
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE cart SET shipping_method_code = 'standard', "
+                "updated_at = NOW() WHERE id = $1",
+                body.cart_id,
+            )
 
     # 1. 设置地址
     if body.billing_address:
@@ -1649,6 +2144,45 @@ async def checkout(
         if r["status"] == "failed":
             raise HTTPException(400, f"shipping_address: {r['error']['message']}")
 
+    # 2.5 自营配送：服务端复算范围/起送/运费/时段，再落单；关闭时完全跳过。
+    delivery_quote = None
+    async with pool.acquire() as conn:
+        cart_delivery = await conn.fetchrow(
+            "SELECT shipping_method_code, subtotal_cents FROM cart "
+            "WHERE id = $1 AND deleted_at IS NULL",
+            body.cart_id,
+        )
+    if cart_delivery is not None and cart_delivery["shipping_method_code"] == "local":
+        from app.core4_delivery import load_delivery_config, quote_for_cart
+
+        delivery_cfg = await load_delivery_config(pool)
+        if not delivery_cfg.get("enabled"):
+            raise HTTPException(400, "自营配送未开启")
+        delivery_quote = await quote_for_cart(
+            pool,
+            delivery_cfg,
+            cart_id=body.cart_id,
+            lat=body.delivery_lat,
+            lon=body.delivery_lon,
+            slot_start=body.delivery_slot,
+        )
+        if not delivery_quote["ok"]:
+            raise HTTPException(400, delivery_quote["reason"] or "自营配送不可用")
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                cart_row = await conn.fetchrow(
+                    "SELECT * FROM cart WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                    body.cart_id,
+                )
+                if cart_row is None:
+                    raise HTTPException(404, "cart not found")
+                await conn.execute(
+                    "UPDATE cart SET shipping_cents = $1, updated_at = NOW() WHERE id = $2",
+                    int(delivery_quote["fee_cents"]),
+                    body.cart_id,
+                )
+                await _recompute_cart_totals(conn, cart_row)
+
     # 3. 只建立待支付订单。provider capture/confirm 不能在这里伪造成功；
     # 支付 intent 先落库，再由真实 provider 回调进入 verified PAID。
     try:
@@ -1656,6 +2190,8 @@ async def checkout(
             pool,
             cart_id=body.cart_id,
             customer_id=authenticated_customer_id,
+            consent_version=consent_version,
+            request=request,
         )
         provider_name = (
             body.provider
@@ -1668,11 +2204,51 @@ async def checkout(
             order_id=order["order_id"],
             provider=provider_name,
         )
+        from app.notifications import send_new_order_notification
+
+        await send_new_order_notification(pool, cfg_store, order=order)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - translate provider/db failures
         logger.exception("store checkout failed")
         raise HTTPException(503, "payment service unavailable") from exc
+
+    # 2.6 自营配送任务：下单成功后建一条任务，供店员/骑手手机端接单。
+    if delivery_quote:
+        from app.core4_delivery import create_delivery_task
+
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await create_delivery_task(
+                        conn,
+                        order_id=order["order_id"],
+                        quote=delivery_quote,
+                        note=body.delivery_note,
+                    )
+                    await conn.execute(
+                        "UPDATE customer_order SET shipping_address = "
+                        "COALESCE(shipping_address, '{}'::jsonb) || $2::jsonb WHERE id = $1",
+                        order["order_id"],
+                        json.dumps(
+                            {
+                                "delivery_lat": body.delivery_lat,
+                                "delivery_lon": body.delivery_lon,
+                                "delivery_slot": delivery_quote["slot"]["label"],
+                                "delivery_distance_km": delivery_quote["distance_km"],
+                                "delivery_fee_cents": delivery_quote["fee_cents"],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+        except HTTPException:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE customer_order SET status = 'cancelled', updated_at = NOW() "
+                    "WHERE id = $1 AND status IN ('pending', 'draft')",
+                    order["order_id"],
+                )
+            raise
 
     # 收据可以用于查“待支付”订单，但前端只有在 verified PAID 后才显示成功。
     order_id = order["order_id"]
@@ -1803,7 +2379,59 @@ def _resolve_store_payment_provider(settings: Any, requested_provider: str | Non
     provider = requested or configured or str(settings.default_payment_provider).lower()
     if provider not in {"manual", "wechat", "stripe"}:
         raise HTTPException(400, "unsupported payment provider")
+    if provider == "manual" and not bool(getattr(settings, "manual_payment_enabled", True)):
+        raise HTTPException(503, "manual payment is disabled")
+    if provider in {"wechat", "stripe"} and configured != provider:
+        raise HTTPException(503, f"{provider} payment gateway is not configured")
     return provider
+
+
+def _payment_options(settings: Any) -> dict[str, Any]:
+    """公开、无密钥的支付可用性；禁止把 manual 模拟单展示成在线支付。"""
+    configured = str(settings.payment_gateway_provider or "").strip().lower()
+    online_configured = False
+    if configured in {"wechat", "stripe", "alipay"}:
+        try:
+            from obase.provider_registry import ProviderRegistry
+
+            gateway = ProviderRegistry.get().generic("payment_gateway", configured)
+            online_configured = bool(getattr(gateway, "is_configured", False))
+        except Exception:  # noqa: BLE001 - no registry means no online payment
+            online_configured = False
+    manual_enabled = bool(getattr(settings, "manual_payment_enabled", True))
+    return {
+        "online_payment_available": online_configured,
+        "online_provider": configured if online_configured else None,
+        "manual_payment_enabled": manual_enabled,
+        "methods": [
+            *(
+                [
+                    {
+                        "code": configured,
+                        "name": {
+                            "wechat": "微信支付",
+                            "stripe": "银行卡支付",
+                            "alipay": "支付宝",
+                        }[configured],
+                        "mode": "online",
+                    }
+                ]
+                if online_configured
+                else []
+            ),
+            *(
+                [{"code": "manual", "name": "人工确认收款", "mode": "offline"}]
+                if manual_enabled
+                else []
+            ),
+        ],
+    }
+
+
+@router.get("/payment-options")
+async def payment_options(request: Request) -> dict[str, Any]:
+    """顾客结账前读取支付可用性，未配置真实网关时不展示“在线支付可用”。"""
+    return _payment_options(request.app.state.config)
 
 
 async def _assert_customer_order(pool: Any, customer_id: str, order_id: str) -> None:
@@ -2030,7 +2658,54 @@ async def remove_gift_card(
 class AddShippingMethodRequest(BaseModel):
     cart_id: str
     method_name: str
-    price_cents: int
+    # 兼容旧客户端：字段仍接受但服务端永不采用。
+    price_cents: int | None = None
+    # 自营配送（method_name=local）必填：浏览器定位与所选时段。
+    delivery_lat: float | None = None
+    delivery_lon: float | None = None
+    delivery_slot: str | None = None
+
+
+@router.get("/shipping-options")
+async def shipping_options(request: Request):
+    """公开配送方式与时窗；价格由服务端规则计算。"""
+    from app.core4_delivery import load_delivery_config
+    from app.shipping import load_shipping_rules
+
+    settings = get_settings()
+    pool = _pool(request)
+    rules = await load_shipping_rules(pool, settings)
+    methods = [
+        {
+            "code": code,
+            "name": method["name"],
+            "price_cents": method["price_cents"],
+            "free_threshold_cents": method["free_threshold_cents"],
+        }
+        for code, method in rules["methods"].items()
+    ]
+    delivery = await load_delivery_config(pool)
+    if delivery.get("enabled"):
+        methods.append(
+            {
+                "code": "local",
+                "name": "门店自营配送",
+                "price_cents": None,
+                "price_from_cents": min(
+                    (int(t["fee_cents"]) for t in delivery["fee_tiers"]), default=0
+                ),
+                "free_threshold_cents": 0,
+                "min_order_cents": int(delivery["min_order_cents"]),
+                "requires_location": True,
+                "requires_slot": True,
+            }
+        )
+    return {
+        "service_area": rules["service_area"],
+        "delivery_windows": rules["delivery_windows"],
+        "methods": methods,
+        "quoted_by_server": True,
+    }
 
 
 @router.post("/carts/shipping-method")
@@ -2046,21 +2721,84 @@ async def add_shipping_method(
         add_shipping_method_to_cart,
     )
 
+    from app.shipping import load_shipping_rules, quote_shipping
+
     cfg = _cfg(request, AddShippingMethodToCartConfig)
-    inp = AddShippingMethodToCartInput(
-        cart_id=body.cart_id, method_name=body.method_name, price_cents=body.price_cents
-    )
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        cart_row = await conn.fetchrow(
+            "SELECT subtotal_cents FROM cart WHERE id = $1 AND deleted_at IS NULL",
+            body.cart_id,
+        )
+    if cart_row is None:
+        raise HTTPException(404, "cart not found")
+    method_key = body.method_name.strip().lower()
+    if method_key in ("local", "自营配送", "同城配送"):
+        from app.core4_delivery import load_delivery_config, quote_for_cart
+
+        delivery_cfg = await load_delivery_config(pool)
+        if not delivery_cfg.get("enabled"):
+            raise HTTPException(400, "自营配送未开启")
+        quote = await quote_for_cart(
+            pool,
+            delivery_cfg,
+            cart_id=body.cart_id,
+            lat=body.delivery_lat,
+            lon=body.delivery_lon,
+            slot_start=body.delivery_slot,
+        )
+        if not quote["ok"]:
+            raise HTTPException(400, quote["reason"] or "自营配送不可用")
+        quote = {
+            **quote,
+            "code": "local",
+            "name": "门店自营配送",
+            "price_cents": int(quote["fee_cents"]),
+            "base_price_cents": int(quote["fee_cents"]),
+            "free_threshold_cents": 0,
+            "free_shipping_applied": False,
+            "delivery_windows": [s["label"] for s in quote.get("slots") or []],
+            "service_area": delivery_cfg["store"]["address"],
+            "quoted_by_server": True,
+        }
+        inp = AddShippingMethodToCartInput(
+            cart_id=body.cart_id,
+            method_name="local",
+            price_cents=int(quote["fee_cents"]),
+        )
+    else:
+        rules = await load_shipping_rules(pool, get_settings())
+        try:
+            quote = quote_shipping(
+                rules,
+                method_name=body.method_name,
+                subtotal_cents=int(cart_row["subtotal_cents"] or 0),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        inp = AddShippingMethodToCartInput(
+            cart_id=body.cart_id,
+            method_name=body.method_name,
+            price_cents=quote["price_cents"],
+        )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE cart SET shipping_method_code = $1, updated_at = NOW() WHERE id = $2",
+            str(quote.get("code") or body.method_name),
+            body.cart_id,
+        )
     result = await add_shipping_method_to_cart(
         cfg,
         inp,
         _output_dir(request, "add_shipping_method_to_cart"),
-        pool=_pool(request),
+        pool=pool,
     )
     if result["status"] == "failed":
         raise HTTPException(400, result["error"]["message"])
     return {
         "shipping_cents": result["shipping_cents"],
         "grand_total_cents": result["grand_total_cents"],
+        "quote": quote,
     }
 
 
@@ -2098,6 +2836,54 @@ async def set_cart_region_route(
 # ── 公开商品浏览 ──────────────────────────────────────────────────────────
 
 
+class AgeVerificationRequest(BaseModel):
+    birth_date: date
+
+
+@router.get("/alcohol/status")
+async def alcohol_status(request: Request):
+    settings = request.app.state.config
+    return {
+        "enabled": bool(settings.alcohol_sales_enabled),
+        "min_age": int(settings.alcohol_min_age),
+        "verified": age_verified(request),
+        "notice": ALCOHOL_NOTICE,
+    }
+
+
+@router.post("/alcohol/verify-age")
+async def verify_alcohol_age(
+    body: AgeVerificationRequest,
+    request: Request,
+    response: Response,
+):
+    settings = request.app.state.config
+    if not settings.alcohol_sales_enabled:
+        raise HTTPException(403, "酒类商品当前已按合规要求下架")
+    age = calculate_age(body.birth_date)
+    if age < 0 or age > 120:
+        raise HTTPException(400, "出生日期不合法")
+    if age < int(settings.alcohol_min_age):
+        raise HTTPException(403, f"未满 {settings.alcohol_min_age} 周岁，禁止购买酒类")
+
+    expires_at = int(time.time()) + int(settings.alcohol_age_cookie_days) * 86400
+    response.set_cookie(
+        ALCOHOL_AGE_COOKIE,
+        issue_age_token(settings, expires_at=expires_at),
+        max_age=int(settings.alcohol_age_cookie_days) * 86400,
+        httponly=True,
+        secure=settings.environment.lower() == "production",
+        samesite="lax",
+        path="/store",
+    )
+    return {
+        "verified": True,
+        "min_age": int(settings.alcohol_min_age),
+        "expires_at": expires_at,
+        "notice": ALCOHOL_NOTICE,
+    }
+
+
 @router.get("/products")
 async def storefront_products(
     request: Request,
@@ -2107,11 +2893,15 @@ async def storefront_products(
     limit: int = 50,
     offset: int = 0,
 ):
+    include_alcohol = alcohol_access_allowed(request)
+    cfg = request.app.state.config
     return await queries.list_storefront_products(
         _pool(request),
         search=search,
         min_price=min_price,
         max_price=max_price,
+        include_alcohol=include_alcohol,
+        strict_data_gate=bool(cfg.catalog_strict_data_gate),
         limit=limit,
         offset=offset,
     )
@@ -2120,6 +2910,7 @@ async def storefront_products(
 @router.get("/categories")
 async def storefront_categories(request: Request):
     """商城公开分类列表 (菜单栏分类下拉用): 含各分类在售商品数。"""
+    include_alcohol = alcohol_access_allowed(request)
     async with _pool(request).acquire() as conn:
         rows = await conn.fetch(
             """
@@ -2128,9 +2919,11 @@ async def storefront_categories(request: Request):
             LEFT JOIN product p
               ON p.category_id = pc.id AND p.deleted_at IS NULL AND p.status = 'published'
             WHERE pc.deleted_at IS NULL
+              AND ($1 OR COALESCE(pc.slug, '') <> 'drinks')
             GROUP BY pc.id, pc.name, pc.slug, pc.created_at
             ORDER BY pc.created_at
-            """
+            """,
+            include_alcohol,
         )
     return [
         {"id": str(row["id"]), "name": row["name"], "slug": row["slug"], "count": int(row["count"])}
@@ -2141,7 +2934,12 @@ async def storefront_categories(request: Request):
 @router.get("/products/{product_id}")
 async def storefront_product(product_id: str, request: Request):
     _require_uuid(product_id, "product_id")
-    product = await queries.get_storefront_product(_pool(request), product_id)
+    product = await queries.get_storefront_product(
+        _pool(request),
+        product_id,
+        include_alcohol=alcohol_access_allowed(request),
+        strict_data_gate=bool(request.app.state.config.catalog_strict_data_gate),
+    )
     if product is None:
         raise HTTPException(404, "product not found")
     # 推荐行为旁路: 已登录顾客记 view, 喂协同过滤训练; 匿名跳过
@@ -2190,6 +2988,29 @@ async def list_regions(request: Request):
         return [dict(r) for r in rows]
 
 
+@router.get("/compliance/status")
+async def compliance_status(request: Request):
+    """公开合规状态：未提供正式文本时站点保持“未正式营业”。"""
+    settings = request.app.state.config
+    manifest = load_manifest(settings)
+    return {
+        "official_open": manifest["official_open"],
+        "site_notice": manifest["site_notice"],
+        "consent_version": manifest["consent_version"],
+        "all_required_documents_published": manifest["all_required_documents_published"],
+        "documents": [
+            {key: doc[key] for key in ("slug", "title", "version", "published", "status")}
+            for doc in manifest["documents"].values()
+        ],
+        "sms": sms_status(settings),
+    }
+
+
+@router.get("/compliance/documents/{slug}")
+async def compliance_document(slug: str, request: Request):
+    return document_payload(request.app.state.config, slug)
+
+
 # ── 顾客账号 (注册/登录/个人资料/地址簿/订单历史) ─────────────────────────
 # customer 表原本没有密码字段 (3O 元素库不提供顾客密码登录原语,只有 app_user
 # 管理员登录); password_hash 是 hemall 项目层补的字段 (见 bootstrap.py)。
@@ -2202,6 +3023,9 @@ class CustomerRegisterRequest(BaseModel):
     phone: str = ""
     name: str = ""
     referral_code: str = ""
+    privacy_consent: bool = False
+    terms_consent: bool = False
+    consent_version: str = ""
 
 
 class CustomerTokenResponse(BaseModel):
@@ -2217,6 +3041,14 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
 
     from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
 
+    cfg = request.app.state.config
+    consent_version = validate_consent(
+        cfg,
+        privacy_consent=body.privacy_consent,
+        terms_consent=body.terms_consent,
+        consent_version=body.consent_version,
+    )
+
     # 仓主试点：推荐码先解析，绑定只在注册时一次写入。
     referrer_id: str | None = None
     if (body.referral_code or "").strip():
@@ -2231,7 +3063,6 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
         create_customer,
     )
 
-    cfg = request.app.state.config
     result = await create_customer(
         _cfg(request, CreateCustomerConfig),
         CreateCustomerInput(email=body.email, phone=body.phone, name=body.name),
@@ -2255,6 +3086,13 @@ async def register_customer(body: CustomerRegisterRequest, request: Request):
             if referrer_id is not None:
                 await bind_referral(conn, customer_id=customer_id, referrer_id=referrer_id)
             await ensure_referral_code(conn, customer_id)
+            await record_consents(
+                conn,
+                subject_type="customer",
+                subject_id=customer_id,
+                version=consent_version,
+                request=request,
+            )
 
     token = _sign_customer_token(customer_id, body.email, cfg.jwt_secret, cfg.jwt_algorithm)
     return CustomerTokenResponse(access_token=token, customer_id=customer_id, email=body.email)
@@ -2489,6 +3327,251 @@ async def bind_wechat_customer(
     if customer is None:
         raise HTTPException(404, "customer not found")
     return customer
+
+
+# ── 微信手机号登录 ──────────────────────────────────────────────
+
+
+class WeChatPhoneLoginRequest(BaseModel):
+    code: str
+    referral_code: str = ""
+
+
+@router.post("/customers/wechat-phone-login", response_model=CustomerTokenResponse)
+async def wechat_phone_login_customer(body: WeChatPhoneLoginRequest, request: Request):
+    """微信手机号登录：用 getPhoneNumber code 换取手机号 → 以手机号为主键登录/注册。
+
+    手机号已注册：直接签发 token（更新 wechat_openid/unionid）
+    手机号未注册：创建新客户（phone 作为唯一标识，email 占位），并绑定微信身份
+    """
+    cfg = request.app.state.config
+    app_id = str(getattr(cfg, "wechat_mp_app_id", "") or "").strip()
+    app_secret = str(getattr(cfg, "wechat_mp_app_secret", "") or "").strip()
+    if not app_id or not app_secret:
+        raise HTTPException(503, "微信登录未配置")
+
+    pool = _pool(request)
+    from app.ext import wechat_mp
+
+    try:
+        phone_info = await wechat_mp.get_phone_number(app_id, app_secret, body.code)
+    except wechat_mp.WeChatMpError as exc:
+        raise HTTPException(401, f"获取手机号失败 (errcode={exc.errcode})") from exc
+    except Exception as exc:
+        raise HTTPException(503, "微信服务暂不可用") from exc
+
+    phone_number = phone_info.get("pure_phone_number") or phone_info.get("phone_number")
+    if not phone_number:
+        raise HTTPException(400, "未获取到手机号")
+
+    # 查找已有手机号客户
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT id, email, status, wechat_openid FROM "customer" '
+            "WHERE phone = $1 AND deleted_at IS NULL",
+            phone_number,
+        )
+
+    session = await wechat_mp.jscode2session(app_id, app_secret, body.code)
+    openid = session["openid"]
+    unionid = session.get("unionid")
+
+    if row is not None:
+        if row["status"] != "active":
+            raise HTTPException(403, f"account not active (status={row['status']!r})")
+        # 更新微信绑定
+        async with pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE "customer" SET wechat_openid = $1, wechat_unionid = COALESCE($2, wechat_unionid) WHERE id = $3',
+                openid,
+                unionid,
+                str(row["id"]),
+            )
+        issued = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
+        return CustomerTokenResponse(
+            **{"access_token": issued, "customer_id": str(row["id"]), "email": row["email"]}
+        )
+
+    # 手机号未注册，创建新客户
+    from obase.auth.password import bcrypt_hash
+    from omodul.create_customer import (
+        CreateCustomerConfig,
+        CreateCustomerInput,
+        create_customer,
+    )
+    from app.cangzhu import bind_referral, ensure_referral_code, resolve_referrer_id
+    from obase.uuid7 import uuid7
+
+    wx_referrer_id: str | None = None
+    if (body.referral_code or "").strip():
+        async with pool.acquire() as conn:
+            try:
+                wx_referrer_id = await resolve_referrer_id(conn, body.referral_code)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+
+    placeholder_email = f"wx_phone_{phone_number}@mp.local"
+    result = await create_customer(
+        _cfg(request, CreateCustomerConfig),
+        CreateCustomerInput(email=placeholder_email, phone=phone_number, name="微信用户"),
+        _output_dir(request, "create_customer"),
+        pool=pool,
+    )
+    if result["status"] == "failed":
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT id, email, status FROM "customer" '
+                "WHERE phone = $1 AND deleted_at IS NULL",
+                phone_number,
+            )
+        if row is None:
+            raise HTTPException(400, result["error"]["message"])
+        if row["status"] != "active":
+            raise HTTPException(403, f"account not active (status={row['status']!r})")
+        async with pool.acquire() as conn:
+            await conn.execute(
+                'UPDATE "customer" SET wechat_openid = $1, wechat_unionid = $2 WHERE id = $3',
+                openid,
+                unionid,
+                str(row["id"]),
+            )
+        issued = _sign_customer_token(str(row["id"]), row["email"], cfg.jwt_secret, cfg.jwt_algorithm)
+        return CustomerTokenResponse(
+            **{"access_token": issued, "customer_id": str(row["id"]), "email": row["email"]}
+        )
+
+    customer_id = str(result["customer_id"])
+    hash_kwargs: dict[str, Any] = {"password": "wx-mp-" + str(uuid7())}
+    password_hash = bcrypt_hash(**hash_kwargs)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE "customer" SET password_hash = $1, wechat_openid = $2, wechat_unionid = $3 WHERE id = $4',
+            password_hash,
+            openid,
+            unionid,
+            customer_id,
+        )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if wx_referrer_id is not None:
+                await bind_referral(conn, customer_id=customer_id, referrer_id=wx_referrer_id)
+            await ensure_referral_code(conn, customer_id)
+
+    issued = _sign_customer_token(customer_id, placeholder_email, cfg.jwt_secret, cfg.jwt_algorithm)
+    return CustomerTokenResponse(
+        **{"access_token": issued, "customer_id": customer_id, "email": placeholder_email}
+    )
+
+
+# ── 订阅消息下发 ──────────────────────────────────────────────
+
+
+class SubscribeMessageRequest(BaseModel):
+    template_id: str
+    page: str
+    data: dict[str, Any]
+
+
+@router.post("/customers/subscribe-message")
+async def send_subscribe_message_endpoint(
+    body: SubscribeMessageRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """下发订阅消息 (模板消息)。
+
+    需要用户已授权订阅对应模板 ID。
+    """
+    cfg = request.app.state.config
+    app_id = str(getattr(cfg, "wechat_mp_app_id", "") or "").strip()
+    app_secret = str(getattr(cfg, "wechat_mp_app_secret", "") or "").strip()
+    if not app_id or not app_secret:
+        raise HTTPException(503, "微信订阅消息未配置")
+
+    pool = _pool(request)
+    from app.ext import wechat_mp
+
+    # 获取用户 openid
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT wechat_openid FROM "customer" WHERE id = $1 AND deleted_at IS NULL',
+            principal["customer_id"],
+        )
+    if not row or not row["wechat_openid"]:
+        raise HTTPException(400, "用户未绑定微信，无法下发订阅消息")
+
+    try:
+        result = await wechat_mp.send_subscribe_message(
+            app_id,
+            app_secret,
+            row["wechat_openid"],
+            body.template_id,
+            body.page,
+            body.data,
+        )
+    except wechat_mp.WeChatMpError as exc:
+        # 用户未订阅等非致命错误不抛 500
+        if exc.errcode in (43101, 41028, 41029, 41030):
+            return {"errcode": exc.errcode, "errmsg": exc.errmsg, "note": "用户未订阅或模板无效"}
+        raise HTTPException(400, f"订阅消息发送失败 (errcode={exc.errcode})") from exc
+    except Exception as exc:
+        raise HTTPException(503, "微信服务暂不可用") from exc
+
+    return result
+
+
+# ── 小程序码生成 ──────────────────────────────────────────────
+
+
+class WxacodeRequest(BaseModel):
+    scene: str
+    page: str | None = None
+    width: int = 430
+    auto_color: bool = False
+    line_color: dict[str, int] | None = None
+    is_hyaline: bool = False
+
+
+@router.post("/wxacode")
+async def get_wxacode(
+    body: WxacodeRequest,
+    request: Request,
+    principal: dict | None = Depends(_optional_customer),
+):
+    """生成小程序码 (无限制版本)。
+
+    场景值 scene 最大 32 字符，可用于标识分享来源、邀请码、商品 ID 等。
+    返回图片二进制 (PNG)，Content-Type: image/png。
+    """
+    cfg = request.app.state.config
+    app_id = str(getattr(cfg, "wechat_mp_app_id", "") or "").strip()
+    app_secret = str(getattr(cfg, "wechat_mp_app_secret", "") or "").strip()
+    if not app_id or not app_secret:
+        raise HTTPException(503, "微信小程序码未配置")
+
+    if len(body.scene) > 32:
+        raise HTTPException(400, "scene 最大 32 字符")
+
+    from app.ext import wechat_mp
+
+    try:
+        image_bytes = await wechat_mp.get_wxacode_unlimit(
+            app_id,
+            app_secret,
+            body.scene,
+            page=body.page,
+            width=body.width,
+            auto_color=body.auto_color,
+            line_color=body.line_color,
+            is_hyaline=body.is_hyaline,
+        )
+    except wechat_mp.WeChatMpError as exc:
+        raise HTTPException(400, f"生成小程序码失败 (errcode={exc.errcode})") from exc
+    except Exception as exc:
+        raise HTTPException(503, "微信服务暂不可用") from exc
+
+    return Response(content=image_bytes, media_type="image/png")
 
 
 @router.get("/customers/me")
@@ -4027,6 +5110,8 @@ async def ingest_my_product(
     retail_price_cents: int | None = Form(None),
     stock_qty: int | None = Form(None),
     category_slug: str = Form("daily"),
+    target_product_id: str = Form(""),
+    target_sku: str = Form(""),
     principal: dict = Depends(get_current_customer),
 ):
     """仓主传货：照片/短视频上传，命中既有商品则原地更新，否则新建。
@@ -4034,7 +5119,8 @@ async def ingest_my_product(
     与员工端 POST /agent/ingest 共用 ingest_media，差异：顾客鉴权、文件名
     确定性标题匹配（不依赖 VLM）、匹配时原地更新最新批次而非只补新批次。
     未提供的价格/库存不覆盖既有值；新建时沿用默认价 ¥12.99 / 库存 30。
-    不设商家门禁：全体注册仓主可用。
+    仓主只能覆盖自己上传的商品图（/media/agent_ingest/<自己>/ 或换图相册）；
+    换员工/供应链维护的在售商品图需店员账号。
     """
     from app.ext.agent_gateway import ingest_media
 
@@ -4055,7 +5141,338 @@ async def ingest_my_product(
         deterministic_match=True,
         update_in_place=True,
         actor_ref=f"c_{customer_id}",
+        owner_ref=f"c_{customer_id}",
+        target_product_id=target_product_id,
+        target_sku=target_sku,
+        can_edit_any=False,
     )
+
+
+# ── 线上称重结算（商家端 / 顾客确认） ─────────────────────────────
+
+
+@router.get("/merchant/weigh-settlements")
+async def merchant_weigh_settlements(
+    request: Request,
+    status: str | None = None,
+    limit: int = 50,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """待处理/已处理的称重行列表（按订单行维度，含结算单状态）。"""
+    await _require_merchant(request, principal)
+    if limit < 1 or limit > 200:
+        raise HTTPException(400, "limit must be 1..200")
+    where = ["oli.pricing_mode = 'weight'"]
+    params: list[Any] = []
+    if status:
+        params.append(status)
+        where.append(f"oli.settlement_status = ${len(params)}")
+    else:
+        where.append(
+            "oli.settlement_status IN ('pending', 'needs_confirmation', "
+            "'charge_pending', 'disputed', 'refund_pending')"
+        )
+    params.append(limit)
+    async with _pool(request).acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT oli.id AS order_line_item_id, oli.order_id, oli.quantity,
+                   oli.estimated_weight_grams, oli.estimated_amount_cents,
+                   oli.unit_price_cents_per_jin, oli.price_basis_grams,
+                   oli.actual_weight_grams, oli.actual_amount_cents,
+                   oli.weight_diff_cents, oli.settlement_status AS line_status,
+                   p.title AS product_title, pv.sku_code,
+                   o.status AS order_status, o.customer_id,
+                   ws.id AS settlement_id, ws.status AS settlement_status,
+                   ws.note AS settlement_note, ws.created_at AS settled_created_at
+            FROM order_line_item oli
+            JOIN customer_order o ON o.id = oli.order_id
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            LEFT JOIN weigh_settlement ws ON ws.order_line_item_id = oli.id
+            WHERE {" AND ".join(where)}
+            ORDER BY oli.created_at ASC
+            LIMIT ${len(params)}
+            """,
+            *params,
+        )
+    return {
+        "items": [
+            {
+                "order_line_item_id": str(r["order_line_item_id"]),
+                "order_id": str(r["order_id"]),
+                "order_status": r["order_status"],
+                "customer_id": str(r["customer_id"]) if r["customer_id"] else None,
+                "product_title": r["product_title"],
+                "sku_code": r["sku_code"],
+                "quantity": int(r["quantity"]),
+                "unit_price_cents_per_jin": r["unit_price_cents_per_jin"],
+                "price_basis_grams": int(r["price_basis_grams"] or 500),
+                "estimated_weight_grams": r["estimated_weight_grams"],
+                "estimated_amount_cents": int(r["estimated_amount_cents"] or 0),
+                "actual_weight_grams": r["actual_weight_grams"],
+                "actual_amount_cents": r["actual_amount_cents"],
+                "weight_diff_cents": r["weight_diff_cents"],
+                "line_status": r["line_status"],
+                "settlement_id": str(r["settlement_id"]) if r["settlement_id"] else None,
+                "settlement_status": r["settlement_status"],
+                "settlement_note": r["settlement_note"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/merchant/weigh-settlements")
+async def merchant_record_weigh(
+    request: Request,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """录入实称重量：自动算差额、容差判断、发起退款或记待补收。"""
+    await _require_merchant(request, principal)
+    from app.weigh_price import validate_weight_grams
+    from app.weigh_settle import WeighSettlementConflict, WeighSettlementError, record_actual_weight
+
+    line_id = body.get("order_line_item_id")
+    _require_uuid(line_id, "order_line_item_id")
+    try:
+        weight_grams = validate_weight_grams(body.get("weight_grams"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cfg = request.app.state.config
+    try:
+        settlement = await record_actual_weight(
+            _pool(request),
+            order_line_item_id=str(line_id),
+            weight_grams=weight_grams,
+            tolerance_percent=int(cfg.weigh_diff_tolerance_percent),
+            created_by=str(principal["customer_id"]),
+            note=str(body.get("note") or ""),
+        )
+    except WeighSettlementConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except WeighSettlementError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"settlement": settlement}
+
+
+@router.post("/merchant/weigh-settlements/{settlement_id}/confirm-charge")
+async def merchant_confirm_charge(
+    settlement_id: str,
+    request: Request,
+    body: dict | None = None,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """manual 模式：确认多出部分已线下补收。"""
+    await _require_merchant(request, principal)
+    _require_uuid(settlement_id, "settlement_id")
+    from app.weigh_settle import WeighSettlementConflict, mark_charge_collected
+
+    try:
+        settlement = await mark_charge_collected(
+            _pool(request),
+            settlement_id=settlement_id,
+            collected_by=str(principal["customer_id"]),
+            note=str((body or {}).get("note") or ""),
+        )
+    except WeighSettlementConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"settlement": settlement}
+
+
+@router.get("/merchant/weigh-settlements/{settlement_id}/slip")
+async def merchant_weigh_slip(
+    settlement_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """称重单（打印/展示用）：行项、预估/实称、差额、处理状态。"""
+    await _require_merchant(request, principal)
+    _require_uuid(settlement_id, "settlement_id")
+    from app.weigh_settle import _settlement_dict
+
+    async with _pool(request).acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT ws.*, p.title AS product_title, pv.sku_code,
+                   o.id AS order_ref, o.status AS order_status
+            FROM weigh_settlement ws
+            JOIN customer_order o ON o.id = ws.order_id
+            LEFT JOIN order_line_item oli ON oli.id = ws.order_line_item_id
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE ws.id = $1
+            """,
+            settlement_id,
+        )
+    if row is None:
+        raise HTTPException(404, "settlement not found")
+    settlement = _settlement_dict(row)
+    diff_yuan = settlement["diff_cents"] / 100
+    lines = [
+        "HEMALL 称重单",
+        f"订单: {row['order_ref']}",
+        f"商品: {row['product_title'] or ''} {row['sku_code'] or ''}".strip(),
+        f"单价: ¥{settlement['unit_price_cents_per_jin'] / 100:.2f}/斤",
+        f"预估价: ¥{settlement['estimated_amount_cents'] / 100:.2f}"
+        f"（预估 {settlement['estimated_weight_grams'] or 0} 克）",
+        f"实称: {settlement['weight_grams']} 克",
+        f"实际金额: ¥{settlement['actual_amount_cents'] / 100:.2f}",
+        f"差额: {'补收' if diff_yuan > 0 else '退款' if diff_yuan < 0 else '无'} "
+        f"¥{abs(diff_yuan):.2f}",
+        f"状态: {settlement['status']}",
+    ]
+    if settlement["note"]:
+        lines.append(f"备注: {settlement['note']}")
+    return {"settlement": settlement, "slip_text": "\n".join(lines)}
+
+
+class CustomerCancelOrderRequest(BaseModel):
+    reason: str = "顾客取消"
+
+
+@router.post("/orders/{order_id}/cancel")
+async def customer_cancel_order(
+    order_id: str,
+    request: Request,
+    body: CustomerCancelOrderRequest | None = None,
+    principal: dict[str, Any] = Depends(get_current_customer),
+) -> dict:
+    """顾客取消自己的未完成订单（服务端释放预留/库存）。"""
+    from app.orders.models import OrderStatus
+    from app.orders.service import OrderService
+
+    _require_uuid(order_id, "order_id")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval(
+            "SELECT customer_id FROM customer_order WHERE id = $1", order_id
+        )
+        if owner is None:
+            raise HTTPException(404, "order not found")
+        if str(owner) != str(principal["customer_id"]):
+            raise HTTPException(403, "order does not belong to customer")
+    try:
+        order = await OrderService(pool).transition_status(
+            order_id,
+            OrderStatus.CANCELLED,
+            reason=(body.reason if body else "顾客取消"),
+            operator_id=f"customer:{principal['customer_id']}",
+        )
+    except Exception as exc:  # noqa: BLE001 - 状态机错误要转成 4xx
+        raise HTTPException(409, f"cannot cancel: {exc}") from exc
+    return {"status": "cancelled", "order": order.model_dump(mode="json")}
+
+
+@router.post("/orders/{order_id}/pickup-arrived")
+async def customer_pickup_arrived(
+    order_id: str,
+    request: Request,
+    principal: dict[str, Any] = Depends(get_current_customer),
+) -> dict:
+    """顾客点“我已到店”：仅自提单、已收款未完成；后台据此提醒店员核销。"""
+    _require_uuid(order_id, "order_id")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT customer_id, status, shipping_method_code, pickup_arrived_at "
+            "FROM customer_order WHERE id = $1",
+            order_id,
+        )
+        if row is None:
+            raise HTTPException(404, "order not found")
+        if str(row["customer_id"] or "") != str(principal["customer_id"]):
+            raise HTTPException(403, "order does not belong to customer")
+        if row["shipping_method_code"] != "pickup":
+            raise HTTPException(400, "该订单不是到店自提单")
+        if row["status"] not in (
+            "paid",
+            "confirmed",
+            "processing",
+            "packed",
+            "shipped",
+            "delivered",
+        ):
+            raise HTTPException(400, f"订单状态 {row['status']} 不可到店提醒")
+        arrived_at = row["pickup_arrived_at"]
+        if arrived_at is None:
+            arrived_at = await conn.fetchval(
+                "UPDATE customer_order SET pickup_arrived_at = NOW(), updated_at = NOW() "
+                "WHERE id = $1 RETURNING pickup_arrived_at",
+                order_id,
+            )
+    return {"status": "arrived", "pickup_arrived_at": arrived_at.isoformat()}
+
+
+@router.get("/orders/{order_id}/weigh-settlements")
+async def customer_weigh_settlements(
+    order_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """顾客查看本单的称重结算（超出容差时用于确认）。"""
+    _require_uuid(order_id, "order_id")
+    pool = _pool(request)
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval(
+            "SELECT customer_id FROM customer_order WHERE id = $1", order_id
+        )
+        if owner is None:
+            raise HTTPException(404, "order not found")
+        if str(owner) != str(principal["customer_id"]):
+            raise HTTPException(403, "order does not belong to customer")
+        rows = await conn.fetch(
+            """
+            SELECT ws.*, p.title AS product_title
+            FROM weigh_settlement ws
+            LEFT JOIN order_line_item oli ON oli.id = ws.order_line_item_id
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE ws.order_id = $1 ORDER BY ws.created_at
+            """,
+            order_id,
+        )
+    return {
+        "items": [{**_settlement_payload(r), "product_title": r["product_title"]} for r in rows]
+    }
+
+
+@router.post("/orders/{order_id}/weigh-settlements/{settlement_id}/confirm")
+async def customer_confirm_weigh(
+    order_id: str,
+    settlement_id: str,
+    request: Request,
+    body: dict,
+    principal: dict = Depends(get_current_customer),
+) -> dict:
+    """顾客接受/拒绝超出容差的称重差额。"""
+    _require_uuid(order_id, "order_id")
+    _require_uuid(settlement_id, "settlement_id")
+    from app.weigh_settle import WeighSettlementError, confirm_settlement
+
+    accept = body.get("accept")
+    if not isinstance(accept, bool):
+        raise HTTPException(400, "accept must be a boolean")
+    try:
+        settlement = await confirm_settlement(
+            _pool(request),
+            settlement_id=settlement_id,
+            customer_id=str(principal["customer_id"]),
+            accept=accept,
+            note=str(body.get("note") or ""),
+        )
+    except WeighSettlementError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if settlement["order_id"] != order_id:
+        raise HTTPException(404, "settlement not found for order")
+    return {"settlement": settlement}
+
+
+def _settlement_payload(row: Any) -> dict:
+    from app.weigh_settle import _settlement_dict
+
+    return _settlement_dict(row)
 
 
 # ── 商家预订 ─────────────────────────────────────────────────────
@@ -4587,6 +6004,15 @@ class SubmitMyClaimRequest(BaseModel):
     evidence_image_url: str
 
 
+class SubmitAftersalesClaimRequest(BaseModel):
+    order_id: str
+    line_item_id: str
+    reason: str
+    description: str
+    images: list[str] = []
+    quantity: int = 1
+
+
 @router.post("/customers/me/claims")
 async def submit_my_claim(
     body: SubmitMyClaimRequest,
@@ -4632,6 +6058,91 @@ async def submit_my_claim(
         "decision": inner.get("decision"),
         "liable_party": inner.get("liable_party"),
         "refund_amount_cents": inner.get("refund_amount"),
+    }
+
+
+@router.post("/customers/me/aftersales-claim")
+async def submit_aftersales_claim(
+    body: SubmitAftersalesClaimRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    """提交售后申请（支持多图、原因、描述、行项级）。"""
+    pool = _pool(request)
+    customer_id = principal["customer_id"]
+
+    if not await _owns_order(pool, customer_id, body.order_id):
+        raise HTTPException(404, "order not found")
+
+    # 获取行项信息，找到对应的 batch_id
+    async with pool.acquire() as conn:
+        line_item = await conn.fetchrow(
+            """
+            SELECT oli.batch_id, oli.variant_id, oli.quantity, p.title
+            FROM order_line_item oli
+            LEFT JOIN product_variant pv ON pv.id = oli.variant_id
+            LEFT JOIN product p ON p.id = pv.product_id
+            WHERE oli.id = $1 AND oli.order_id = $2
+            """,
+            body.line_item_id, body.order_id,
+        )
+        if not line_item:
+            raise HTTPException(404, "订单商品不存在")
+
+        # 获取用户信任分
+        trust_score = await conn.fetchval(
+            'SELECT base_trust_score FROM "customer" WHERE id = $1', customer_id
+        )
+
+        # 如果申请数量小于总数量，记录部分退货
+        # 这里简化：取第一张图片作为证据图片，实际可扩展存多图
+        evidence_image = body.images[0] if body.images else ""
+
+    oservi = getattr(request.app.state, "ext_oservi", None)
+    if oservi is None:
+        raise HTTPException(503, "ext background engines not ready")
+
+    # 将原因映射为备注
+    reason_map = {
+        "quality": "质量问题",
+        "shortage": "少发/漏发",
+        "wrong_item": "发错商品",
+        "other": "其他原因",
+    }
+    reason_text = reason_map.get(body.reason, body.reason)
+
+    dispatch_result = await oservi.autonomous_triage.dispatch(
+        "rma.claim_submitted",
+        {
+            "order_id": body.order_id,
+            "batch_id": line_item["batch_id"],
+            "user_id": customer_id,
+            "evidence_image_url": evidence_image,
+            "user_trust_score": trust_score if trust_score is not None else 80,
+            "route_risk": 0.0,
+            # 扩展字段（供后台处理参考）
+            "claim_reason": reason_text,
+            "claim_description": body.description,
+            "claim_quantity": body.quantity,
+            "claim_images": body.images,
+            "variant_id": line_item["variant_id"],
+            "product_title": line_item["title"],
+        },
+    )
+    if dispatch_result["errors"]:
+        message = dispatch_result["errors"][0].get("error", "claim submission failed")
+        raise HTTPException(422, str(message))
+    inner = dispatch_result["results"][0] if dispatch_result["results"] else {}
+    if inner.get("status") != "completed":
+        raise HTTPException(
+            422, (inner.get("error") or {}).get("message", "claim submission failed")
+        )
+    return {
+        "claim_id": inner.get("claim_id"),
+        "decision": inner.get("decision"),
+        "liable_party": inner.get("liable_party"),
+        "refund_amount_cents": inner.get("refund_amount"),
+        "message": "售后申请已提交，客服将在 24 小时内处理",
     }
 
 

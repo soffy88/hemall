@@ -1,0 +1,13 @@
+# 上线时合并到站点 block。第一道：公网 404；第二道在后端由
+# HEMALL_METRICS_ACCESS_TOKEN 或内网来源校验。
+handle /metrics* {
+	@denied not remote_ip private_ranges
+	respond @denied "Not Found" 404
+
+	@allowed remote_ip private_ranges
+	reverse_proxy @allowed {$HEMALL_API_CONTAINER}:8000 {
+		import trusted_upstream
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

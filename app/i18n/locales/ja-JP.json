@@ -41,7 +41,7 @@
   "common.save": "保存",
   "common.delete": "削除",
   "common.back": "戻る",
-  "common.welcome": "Hemallへようこそ",
+  "common.welcome": "SongMallへようこそ",
   "error.not_found": "見つかりません",
   "error.network": "ネットワークエラーが発生しました。しばらくしてからもう一度お試しください",
   "error.unauthorized": "先にログインしてください"

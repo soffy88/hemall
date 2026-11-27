@@ -19,6 +19,7 @@ from .night_pintuan import NIGHT_PINTUAN_DDL
 from .sorting import SORTING_DDL
 from .supplier import SUPPLIER_DDL
 from .weigh import WEIGH_DDL
+from .weigh_price import WEIGH_PRICE_DDL
 
 P0_SCHEMA_DDL = """
 -- ── payment authority / outbox / refund idempotency ────────────────
@@ -226,6 +227,65 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_wechat_openid
 CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_batch_spider_ext_variant
     ON inventory_batch (variant_id)
     WHERE batch_no LIKE 'EXT-%' AND status = 'active' AND deleted_at IS NULL;
+
+-- ── 食品经营信息与测试商品门禁 ──────────────────────────────────────
+ALTER TABLE product
+    ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS origin_region TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS storage_condition TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS shelf_life_days INTEGER;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS quality_certificate_url TEXT;
+ALTER TABLE inventory_batch
+    ADD COLUMN IF NOT EXISTS is_test_batch BOOLEAN NOT NULL DEFAULT FALSE;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'inventory_batch_shelf_life_days_check'
+    ) THEN
+        ALTER TABLE inventory_batch
+            ADD CONSTRAINT inventory_batch_shelf_life_days_check
+            CHECK (shelf_life_days IS NULL OR shelf_life_days > 0);
+    END IF;
+END $$;
+
+-- ── 后台可编辑的履约/通知配置 ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS runtime_setting (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_by TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── 隐私/协议同意与商家通知投递记录 ────────────────────────────────
+CREATE TABLE IF NOT EXISTS consent_record (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_type TEXT NOT NULL CHECK (subject_type IN ('customer', 'order')),
+    subject_id TEXT NOT NULL,
+    document_slug TEXT NOT NULL,
+    document_version TEXT NOT NULL,
+    consented_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (subject_type, subject_id, document_slug, document_version)
+);
+CREATE INDEX IF NOT EXISTS idx_consent_record_subject
+    ON consent_record(subject_type, subject_id, consented_at DESC);
+
+CREATE TABLE IF NOT EXISTS merchant_notification_delivery (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_merchant_notification_delivery_status
+    ON merchant_notification_delivery(status, created_at DESC);
 """
 
 
@@ -246,6 +306,12 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(OCR_GATE_DDL)
         # 柜台称重试点：hardware_event 账本列 + counter_ticket 单据头。
         await conn.execute(WEIGH_DDL)
+        # 线上称重定价：计价方式/预估与实称重量/多退少补结算/每日进销存。
+        await conn.execute(WEIGH_PRICE_DDL)
+        # 门店运营：进销存日记、订单配送方式/称重确认状态（幂等，见 store_ops）。
+        from .store_ops import OPS_DDL
+
+        await conn.execute(OPS_DDL)
         # 柜台收尾件：现金结算记录 + 交接班账本（幂等，见 app/counter_closeout.py）。
         await conn.execute(COUNTER_CLOSEOUT_DDL)
         # 柜台视觉识别接线：帧存档 + 识别评估账本（幂等，见 app/counter_vision.py）。

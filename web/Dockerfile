@@ -16,13 +16,24 @@ COPY . .
 
 # NEXT_PUBLIC_* 在构建期内联进 bundle，必须在这一步注入，运行时再设无效
 ARG NEXT_PUBLIC_API_URL
+# Chatwoot 客服：构建期注入（NEXT_PUBLIC_* 会内联进客户端 bundle）。
+ARG NEXT_PUBLIC_CHATWOOT_BASE_URL=""
+ARG NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_CHATWOOT_BASE_URL=$NEXT_PUBLIC_CHATWOOT_BASE_URL
+ENV NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN=$NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN
 RUN npm run build
 
 # ── 运行阶段 ────────────────────────────────────────────────────────────
 FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+
+ARG GIT_SHA=unknown
+ARG BUILD_CREATED=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_CREATED}" \
+      org.opencontainers.image.title="hemall-frontend"
 
 RUN addgroup -g 1001 -S hemall && adduser -u 1001 -S hemall -G hemall
 

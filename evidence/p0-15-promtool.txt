@@ -1,0 +1,52 @@
+$ promtool check config
+Unable to find image 'prom/prometheus:v2.48.0' locally
+v2.48.0: Pulling from prom/prometheus
+aaf7e836db0f: Pulling fs layer
+c2417c8f4f7c: Pulling fs layer
+0da5791e6e74: Pulling fs layer
+deacc6707a51: Pulling fs layer
+1979e9ba2ee4: Pulling fs layer
+0491ad62256e: Pulling fs layer
+2abcce694348: Pulling fs layer
+7cba3896d5e3: Pulling fs layer
+62c7872eeedd: Pulling fs layer
+0e36311405c5: Pulling fs layer
+6a5286f5f0ae: Pulling fs layer
+f256c16a5607: Pulling fs layer
+aaf7e836db0f: Download complete
+1979e9ba2ee4: Download complete
+f256c16a5607: Download complete
+6a5286f5f0ae: Download complete
+0491ad62256e: Download complete
+deacc6707a51: Download complete
+0da5791e6e74: Download complete
+2abcce694348: Download complete
+0491ad62256e: Pull complete
+2abcce694348: Pull complete
+c2417c8f4f7c: Download complete
+c2417c8f4f7c: Pull complete
+0e36311405c5: Download complete
+62c7872eeedd: Download complete
+7cba3896d5e3: Download complete
+aaf7e836db0f: Pull complete
+1979e9ba2ee4: Pull complete
+f256c16a5607: Pull complete
+6a5286f5f0ae: Pull complete
+deacc6707a51: Pull complete
+0da5791e6e74: Pull complete
+0e36311405c5: Pull complete
+62c7872eeedd: Pull complete
+7cba3896d5e3: Pull complete
+Digest: sha256:b440bc0e8aa5bab44a782952c09516b6a50f9d7b2325c1ffafac7bc833298e2e
+Status: Downloaded newer image for prom/prometheus:v2.48.0
+Checking /etc/prometheus/prometheus.yml
+  SUCCESS: 1 rule files found
+ SUCCESS: /etc/prometheus/prometheus.yml is valid prometheus config file syntax
+
+Checking /etc/prometheus/prometheus.rules.yml
+  SUCCESS: 10 rules found
+
+$ promtool check rules
+Checking /etc/prometheus/prometheus.rules.yml
+  SUCCESS: 10 rules found
+

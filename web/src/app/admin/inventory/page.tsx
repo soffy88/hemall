@@ -470,6 +470,7 @@ export default function InventorySettingsPage() {
               <th className="px-4 py-2 font-medium text-gray-600">库存（可用/总量）</th>
               <th className="px-4 py-2 font-medium text-gray-600">状态</th>
               <th className="px-4 py-2 font-medium text-gray-600">质检</th>
+              <th className="px-4 py-2 font-medium text-gray-600">食品资料</th>
               <th className="px-4 py-2 font-medium text-gray-600">操作</th>
             </tr>
           </thead>
@@ -490,8 +491,27 @@ export default function InventorySettingsPage() {
                   {b.inspection_status === 'passed' && <span className="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">通过</span>}
                   {b.inspection_status === 'pending' && <span className="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700">待检</span>}
                   {b.inspection_status === 'failed' && <span className="px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">不通过</span>}
-                  {!['passed', 'pending', 'failed'].includes(b.inspection_status) && (
+                  {!['passed', 'pending', 'failed'].includes(b.inspection_status || '') && (
                     <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{b.inspection_status}</span>
+                  )}
+                </td>
+                <td className="px-4 py-2 text-xs">
+                  {b.needs_data ? (
+                    <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-700">待补资料</span>
+                  ) : (
+                    <span className="text-gray-500">资料齐全</span>
+                  )}
+                  <div className="mt-1 text-gray-400">
+                    产地 {b.origin_region || '—'} · {b.storage_condition || '储存未填'} · 保质期 {b.shelf_life_days ?? '—'} 天
+                  </div>
+                  <div className="text-gray-400">
+                    到期 {b.expiration_time ? new Date(b.expiration_time).toLocaleString('zh-CN') : '—'}
+                  </div>
+                  {b.is_test_batch && <div className="text-fuchsia-600">测试批次（前台隐藏）</div>}
+                  {b.quality_certificate_url && (
+                    <a href={b.quality_certificate_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                      检测证明
+                    </a>
                   )}
                 </td>
                 <td className="px-4 py-2">
@@ -509,7 +529,7 @@ export default function InventorySettingsPage() {
                 </td>
               </tr>
             ))}
-            {batches.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-gray-400">暂无批次</td></tr>}
+            {batches.length === 0 && <tr><td colSpan={8} className="px-4 py-6 text-center text-gray-400">暂无批次</td></tr>}
           </tbody>
         </table>
       </div>

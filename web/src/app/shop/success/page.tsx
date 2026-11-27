@@ -120,6 +120,12 @@ export default function SuccessPage() {
               <div key={li.id} className="flex justify-between text-sm py-1">
                 <span>
                   {li.product_title || '—'} × {li.quantity}
+                  {li.pricing_mode === 'weight' && (
+                    <span className="ml-2 text-xs text-emerald-700">
+                      ¥{((li.unit_price_cents_per_jin ?? 0) / 100).toFixed(2)}/斤 · 预估{' '}
+                      {li.estimated_weight_grams ?? 0} 克（称重后多退少补）
+                    </span>
+                  )}
                   {(li.preorder_qty ?? 0) > 0 && (
                     <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
                       预订 ×{li.preorder_qty} 待配货

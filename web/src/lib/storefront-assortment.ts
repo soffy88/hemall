@@ -14,6 +14,18 @@ export const VISIBLE_CATEGORY_SLUGS: readonly string[] = [
   'meat-eggs',
   'dairy-bakery',
   'grain-oil',
+  // 2026-11-08 用户决定：线上范围比门店广，酒水/零食/冷冻等现有线上品类
+  // 保留展示，不删除、不下架。酒类仍受年龄确认门禁保护。
+  'seafood',
+  'frozen',
+  'snacks',
+  'drinks',
+  'daily',
+  'electronics',
+  // 2026-11-09 门店 99 SKU 上架：猪肉/禽肉/蛋及豆制品已有商品，放开前台展示。
+  'pork',
+  'poultry',
+  'eggs-tofu',
 ];
 
 export function isVisibleCategorySlug(slug: string | null | undefined): boolean {

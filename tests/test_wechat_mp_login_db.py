@@ -161,6 +161,9 @@ def _register(client, email: str) -> dict:
             "password": "WxmpTest!234",
             "name": "WXMP Tester",
             "phone": "",
+            "privacy_consent": True,
+            "terms_consent": True,
+            "consent_version": "2026-11-08-placeholder",
         },
     )
     assert resp.status_code == 200, resp.text

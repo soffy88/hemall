@@ -120,7 +120,16 @@ export async function customerLogin(email: string, password: string): Promise<{ 
   return { customerId: data.customer_id, email: data.email };
 }
 
-export async function customerRegister(data: { email: string; password: string; phone?: string; name?: string; referral_code?: string }): Promise<{ customerId: string; email: string }> {
+export async function customerRegister(data: {
+  email: string;
+  password: string;
+  phone?: string;
+  name?: string;
+  referral_code?: string;
+  privacy_consent: boolean;
+  terms_consent: boolean;
+  consent_version: string;
+}): Promise<{ customerId: string; email: string }> {
   const res = await fetch('/api/auth/customer/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },

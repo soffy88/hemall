@@ -1,6 +1,8 @@
 /** hemall 前端 — API 客户端，覆盖所有后端接口。 */
 
 import type {
+  MerchantWeighRow,
+  MerchantWeighSettlement,
   Address,
   AdminPreorder,
   InventoryBatch,
@@ -42,8 +44,11 @@ import type {
   PaymentIntentResponse,
   PaymentStatusResponse,
   PriceList,
+  PhotoDraftResult,
+  PhotoReferenceResponse,
   Product,
   ProductCategory,
+  ProductPhoto,
   ProductCollection,
   PurchaseRequest,
   RecommendationResult,
@@ -62,6 +67,22 @@ import type {
   TaxRate,
   TokenResponse,
   VoucherList,
+  // Scale / POS / Pick Weigh
+  ScaleDevice,
+  ScaleReading,
+  ScaleParseResponse,
+  RecognitionCandidate,
+  RecognizeResponse,
+  ProductSearchResult,
+  SearchProductResponse,
+  TicketLine,
+  SettleRequest,
+  SettleResponse,
+  PickOrderLine,
+  PickOrder,
+  PickOrdersResponse,
+  RecordPickWeightRequest,
+  SkipPickLineRequest,
 } from '@/types/api';
 
 import { errMessage } from '@/lib/errors';
@@ -207,6 +228,26 @@ async function request<T>(
   return data;
 }
 
+/** multipart 上传：不设 Content-Type（boundary 由浏览器生成），带 CSRF 头。 */
+async function requestForm<T>(path: string, form: FormData, auth: boolean | 'customer' = true): Promise<T> {
+  const headers: Record<string, string> = {};
+  const csrf = await ensureCsrfToken();
+  if (csrf) headers[CSRF_HEADER_NAME] = csrf;
+  const res = await fetchWithSession(path, {
+    method: 'POST',
+    body: form,
+    headers,
+    credentials: 'include',
+  }, auth);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errorMessage(body, res.status));
+  }
+  const data = await res.json();
+  assertNotBusinessFailure(data);
+  return data;
+}
+
 // ── Phase 7 Task 3: 设备指纹 (空间-行为矩阵的数据源标识) ──────────────
 // 零登录端点 (nearby-feed / 限流层) 都用 X-Device-Id 识别设备；浏览器端用
 // localStorage 持久化一个随机指纹，checkout 后后端据此记录购买轨迹，Feed
@@ -275,7 +316,22 @@ export const api = {
       body: JSON.stringify(data),
     }, true),
 
-  createInventoryBatch: (data: { variant_id: string; batch_no: string; location_id: string; stock_qty: number; retail_price_cents: number; cost_price_cents: number; video_url: string; currency?: string }) =>
+  createInventoryBatch: (data: {
+    variant_id: string;
+    batch_no: string;
+    location_id: string;
+    stock_qty: number;
+    retail_price_cents: number;
+    cost_price_cents: number;
+    video_url: string;
+    currency?: string;
+    expiration_time?: string;
+    origin_region?: string;
+    storage_condition?: string;
+    shelf_life_days?: number;
+    quality_certificate_url?: string;
+    is_test_batch?: boolean;
+  }) =>
     request<OmodulResult>('/inventory/create_inventory_batch', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -343,6 +399,36 @@ export const api = {
   adminListTaxRates: (regionCode?: string) =>
     request<TaxRate[]>(`/admin/tax-rates${regionCode ? `?region_code=${regionCode}` : ''}`, {}, true),
 
+  adminFulfillmentSettings: () =>
+    request<{
+      shipping: {
+        service_area: string;
+        delivery_windows: string[];
+        methods: Record<string, { name: string; price_cents: number; free_threshold_cents: number }>;
+      };
+      notification: {
+        provider: string;
+        configured: boolean;
+        real_delivery_enabled: boolean;
+        message: string;
+        failed: number | null;
+        sent: number | null;
+        last_sent_at: string | null;
+        last_failed_at: string | null;
+      };
+      notification_provider_source: string;
+    }>('/admin/operations/fulfillment', {}, true),
+
+  adminUpdateFulfillmentSettings: (data: {
+    service_area: string;
+    delivery_windows: string[];
+    methods: Record<string, { name?: string; price_cents?: number; free_threshold_cents?: number }>;
+  }) =>
+    request<{ ok: boolean; shipping: Record<string, unknown> }>('/admin/operations/fulfillment', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }, true),
+
   adminListCategories: () =>
     request<ProductCategory[]>('/admin/categories', {}, true),
 
@@ -379,6 +465,17 @@ export const api = {
   storeCategories: () =>
     request<Array<{ id: string; name: string; slug: string; count: number }>>('/store/categories'),
 
+  alcoholStatus: () =>
+    request<{ enabled: boolean; min_age: number; verified: boolean; notice: string }>(
+      '/store/alcohol/status',
+    ),
+
+  verifyAlcoholAge: (birth_date: string) =>
+    request<{ verified: boolean; min_age: number; expires_at: number; notice: string }>(
+      '/store/alcohol/verify-age',
+      { method: 'POST', body: JSON.stringify({ birth_date }) },
+    ),
+
   storeRegions: () =>
     request<Region[]>('/store/regions'),
 
@@ -401,10 +498,32 @@ export const api = {
   getCart: (cartId: string) =>
     request<Cart>(`/store/carts/${cartId}`),
 
-  addLineItem: (cartId: string, batchId: string, quantity: number = 1) =>
+  addLineItem: (
+    cartId: string,
+    batchId: string,
+    quantity: number = 1,
+    weight?: { weight_grams?: number; weight_option_label?: string },
+  ) =>
     request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
       method: 'POST',
-      body: JSON.stringify({ cart_id: cartId, batch_id: batchId, quantity }),
+      body: JSON.stringify({ cart_id: cartId, batch_id: batchId, quantity, ...(weight || {}) }),
+    }),
+
+  /** 称重商品：按变体加购并指定预估重量档（无批次时可预订）。 */
+  addWeightLineItem: (
+    cartId: string,
+    variantId: string,
+    weight: { weight_grams?: number; weight_option_label?: string },
+    quantity: number = 1,
+  ) =>
+    request<{ line_item_id: string; new_quantity: number }>('/store/carts/line-items', {
+      method: 'POST',
+      body: JSON.stringify({
+        cart_id: cartId,
+        variant_id: variantId,
+        quantity,
+        ...weight,
+      }),
     }),
 
   /** 无批次商品按变体加购（缺货预订）：后端按 variant 建行，下单时拆预订量。 */
@@ -470,11 +589,56 @@ export const api = {
       body: JSON.stringify({ cart_id: cartId, gift_card_id: giftCardId }),
     }),
 
-  storeAddShippingMethod: (cartId: string, methodName: string, priceCents: number) =>
-    request<{ shipping_cents: number; grand_total_cents: number }>('/store/carts/shipping-method', {
+  storeShippingOptions: () =>
+    request<{
+      service_area: string;
+      delivery_windows: string[];
+      methods: { code: string; name: string; price_cents: number; free_threshold_cents: number }[];
+      quoted_by_server: true;
+    }>('/store/shipping-options'),
+
+  storeComplianceStatus: () =>
+    request<{
+      official_open: boolean;
+      site_notice: string;
+      consent_version: string;
+      all_required_documents_published: boolean;
+      documents: {
+        slug: string;
+        title: string;
+        version: string;
+        published: boolean;
+        status: 'published' | 'coming_soon';
+      }[];
+      sms: { provider: string; configured: boolean; enabled: boolean; message: string };
+    }>('/store/compliance/status'),
+
+  storeComplianceDocument: (slug: string) =>
+    request<{
+      slug: string;
+      title: string;
+      version: string;
+      published: boolean;
+      status: 'published' | 'coming_soon';
+      content: string;
+      official_open: boolean;
+      site_notice: string;
+      consent_version: string;
+    }>(`/store/compliance/documents/${encodeURIComponent(slug)}`),
+
+  storeAddShippingMethod: (cartId: string, methodName: string) =>
+    request<{ shipping_cents: number; grand_total_cents: number; quote: Record<string, unknown> }>('/store/carts/shipping-method', {
       method: 'POST',
-      body: JSON.stringify({ cart_id: cartId, method_name: methodName, price_cents: priceCents }),
+      body: JSON.stringify({ cart_id: cartId, method_name: methodName }),
     }),
+
+  storePaymentOptions: () =>
+    request<{
+      online_payment_available: boolean;
+      online_provider: string | null;
+      manual_payment_enabled: boolean;
+      methods: { code: string; name: string; mode: 'online' | 'offline' }[];
+    }>('/store/payment-options'),
 
   storeSetCartRegion: (cartId: string, regionCode: string, currency: string) =>
     request<{ ok: boolean }>('/store/carts/region', {
@@ -484,7 +648,16 @@ export const api = {
 
   // ── Storefront: Checkout ────────────────────────────────────
 
-  checkout: (data: { cart_id: string; billing_address?: Address; shipping_address?: Address; customer_id?: string; provider?: string }) =>
+  checkout: (data: {
+    cart_id: string;
+    billing_address?: Address;
+    shipping_address?: Address;
+    customer_id?: string;
+    provider?: string;
+    privacy_consent: boolean;
+    terms_consent: boolean;
+    consent_version: string;
+  }) =>
     request<CheckoutResult>('/store/checkout', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -510,7 +683,15 @@ export const api = {
 
   // ── Storefront: 顾客账号 ───────────────────────────────────
 
-  customerRegister: (data: { email: string; password: string; phone?: string; name?: string }) =>
+  customerRegister: (data: {
+    email: string;
+    password: string;
+    phone?: string;
+    name?: string;
+    privacy_consent: boolean;
+    terms_consent: boolean;
+    consent_version: string;
+  }) =>
     request<CustomerTokenResponse>('/store/customers/register', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -533,6 +714,26 @@ export const api = {
 
   customerMyOrders: () =>
     request<Order[]>('/store/customers/me/orders', {}, 'customer'),
+
+  customerCancelOrder: (orderId: string, reason?: string) =>
+    request<{ status: string; order: Order }>(`/store/orders/${orderId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || '顾客取消' }),
+    }, 'customer'),
+
+  customerWeighSettlements: (orderId: string) =>
+    request<{ items: Array<{
+      id: string; order_id: string; order_line_item_id: string;
+      weight_grams: number; estimated_weight_grams: number | null;
+      estimated_amount_cents: number; actual_amount_cents: number;
+      diff_cents: number; status: string; product_title?: string;
+    }> }>(`/store/orders/${orderId}/weigh-settlements`, {}, 'customer'),
+
+  customerConfirmWeigh: (orderId: string, settlementId: string, accept: boolean, note?: string) =>
+    request<{ settlement: unknown }>(`/store/orders/${orderId}/weigh-settlements/${settlementId}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ accept, note: note || '' }),
+    }, 'customer'),
 
   customerMyPreorders: () =>
     request<CustomerPreorder[]>('/store/customers/me/preorders', {}, 'customer'),
@@ -630,6 +831,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ items }),
     }, 'customer'),
+  merchantWeighSettlements: (status?: string) =>
+    request<{ items: MerchantWeighRow[] }>(
+      `/store/merchant/weigh-settlements${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+      {},
+      'customer',
+    ),
+
+  merchantRecordWeigh: (orderLineItemId: string, weightGrams: number, note?: string) =>
+    request<{ settlement: MerchantWeighSettlement }>('/store/merchant/weigh-settlements', {
+      method: 'POST',
+      body: JSON.stringify({
+        order_line_item_id: orderLineItemId,
+        weight_grams: weightGrams,
+        note: note || '',
+      }),
+    }, 'customer'),
+
+  merchantWeighSlip: (settlementId: string) =>
+    request<{ settlement: MerchantWeighSettlement; slip_text: string }>(
+      `/store/merchant/weigh-settlements/${settlementId}/slip`,
+      {},
+      'customer',
+    ),
+
+  merchantConfirmWeighCharge: (settlementId: string, note?: string) =>
+    request<{ settlement: MerchantWeighSettlement }>(
+      `/store/merchant/weigh-settlements/${settlementId}/confirm-charge`,
+      { method: 'POST', body: JSON.stringify({ note: note || '' }) },
+      'customer',
+    ),
 
   // ── 柜台称重试点：照片格 + 单据 + 模拟器（仅商家账号） ─────────────
 
@@ -1099,10 +1330,17 @@ export const api = {
     }, true),
 
   /** 后台确认收到退货 → 回补库存（幂等）。 */
-  adminReturnReceivedRefund: (refundId: string, data: { tracking_no: string; batch_id: string }) =>
+  adminReturnReceivedRefund: (refundId: string, data: { tracking_no: string; quantity?: number }) =>
     request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/return-received`, {
       method: 'POST',
       body: JSON.stringify(data),
+    }, true),
+
+  /** 后台确认线下人工退款已实际完成；manual 退款只有此操作会变成 succeeded。 */
+  adminConfirmManualRefund: (refundId: string) =>
+    request<RefundRequest>(`/aftersales/refunds/${encodeURIComponent(refundId)}/confirm-manual`, {
+      method: 'POST',
+      body: JSON.stringify({}),
     }, true),
 
   /** 后台查看售后审计日志（状态流转轨迹）。 */
@@ -1320,13 +1558,106 @@ export const api = {
   agentExecute: (tool: string, args: Record<string, unknown>) =>
     request<AgentCommandResult>('/agent/execute', { method: 'POST', body: JSON.stringify({ tool, args }) }, true),
 
+  // ── Admin: 门店运营（每日报表/进销存/称重/自提/打印） ────────────
+
+  storeOpsDailyReport: (date?: string) =>
+    request<{ date: string; kpis: Record<string, number>; top_skus: Array<{ title: string; qty: number; unit: string; amount_cents: number }>; journal: unknown[] }>(
+      `/admin/store-ops/daily-report${date ? `?date=${encodeURIComponent(date)}` : ''}`, {}, true),
+
+  storeOpsJournal: (date?: string) =>
+    request<{ date: string; rows: Array<Record<string, number | string | null>>; entries: Array<Record<string, string | number | null>> }>(
+      `/admin/store-ops/journal${date ? `?date=${encodeURIComponent(date)}` : ''}`, {}, true),
+
+  storeOpsJournalIn: (data: { variant_id: string; qty: number; unit_cost_cents?: number; supplier?: string; note?: string }) =>
+    request<{ status: string; stock_qty: number; unit: string }>('/admin/store-ops/journal/in', {
+      method: 'POST', body: JSON.stringify(data),
+    }, true),
+
+  storeOpsJournalLoss: (data: { variant_id: string; qty: number; reason: string; note?: string }) =>
+    request<{ status: string; stock_qty: number; unit: string }>('/admin/store-ops/journal/loss', {
+      method: 'POST', body: JSON.stringify(data),
+    }, true),
+
+  storeOpsOrderSummary: (orderId: string, paper: '58' | 'a4' = 'a4') =>
+    request<Record<string, unknown>>(`/admin/store-ops/orders/${orderId}/print?paper=${paper}`, {}, true),
+
+  storeOpsWeigh: (orderId: string, orderLineItemId: string, weightGrams: number, note?: string) =>
+    request<{ settlement: unknown }>(`/admin/store-ops/orders/${orderId}/weigh`, {
+      method: 'POST',
+      body: JSON.stringify({ order_line_item_id: orderLineItemId, weight_grams: weightGrams, note: note || '' }),
+    }, true),
+
+  storeOpsVerifyPickup: (orderId: string) =>
+    request<{ status: string; order_status: string }>(`/admin/store-ops/orders/${orderId}/verify-pickup`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, true),
+
+  // 已有批次直接改价（后台留痕）
+  updateBatchPrice: (batchId: string, retailPriceCents: number, reason = '') =>
+    request<{
+      batch_id: string; batch_no: string; currency?: string;
+      old_price_cents: number; new_price_cents: number; changed: boolean;
+      change_id?: string; created_at?: string; operator?: string;
+    }>(`/admin/store-ops/batches/${batchId}/price`, {
+      method: 'PATCH',
+      body: JSON.stringify({ retail_price_cents: retailPriceCents, reason }),
+    }, true),
+
+  batchPriceHistory: (batchId: string) =>
+    request<{
+      batch_id: string;
+      changes: Array<{
+        id: string; old_price_cents: number; new_price_cents: number;
+        operator_id: string; operator_name: string; reason: string; created_at: string;
+      }>;
+    }>(`/admin/store-ops/batches/${batchId}/price-history`, {}, true),
+
+  // 今日待办 + 新订单提醒轮询
+  storeOpsToday: () =>
+    request<{
+      generated_at: string;
+      total: number;
+      groups: Array<{
+        key: string; label: string; count: number;
+        tasks: Array<{
+          order_id: string; status: string; customer: string;
+          grand_total_cents: number; currency: string;
+          shipping_method_code: string | null; weigh_status: string | null;
+          line_count: number; created_at: string; deadline: string | null;
+          pickup_arrived_at: string | null;
+        }>;
+      }>;
+    }>('/admin/store-ops/today', {}, true),
+
+  storeOpsAlerts: (after?: string) =>
+    request<{
+      server_time: string; after: string;
+      events: Array<{ type: string; at: string; order_id: string; title: string; detail: string; status: string }>;
+    }>(`/admin/store-ops/alerts${after ? `?after=${encodeURIComponent(after)}` : ''}`, {}, true),
+
+  customerPickupArrived: (orderId: string) =>
+    request<{ status: string; pickup_arrived_at: string }>(`/store/orders/${orderId}/pickup-arrived`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, 'customer'),
+
   // 视频/图片传货: multipart 上传, 自动上架
-  agentIngest: async (file: File, opts?: { retailPriceCents?: number; stockQty?: number; categorySlug?: string }) => {
+  agentIngest: async (
+    file: File,
+    opts?: {
+      retailPriceCents?: number;
+      stockQty?: number;
+      categorySlug?: string;
+      targetProductId?: string;
+      targetSku?: string;
+    },
+  ) => {
     const form = new FormData();
     form.append('file', file);
     if (opts?.retailPriceCents) form.append('retail_price_cents', String(opts.retailPriceCents));
     if (opts?.stockQty) form.append('stock_qty', String(opts.stockQty));
     if (opts?.categorySlug) form.append('category_slug', opts.categorySlug);
+    if (opts?.targetProductId) form.append('target_product_id', opts.targetProductId);
+    if (opts?.targetSku) form.append('target_sku', opts.targetSku);
     // 走 BFF 反代：cookie 自动附带，不能设 Content-Type（boundary 由浏览器生成）。
     const res = await fetchWithSession('/agent/ingest', {
       method: 'POST',
@@ -1341,4 +1672,133 @@ export const api = {
     assertNotBusinessFailure(data);
     return data;
   },
+
+  // ── 店员拍照换商品图 / 拍照上新（core3）──────────────────────────
+  photoReference: (params?: { scope?: 'all' | 'store'; search?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.scope) qs.set('scope', params.scope);
+    if (params?.search) qs.set('search', params.search);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    return request<PhotoReferenceResponse>(`/admin/photo-ops/reference?${qs}`, {}, true);
+  },
+
+  productPhotos: (productId: string) =>
+    request<{ items: ProductPhoto[] }>(`/admin/photo-ops/products/${productId}/photos`, {}, true),
+
+  uploadProductPhoto: (productId: string, file: File, opts?: { variantId?: string; makePrimary?: boolean }) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (opts?.variantId) form.append('variant_id', opts.variantId);
+    form.append('make_primary', opts?.makePrimary === false ? 'false' : 'true');
+    return requestForm<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos`, form);
+  },
+
+  setPhotoPrimary: (productId: string, photoId: string) =>
+    request<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos/${photoId}/primary`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, true),
+
+  restorePhoto: (productId: string, photoId: string) =>
+    request<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos/${photoId}/restore`, {
+      method: 'POST', body: JSON.stringify({}),
+    }, true),
+
+  deletePhoto: (productId: string, photoId: string) =>
+    request<ProductPhoto>(`/admin/photo-ops/products/${productId}/photos/${photoId}`, {
+      method: 'DELETE',
+    }, true),
+
+  reorderPhotos: (productId: string, photoIds: string[]) =>
+    request<{ items: ProductPhoto[] }>(`/admin/photo-ops/products/${productId}/photos/order`, {
+      method: 'POST', body: JSON.stringify({ photo_ids: photoIds }),
+    }, true),
+
+  photoCategories: () =>
+    request<Array<{ id: string; name: string; slug: string }>>('/admin/photo-ops/categories', {}, true),
+
+  createPhotoProduct: (form: FormData) =>
+    requestForm<PhotoDraftResult>('/admin/photo-ops/products', form),
+
+  myCapabilities: () =>
+    request<{ can_ingest: boolean; is_staff: boolean }>('/store/my-capabilities', {}, 'customer'),
+
+  // ── Scale / POS / Pick Weigh ─────────────────────────────────────
+
+  /** 秤设备列表 */
+  scaleListDevices: () =>
+    request<ScaleDevice[]>('/admin/scale/devices', {}, true),
+
+  /** 创建秤设备 */
+  scaleCreateDevice: (data: Omit<ScaleDevice, 'id' | 'created_at' | 'updated_at' | 'status'>) =>
+    request<ScaleDevice>('/admin/scale/devices', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 更新秤设备 */
+  scaleUpdateDevice: (deviceId: string, data: Partial<ScaleDevice>) =>
+    request<ScaleDevice>(`/admin/scale/devices/${deviceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 删除秤设备 */
+  scaleDeleteDevice: (deviceId: string) =>
+    request<{ ok: boolean }>(`/admin/scale/devices/${deviceId}`, {
+      method: 'DELETE',
+    }, true),
+
+  /** 解析秤数据行 */
+  scaleParseLine: (line: string, deviceId: string) =>
+    request<ScaleParseResponse>('/admin/scale/parse', {
+      method: 'POST',
+      body: JSON.stringify({ line, device_id: deviceId }),
+    }, true),
+
+  /** POS 收银模式识别 */
+  scaleRecognize: (file: File, weightGrams: number) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('weight_grams', String(weightGrams));
+    return requestForm<RecognizeResponse>('/admin/scale/recognize', form);
+  },
+
+  /** 拣货称重模式识别 */
+  scaleRecognizePick: (file: File, weightGrams: number, expectedVariantId: string) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('weight_grams', String(weightGrams));
+    form.append('expected_variant_id', expectedVariantId);
+    return requestForm<RecognizeResponse>('/admin/scale/recognize-pick', form);
+  },
+
+  /** 搜索商品（手工搜索） */
+  scaleSearchProduct: (query: string) =>
+    request<SearchProductResponse>(`/admin/scale/search-product?q=${encodeURIComponent(query)}`, {}, true),
+
+  /** 收银结算 */
+  scaleSettle: (data: SettleRequest) =>
+    request<SettleResponse>('/admin/scale/settle', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 获取拣货订单列表 */
+  scalePickOrders: () =>
+    request<PickOrdersResponse>('/admin/scale/pick-orders', {}, true),
+
+  /** 记录拣货实称重量 */
+  scaleRecordPickWeight: (data: RecordPickWeightRequest) =>
+    request<{ ok: boolean }>('/admin/scale/record-pick-weight', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
+
+  /** 跳过拣货行 */
+  scaleSkipPickLine: (data: SkipPickLineRequest) =>
+    request<{ ok: boolean }>('/admin/scale/skip-pick-line', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }, true),
 };

@@ -1,0 +1,50 @@
+{
+  "consent_version": "2026-11-08-placeholder",
+  "documents": {
+    "privacy": {
+      "title": "隐私政策",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "terms": {
+      "title": "用户协议",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "returns": {
+      "title": "退换货规则（含生鲜规则）",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "food-license": {
+      "title": "食品经营资质",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "business-license": {
+      "title": "营业执照",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "invoice": {
+      "title": "发票说明",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "complaint": {
+      "title": "投诉与售后",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "about": {
+      "title": "关于我们",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    },
+    "contact": {
+      "title": "联系我们",
+      "version": "2026-11-08-placeholder",
+      "published": false
+    }
+  }
+}
