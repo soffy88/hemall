@@ -260,7 +260,9 @@ class VectorIndex:
         if not _FAISS_AVAILABLE:
             raise RuntimeError("faiss not installed: pip install faiss-cpu")
         self.dim = dim
-        self.index = faiss.IndexFlatIP(dim)
+        # Widened to faiss.Index: load() assigns faiss.read_index(),
+        # which returns the base type; only base Index API is used here.
+        self.index: faiss.Index = faiss.IndexFlatIP(dim)
         self.entries: list[VectorEntry] = []
 
     def add(self, entry: VectorEntry) -> int:
