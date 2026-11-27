@@ -2604,7 +2604,64 @@ class MembershipFeeRecordRequest(BaseModel):
     amount_cents: int | None = None  # 缺省 19900（199 元）
 
 
+# ── 供应商管理（B 部分）请求模型 ────────────────────────────────────────
+
+
+class SupplierCreateRequest(BaseModel):
+    name: str
+    contact_name: str = ""
+    phone: str = ""
+    category: str
+    license_note: str = ""
+    status: str = "active"
+    is_primary: bool = False
+    is_backup: bool = False
+
+
+class SupplierUpdateRequest(BaseModel):
+    name: str | None = None
+    contact_name: str | None = None
+    phone: str | None = None
+    category: str | None = None
+    license_note: str | None = None
+    status: str | None = None
+    is_primary: bool | None = None
+    is_backup: bool | None = None
+
+
+class SupplierPriceRequest(BaseModel):
+    product_id: str  # 商品 id（UUID，外键 product(id)）
+    price_cents: int  # 报价（分）
+    quoted_date: str  # 报价日期 YYYY-MM-DD
+    note: str = ""
+
+
+class SupplierEvaluationScoresRequest(BaseModel):
+    price_score: int  # 价格竞争力 25%
+    quality_score: int  # 商品质量 30%
+    punctuality_score: int  # 到货准时率 15%
+    stability_score: int  # 供货稳定性 15%
+    aftersales_score: int  # 售后处理 10%
+    cooperation_score: int  # 配合程度 5%
+
+
+class SupplierEvaluationRequest(SupplierEvaluationScoresRequest):
+    week: str  # 周次 YYYY-Www，如 2026-W47
+
+
 def _cangzhu_bad_request(exc: ValueError) -> HTTPException:
+    return HTTPException(400, str(exc))
+
+
+def _supplier_error(exc: ValueError) -> HTTPException:
+    """供应商模块错误映射：不存在 404、冲突 409、其余 400。"""
+
+    from app.supplier import SupplierConflictError, SupplierNotFoundError
+
+    if isinstance(exc, SupplierNotFoundError):
+        return HTTPException(404, str(exc))
+    if isinstance(exc, SupplierConflictError):
+        return HTTPException(409, str(exc))
     return HTTPException(400, str(exc))
 
 
@@ -2777,6 +2834,255 @@ async def record_customer_membership_fee(
     except ValueError as exc:
         raise _cangzhu_bad_request(exc) from exc
     return {"customer_id": customer_id, **result}
+
+
+# ── 供应商管理（B 部分）────────────────────────────────────────────
+# 商家端点：须商家身份（_require_merchant）；无鉴权 401、非商家 403。
+# by-category 路由须在 /suppliers/{supplier_id} 之前注册，否则会被后者吞掉。
+
+
+@router.post("/suppliers")
+async def create_supplier_endpoint(
+    body: SupplierCreateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.supplier import create_supplier
+
+    await _require_merchant(request, principal)
+    try:
+        return await create_supplier(
+            _pool(request),
+            name=body.name,
+            contact_name=body.contact_name,
+            phone=body.phone,
+            category=body.category,
+            license_note=body.license_note,
+            status=body.status,
+            is_primary=body.is_primary,
+            is_backup=body.is_backup,
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+
+
+@router.get("/suppliers")
+async def list_suppliers_endpoint(
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    category: str | None = Query(None),
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.supplier import list_suppliers
+
+    await _require_merchant(request, principal)
+    try:
+        items = await list_suppliers(
+            _pool(request),
+            category=category,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+    return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.get("/suppliers/by-category/{category}")
+async def get_suppliers_by_category(
+    category: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.supplier import primary_backup_for_category
+
+    await _require_merchant(request, principal)
+    return await primary_backup_for_category(_pool(request), category)
+
+
+@router.get("/suppliers/{supplier_id}")
+async def get_supplier_endpoint(
+    supplier_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.supplier import get_supplier
+
+    await _require_merchant(request, principal)
+    try:
+        return await get_supplier(_pool(request), supplier_id)
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+
+
+@router.patch("/suppliers/{supplier_id}")
+async def update_supplier_endpoint(
+    supplier_id: str,
+    body: SupplierUpdateRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.supplier import update_supplier
+
+    await _require_merchant(request, principal)
+    try:
+        return await update_supplier(
+            _pool(request),
+            supplier_id,
+            **body.model_dump(exclude_unset=True),
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+
+
+@router.delete("/suppliers/{supplier_id}")
+async def delete_supplier_endpoint(
+    supplier_id: str, request: Request, principal: dict = Depends(get_current_customer)
+):
+    from app.supplier import delete_supplier
+
+    await _require_merchant(request, principal)
+    try:
+        return await delete_supplier(_pool(request), supplier_id)
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+
+
+@router.post("/suppliers/{supplier_id}/prices")
+async def record_supplier_price(
+    supplier_id: str,
+    body: SupplierPriceRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.supplier import record_price
+
+    await _require_merchant(request, principal)
+    try:
+        return await record_price(
+            _pool(request),
+            supplier_id,
+            product_id=body.product_id,
+            price_cents=body.price_cents,
+            quoted_date=body.quoted_date,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+
+
+@router.get("/suppliers/{supplier_id}/prices")
+async def list_supplier_prices(
+    supplier_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    product_id: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.supplier import list_prices
+
+    await _require_merchant(request, principal)
+    try:
+        items = await list_prices(
+            _pool(request),
+            supplier_id,
+            product_id=product_id,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+    return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.post("/suppliers/{supplier_id}/evaluations")
+async def record_supplier_evaluation(
+    supplier_id: str,
+    body: SupplierEvaluationRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.supplier import record_evaluation
+
+    await _require_merchant(request, principal)
+    try:
+        return await record_evaluation(
+            _pool(request),
+            supplier_id,
+            week=body.week,
+            price_score=body.price_score,
+            quality_score=body.quality_score,
+            punctuality_score=body.punctuality_score,
+            stability_score=body.stability_score,
+            aftersales_score=body.aftersales_score,
+            cooperation_score=body.cooperation_score,
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+
+
+@router.get("/suppliers/{supplier_id}/evaluations")
+async def list_supplier_evaluations(
+    supplier_id: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+    week: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from app.supplier import list_evaluations
+
+    await _require_merchant(request, principal)
+    try:
+        items = await list_evaluations(
+            _pool(request), supplier_id, week=week, limit=limit, offset=offset
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+    return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.get("/suppliers/{supplier_id}/evaluations/{week}")
+async def get_supplier_evaluation(
+    supplier_id: str,
+    week: str,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.supplier import get_evaluation
+
+    await _require_merchant(request, principal)
+    try:
+        return await get_evaluation(_pool(request), supplier_id, week)
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
+
+
+@router.put("/suppliers/{supplier_id}/evaluations/{week}")
+async def update_supplier_evaluation(
+    supplier_id: str,
+    week: str,
+    body: SupplierEvaluationScoresRequest,
+    request: Request,
+    principal: dict = Depends(get_current_customer),
+):
+    from app.supplier import update_evaluation
+
+    await _require_merchant(request, principal)
+    try:
+        return await update_evaluation(
+            _pool(request),
+            supplier_id,
+            week,
+            price_score=body.price_score,
+            quality_score=body.quality_score,
+            punctuality_score=body.punctuality_score,
+            stability_score=body.stability_score,
+            aftersales_score=body.aftersales_score,
+            cooperation_score=body.cooperation_score,
+        )
+    except ValueError as exc:
+        raise _supplier_error(exc) from exc
 
 
 @router.post("/orders/{order_id}/points-accrue")
