@@ -374,6 +374,40 @@ async def test_topup_and_duplicate_ref(mb_pool, seed) -> None:
 
 
 @needs_db
+async def test_p0_schema_widens_stored_value_kind(mb_pool) -> None:
+    """启动路径须把老库的储值 kind 约束拓到 topup/spend（Codex 分流 #1）。
+
+    2026-11-28 线上实证：老库约束仍是 kind='topup'，储值结算撞
+    CheckViolationError 500。迁移 STORED_VALUE_SPEND_DDL 只在
+    ensure_membership_schema 里跑、启动 ensure_p0_schema 没接——
+    会员测试夹具两个都调，才一直没发现。
+    """
+    from app.p0_schema import ensure_p0_schema
+
+    async with mb_pool.acquire() as conn:
+        # 先把约束降回老库形态（只允 topup），模拟升级前的生产库。
+        # 测试库是共用的：先清掉其它用例留下的 spend 行，否则加旧约束
+        # 会因既有行违反而失败（与被测行为无关）。
+        await conn.execute("DELETE FROM stored_value_ledger WHERE kind <> 'topup'")
+        await conn.execute(
+            "ALTER TABLE stored_value_ledger DROP CONSTRAINT IF EXISTS "
+            "stored_value_ledger_kind_check"
+        )
+        await conn.execute(
+            "ALTER TABLE stored_value_ledger ADD CONSTRAINT "
+            "stored_value_ledger_kind_check CHECK (kind = 'topup')"
+        )
+    await ensure_p0_schema(mb_pool)
+    async with mb_pool.acquire() as conn:
+        definition = await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'stored_value_ledger'::regclass "
+            "AND conname = 'stored_value_ledger_kind_check'"
+        )
+    assert definition is not None and "spend" in definition
+
+
+@needs_db
 async def test_topup_validation(mb_pool, seed) -> None:
     tag = seed.tag()
     customer = await make_customer(mb_pool, seed, f"buy-{tag}")

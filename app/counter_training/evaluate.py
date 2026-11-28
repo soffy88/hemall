@@ -4,6 +4,10 @@
 无测试集（note=test 的照片 0 张）时无法验证，门禁直接不通过——
 没有“目测差不多就放行”这一档。
 
+门禁按总体 + 每 SKU 两层算：总体达标还不够，每个 SKU 各自也须
+top-1 >= 90% 且 top-3 >= 98%，且模型会认的每个 SKU 都须有测试照片——
+只验 2/10 个品类就放行的口子已堵死（Codex 分流 2026-11-28）。
+
 评估用模型在测试集上的真实预测算数，不读训练集分数充数；
 每 SKU 明细 + 最常见错判都写进报告，照片到了之后直接看报告定夺。
 """
@@ -66,8 +70,13 @@ class EvalReport:
 def evaluate(
     model: CentroidModel,
     test_items: list[tuple[tuple[float, ...], str, str]],
+    expected_variant_ids: set[str] | None = None,
 ) -> EvalReport:
-    """在测试集上评估：test_items 是 (特征, variant_id, sku) 的列表。"""
+    """在测试集上评估：test_items 是 (特征, variant_id, sku) 的列表。
+
+    expected_variant_ids：模型会认的全部 variant（训练 CLI 传
+    set(model.skus)）。给了就核对覆盖：任一 SKU 无测试照片即不通过。
+    不给只核总体 + 已测 SKU 的每类分数（供单测与旧调用）。"""
     test_n = len(test_items)
     if test_n == 0:
         return EvalReport(
@@ -101,16 +110,6 @@ def evaluate(
             slot["top3"] += 1
     top1 = top1_ok / test_n
     top3 = top3_ok / test_n
-    passed = top1 >= TOP1_MIN and top3 >= TOP3_MIN
-    if passed:
-        reason = f"通过：top-1 {top1:.1%} >= {TOP1_MIN:.0%}，top-3 {top3:.1%} >= {TOP3_MIN:.0%}"
-    else:
-        failing = []
-        if top1 < TOP1_MIN:
-            failing.append(f"top-1 {top1:.1%} < {TOP1_MIN:.0%}")
-        if top3 < TOP3_MIN:
-            failing.append(f"top-3 {top3:.1%} < {TOP3_MIN:.0%}")
-        reason = "不通过：" + "，".join(failing)
     per_sku = tuple(
         PerSkuEval(
             sku=slot["sku"],
@@ -122,6 +121,25 @@ def evaluate(
         )
         for variant_id, slot in sorted(per_counts.items(), key=lambda item: item[1]["sku"])
     )
+    failing: list[str] = []
+    if top1 < TOP1_MIN:
+        failing.append(f"top-1 {top1:.1%} < {TOP1_MIN:.0%}")
+    if top3 < TOP3_MIN:
+        failing.append(f"top-3 {top3:.1%} < {TOP3_MIN:.0%}")
+    if expected_variant_ids is not None:
+        tested_ids = {entry.variant_id for entry in per_sku}
+        for vid in sorted(expected_variant_ids - tested_ids):
+            failing.append(f"未测品类：{model.skus.get(vid, vid)}（无测试照片）")
+    for entry in per_sku:
+        if entry.top1_acc < TOP1_MIN:
+            failing.append(f"{entry.sku} top-1 {entry.top1_acc:.1%} < {TOP1_MIN:.0%}")
+        if entry.top3_acc < TOP3_MIN:
+            failing.append(f"{entry.sku} top-3 {entry.top3_acc:.1%} < {TOP3_MIN:.0%}")
+    passed = not failing
+    if passed:
+        reason = f"通过：top-1 {top1:.1%} >= {TOP1_MIN:.0%}，top-3 {top3:.1%} >= {TOP3_MIN:.0%}"
+    else:
+        reason = "不通过：" + "，".join(failing)
     return EvalReport(
         top1=top1,
         top3=top3,

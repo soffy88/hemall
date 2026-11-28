@@ -8,8 +8,9 @@
 （模型与报告仍保存，但模型不可注册）。
 
 断点续跑：特征提取结果缓存在 ``<out 同名>.features.json``（按照片
-sha256 索引）；中断后加 ``--resume`` 重跑，已提过的照片直接读缓存，
-不再重复解码。缓存只是加速手段——删了也能完整重跑。
+sha256 索引，带特征版本号 FEATURES_VERSION）；中断后加 ``--resume``
+重跑，已提过的照片直接读缓存，不再重复解码。缓存只是加速手段——
+删了也能完整重跑；版本不符 / 旧版平面格式一律作废重提。
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from app.counter_training.dataset import NoTrainingDataError, TrainingError, load_dataset
 from app.counter_training.evaluate import evaluate, render_markdown
-from app.counter_training.features import FEATURE_DIM, extract_features
+from app.counter_training.features import FEATURE_DIM, FEATURES_VERSION, extract_features
 from app.counter_training.model import CentroidModel
 
 EXIT_OK = 0
@@ -32,15 +33,25 @@ EXIT_GATE_FAIL = 3
 
 
 def _load_feature_cache(cache_path: Path) -> dict[str, list[float]]:
-    """读特征缓存；损坏 / 不存在返回空缓存（可完整重跑，不报错）。"""
+    """读特征缓存；损坏 / 不存在 / 版本不符返回空缓存（可完整重跑，不报错）。
+
+    缓存格式 {"version": FEATURES_VERSION, "features": {sha256: 向量}}。
+    旧版平面格式（无 version 字段）与版本不符一律作废——提取算法改过
+    之后，旧缓存的向量悄悄复用等于用错特征训练（Codex 分流 2026-11-28）。
+    """
     try:
         loaded = json.loads(cache_path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return {}
     if not isinstance(loaded, dict):
         return {}
+    if loaded.get("version") != FEATURES_VERSION:
+        return {}
+    raw = loaded.get("features")
+    if not isinstance(raw, dict):
+        return {}
     cache: dict[str, list[float]] = {}
-    for key, value in loaded.items():
+    for key, value in raw.items():
         if (
             isinstance(key, str)
             and isinstance(value, list)
@@ -54,7 +65,8 @@ def _load_feature_cache(cache_path: Path) -> dict[str, list[float]]:
 def _save_feature_cache(cache_path: Path, cache: dict[str, list[float]]) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_suffix(f".tmp.{uuid.uuid4().hex[:8]}.json")
-    tmp_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    payload = {"version": FEATURES_VERSION, "features": cache}
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp_path, cache_path)
 
 
@@ -148,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_NO_DATA
 
     model = CentroidModel.fit(labeled_train)
-    report = evaluate(model, test_items)
+    report = evaluate(model, test_items, expected_variant_ids=set(model.skus))
     model.eval_summary = report.summary()
     model.save(out_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)

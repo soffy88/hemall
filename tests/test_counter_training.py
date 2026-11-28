@@ -20,7 +20,7 @@ from PIL import Image
 
 from app.counter_training.dataset import NoTrainingDataError, load_dataset
 from app.counter_training.evaluate import TOP1_MIN, TOP3_MIN, evaluate
-from app.counter_training.features import FEATURE_DIM, extract_features
+from app.counter_training.features import FEATURE_DIM, FEATURES_VERSION, extract_features
 from app.counter_training.model import CentroidModel
 from app.counter_training.registry import (
     MODEL_ENV_VAR,
@@ -158,6 +158,17 @@ class TestLoadDataset:
         assert len(dataset.entries) == 12
         assert any("manifest 中无记录" in warning for warning in dataset.warnings)
 
+    def test_manifest_record_without_sha256_is_skipped(self, tmp_path: Path):
+        """manifest 记录缺 sha256 校验码时照片须跳过（Codex 分流 H2）。"""
+        data = _build_dataset(tmp_path / "data")
+        manifest_path = tmp_path / "data" / SKU_A / "manifest.json"
+        records = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del records[0]["sha256"]
+        manifest_path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+        dataset = load_dataset(data)
+        assert any("缺少 sha256" in warning for warning in dataset.warnings)
+        assert len(dataset.train) + len(dataset.test) == 11
+
     def test_unreadable_image_is_skipped(self, tmp_path: Path):
         root = _build_dataset(tmp_path / "data")
         garbage = b"not an image at all"
@@ -254,6 +265,60 @@ class TestModelAndEval:
         assert report.gate_passed is False
         assert "无测试集" in report.gate_reason
 
+    def test_gate_requires_per_sku_bars(self, tmp_path: Path):
+        """总体达标但某一品类全错时门禁须不通过（Codex 分流 H1）。
+
+        10 个 SKU 各 10 张测试照：9 个全对、1 个全错。
+        总体 top-1 恰好 90%、top-3 100%——旧的只看总体门禁会放行。
+        """
+        from types import SimpleNamespace
+
+        def predict(feature, k=3):
+            variant_id = feature[0]
+            if variant_id == "v-bad":
+                return [
+                    {"variant_id": "v-other", "score": 0.9},
+                    {"variant_id": "v-bad", "score": 0.05},
+                    {"variant_id": "v-other2", "score": 0.05},
+                ]
+            return [
+                {"variant_id": variant_id, "score": 0.9},
+                {"variant_id": "v-other", "score": 0.05},
+                {"variant_id": "v-other2", "score": 0.05},
+            ]
+
+        skus = {f"v-{index}": f"SKU-{index}" for index in range(9)}
+        skus["v-bad"] = "SKU-bad"
+        model = SimpleNamespace(predict_topk=predict, skus=skus)
+        items = []
+        for index in range(9):
+            vid = f"v-{index}"
+            for _ in range(10):
+                items.append(((vid,), vid, f"SKU-{index}"))
+        for _ in range(10):
+            items.append((("v-bad",), "v-bad", "SKU-bad"))
+        report = evaluate(model, items, expected_variant_ids=set(skus))
+        assert report.top1 == 0.9
+        assert report.top3 == 1.0
+        assert report.gate_passed is False
+        assert "SKU-bad" in report.gate_reason
+
+    def test_gate_fails_when_sku_has_no_test_photos(self, tmp_path: Path):
+        """模型会认的 SKU 无测试照片时门禁须不通过（Codex 分流 H1 覆盖面）。"""
+        from types import SimpleNamespace
+
+        def predict(feature, k=3):
+            variant_id = feature[0]
+            return [{"variant_id": variant_id, "score": 0.9}]
+
+        skus = {"v-a": "SKU-a", "v-b": "SKU-b"}
+        model = SimpleNamespace(predict_topk=predict, skus=skus)
+        items = [(("v-a",), "v-a", "SKU-a") for _ in range(10)]
+        report = evaluate(model, items, expected_variant_ids=set(skus))
+        assert report.gate_passed is False
+        assert "未测品类" in report.gate_reason
+        assert "SKU-b" in report.gate_reason
+
     def test_thresholds_are_90_and_98(self):
         assert TOP1_MIN == 0.90
         assert TOP3_MIN == 0.98
@@ -315,8 +380,29 @@ class TestTrainCli:
         cache_path = tmp_path / "model.features.json"
         assert cache_path.exists()
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        assert len(cached) == 12
+        assert cached["version"] == FEATURES_VERSION
+        assert len(cached["features"]) == 12
         assert train_main(["--data", str(data), "--out", str(out), "--resume"]) == 0
+
+    def test_feature_cache_ignores_unversioned_and_wrong_version(self, tmp_path: Path):
+        """旧版平面缓存与版本不符的缓存一律作废（Codex 分流 H4）。"""
+        from app.counter_training.train import _load_feature_cache, _save_feature_cache
+
+        cache_path = tmp_path / "model.features.json"
+        cache_path.write_text(json.dumps({"aaa": [0.0] * FEATURE_DIM}), encoding="utf-8")
+        assert _load_feature_cache(cache_path) == {}
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "version": FEATURES_VERSION + 99,
+                    "features": {"aaa": [0.0] * FEATURE_DIM},
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert _load_feature_cache(cache_path) == {}
+        _save_feature_cache(cache_path, {"aaa": [0.1] * FEATURE_DIM})
+        assert _load_feature_cache(cache_path) == {"aaa": [0.1] * FEATURE_DIM}
 
     def test_does_not_create_counter_dataset_in_cwd(self, tmp_path: Path, monkeypatch):
         data = _build_dataset(tmp_path / "data")

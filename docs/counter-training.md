@@ -86,7 +86,9 @@ python -m app.counter_training.train \
 注册复核：`app/counter_training/model.py`（`CentroidModel.eval_passed`）。
 
 - 留出测试集（note=`test` 的照片）算 top-1 / top-3 准确率；
-- **门禁：top-1 >= 90% 且 top-3 >= 98% 才算通过**；
+- **门禁：top-1 >= 90% 且 top-3 >= 98% 才算通过**——总体与每 SKU
+  两层都算：任一 SKU 各自也须达标，且模型会认的每个 SKU 都须有测试
+  照片（只验少数品类就放行的口子已堵死，见 `evaluate.py`）；
 - 不通过的模型绝不注册：模型文件里嵌的评估摘要标 `gate_passed=false`，
   注册加载时直接拒绝；门禁阈值不可调低，不过就补拍 / 纠正错判集中的
   SKU 后重训。

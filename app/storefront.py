@@ -6725,6 +6725,7 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
         )
         if product_id is None:
             raise ValueError(f"variant {batch['variant_id']} not found for batch")
+        product_title = await conn.fetchval('SELECT title FROM "product" WHERE id = $1', product_id)
         line_id = uuid7()
         await conn.execute(
             'INSERT INTO "order_line_item" '
@@ -6797,6 +6798,7 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
                 "line_id": str(line_id),
                 "batch_id": str(batch["id"]),
                 "variant_id": str(batch["variant_id"]),
+                "product_title": product_title,
                 "quantity": units,
                 "weight_grams": int(line["weight_grams"]),
                 "price_basis_grams": int(line["price_basis_grams"]),
@@ -7061,7 +7063,8 @@ async def counter_close_shift(
                 raise HTTPException(409, f"shift not open: status={row['status']}")
             due_sum = await conn.fetchval(
                 'SELECT COALESCE(SUM(amount_due_cents), 0)::int FROM "counter_settlement" '
-                "WHERE cashier_id = $1 AND settled_at >= $2 AND settled_at <= NOW()",
+                "WHERE cashier_id = $1 AND settled_at >= $2 AND settled_at <= NOW() "
+                "AND method = 'cash'",
                 cashier_id,
                 row["opened_at"],
             )

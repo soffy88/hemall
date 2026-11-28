@@ -182,7 +182,10 @@ def load_dataset(root: str | Path, *, variant_ids: Collection[str] | None = None
                 continue
             digest = hashlib.sha256(data).hexdigest()
             manifest_sha = record.get("sha256")
-            if isinstance(manifest_sha, str) and manifest_sha and manifest_sha != digest:
+            if not isinstance(manifest_sha, str) or not manifest_sha:
+                warnings.append(f"{sku}/{path.name}：manifest 缺少 sha256 校验码，已跳过")
+                continue
+            if manifest_sha != digest:
                 warnings.append(f"{sku}/{path.name}：sha256 与 manifest 不符，已跳过")
                 continue
             if digest in seen_sha:
