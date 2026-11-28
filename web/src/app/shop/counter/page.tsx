@@ -5,8 +5,11 @@
  *
  * 拍照点选 + 称重联动：点选照片格商品 → 显示秤读数（或手工输重量）→
  * 确认 → 重量 × 单价记行进单据。真实秤尚未接入，秤读数来自模拟器注入
- * （明确标记 simulator）；识别模型另行立项，本页不做视觉识别。
- * 结算只到“待结算”，不创建支付单据、不碰券与折扣。
+ * （明确标记 simulator）；识别走 POST /store/counter/recognize，未配模型时
+ * 返回空候选，本页老实退回照片格点选，绝不编分数。
+ * 结算即建单并扣库存（渠道 counter）：现金按实收找零；储值须挂会员单据，
+ * 余额不足服务端 422；会员单据结算后同一事务内自动计积分（1 元 1 分）。
+ * 夜市价只展示，实收金额以服务端计价为准。
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -20,8 +23,12 @@ import { productIcon, productGradient } from '@/lib/product-visual';
 import { useToast } from '@/components/Toast';
 import type {
   CounterDailyReport,
+  CounterMembershipSummary,
+  CounterPointsAccrual,
   CounterProduct,
+  CounterRecognizeResult,
   CounterShift,
+  CounterStoredValueSpend,
   CounterTicket,
   CounterWeighLine,
 } from '@/types/api';
@@ -70,12 +77,40 @@ export default function CounterPage() {
   const [shiftNote, setShiftNote] = useState('');
   const [reportDate, setReportDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [report, setReport] = useState<CounterDailyReport | null>(null);
+  const [memberInput, setMemberInput] = useState('');
+  const [memberSummary, setMemberSummary] = useState<CounterMembershipSummary | null>(null);
+  const [settleMethod, setSettleMethod] = useState<'cash' | 'stored_value'>('cash');
+  const [settleResult, setSettleResult] = useState<{
+    orderId: string | null;
+    points: CounterPointsAccrual | null;
+    storedValue: CounterStoredValueSpend | null;
+    method: string;
+  } | null>(null);
+  const [recogCandidates, setRecogCandidates] = useState<CounterRecognizeResult | null>(null);
+  const [recogNote, setRecogNote] = useState('');
+  const [recogBusy, setRecogBusy] = useState(false);
+
+  const loadMemberSummary = useCallback(async (customerId: string) => {
+    try {
+      setMemberSummary(await api.counterCustomerMembership(customerId));
+    } catch {
+      setMemberSummary(null);
+    }
+  }, []);
 
   const loadTicket = useCallback(async (ticketId: string) => {
     const { ticket: t, lines: ls } = await api.counterGetTicket(ticketId);
     setTicket(t);
     setLines(ls);
-  }, []);
+    setSettleResult(null);
+    setRecogCandidates(null);
+    setRecogNote('');
+    if (t.customer_id) {
+      void loadMemberSummary(t.customer_id);
+    } else {
+      setMemberSummary(null);
+    }
+  }, [loadMemberSummary]);
 
   const loadTickets = useCallback(async () => {
     const { tickets: list } = await api.counterListTickets();
@@ -172,12 +207,89 @@ export default function CounterPage() {
       setLines([]);
       setSelected(null);
       setLatest(null);
+      setMemberSummary(null);
+      setSettleResult(null);
+      setRecogCandidates(null);
+      setRecogNote('');
       void loadTickets();
     } catch (e) {
       showToast(errMessage(e, '开单失败'), 'error');
     } finally {
       setBusy(false);
     }
+  }
+
+  const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+  /** 开会员单据：先查会员总览核对顾客存在，再建挂顾客的单据（储值结算必须挂顾客） */
+  async function handleOpenMemberTicket() {
+    const customerId = memberInput.trim();
+    if (!UUID_RE.test(customerId)) {
+      showToast('顾客编号格式不对，请粘贴管理后台顾客列表里的完整编号', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const summary = await api.counterCustomerMembership(customerId);
+      const created = await api.counterCreateTicket({ customer_id: customerId });
+      setTicket(created);
+      setLines([]);
+      setSelected(null);
+      setLatest(null);
+      setMemberSummary(summary);
+      setSettleResult(null);
+      setRecogCandidates(null);
+      setRecogNote('');
+      setMemberInput('');
+      void loadTickets();
+      showToast(`已开会员单据（${summary.member_tier_label}，储值 ${fmt(summary.stored_value_balance_cents)}）`);
+    } catch (e) {
+      showToast(errMessage(e, '开会员单据失败'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 拍照识别：用当前秤读数（无读数时用手工重量）+ 本单据调识别端点 */
+  async function handleRecognize(file: File) {
+    if (!ticket) return;
+    const scaleWeight =
+      latest && latest.status === 'unpriced' && latest.weight_grams != null
+        ? latest.weight_grams
+        : null;
+    const manualWeight = Number(weightInput);
+    const weightGrams = scaleWeight ?? (Number.isInteger(manualWeight) ? manualWeight : null);
+    if (weightGrams == null || weightGrams < 1 || weightGrams > 15000) {
+      showToast('识别需要重量：先等秤读数，或在下方填 1~15000 克手工重量', 'error');
+      return;
+    }
+    setRecogBusy(true);
+    try {
+      const result = await api.counterRecognize(file, weightGrams, ticket.ticket_id);
+      if (!result.model_configured) {
+        setRecogCandidates(null);
+        setRecogNote('识别模型未配置，返回空候选；请用照片格点选。');
+      } else {
+        setRecogCandidates(result);
+        setRecogNote(
+          result.candidates.length === 0 ? '模型未认出候选，请用照片格点选。' : '',
+        );
+      }
+    } catch (e) {
+      showToast(errMessage(e, '识别失败'), 'error');
+    } finally {
+      setRecogBusy(false);
+    }
+  }
+
+  function handlePickCandidate(variantId: string) {
+    const product = products.find((p) => p.variant_id === variantId);
+    if (!product) {
+      showToast('该候选不在可售列表里，请用照片格点选', 'error');
+      return;
+    }
+    setSelected(product);
+    showToast(`已选中 ${product.title}，请确认重量后记行`);
   }
 
   async function handleConfirm() {
@@ -249,25 +361,69 @@ export default function CounterPage() {
     }
   }
 
-  async function handleCashSettle() {
+  async function handleSettleTicket() {
     if (!ticket) return;
-    const received = yuanToCents(settleReceived);
-    if (received == null) {
-      showToast('实收金额格式不对，请输入元（最多两位小数）', 'error');
+    if (settleMethod === 'cash') {
+      const received = yuanToCents(settleReceived);
+      if (received == null) {
+        showToast('实收金额格式不对，请输入元（最多两位小数）', 'error');
+        return;
+      }
+      setBusy(true);
+      try {
+        const updated = await api.counterSettleTicket(ticket.ticket_id, {
+          method: 'cash',
+          amount_received_cents: received,
+        });
+        setTicket(updated);
+        setSettleReceived('');
+        const points = updated.points_accrual ?? null;
+        setSettleResult({
+          orderId: updated.order?.order_id ?? null,
+          points,
+          storedValue: null,
+          method: 'cash',
+        });
+        showToast(
+          `已现金结算，找零 ${fmt(updated.settlement.change_cents)}` +
+            (points?.accrued ? `，已积 ${points.points} 分` : ''),
+        );
+        void loadTickets();
+      } catch (e) {
+        showToast(errMessage(e, '结算失败'), 'error');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    // 储值结算：单据须挂顾客；实收即应收，找零 0；余额不足服务端 422
+    if (!ticket.customer_id) {
+      showToast('储值结算须先开会员单据（上方填顾客编号）', 'error');
       return;
     }
     setBusy(true);
     try {
       const updated = await api.counterSettleTicket(ticket.ticket_id, {
-        method: 'cash',
-        amount_received_cents: received,
+        method: 'stored_value',
       });
       setTicket(updated);
-      setSettleReceived('');
-      showToast(`已现金结算，找零 ${fmt(updated.settlement.change_cents)}`);
+      const points = updated.points_accrual ?? null;
+      const spend = updated.stored_value ?? null;
+      setSettleResult({
+        orderId: updated.order?.order_id ?? null,
+        points,
+        storedValue: spend,
+        method: 'stored_value',
+      });
+      showToast(
+        spend?.spent
+          ? `已储值结算，扣 ${fmt(spend.amount_cents)}，余额 ${fmt(spend.stored_value_balance_cents)}` +
+              (points?.accrued ? `，已积 ${points.points} 分` : '')
+          : '已储值结算',
+      );
       void loadTickets();
     } catch (e) {
-      showToast(errMessage(e, '结算失败'), 'error');
+      showToast(errMessage(e, '储值结算失败'), 'error');
     } finally {
       setBusy(false);
     }
@@ -369,7 +525,7 @@ export default function CounterPage() {
       <div>
         <h1 className="text-2xl font-bold">柜台称重试点</h1>
         <p className="text-sm text-gray-500">
-          点选商品 → 秤读数/手工重量 → 确认记行。真实秤未接入，读数来自模拟器（标记“模拟”）。
+          点选商品（或拍照识别）→ 秤读数/手工重量 → 确认记行 → 结算即建单扣库存。真实秤未接入，读数来自模拟器（标记“模拟”）。
         </p>
       </div>
 
@@ -382,6 +538,11 @@ export default function CounterPage() {
           <span className="text-sm text-gray-500">
             状态：{ticket?.status === 'open' ? '进行中' : ticket?.status === 'pending_settlement' ? '待结算' : ticket?.status === 'settled' ? '已结算' : ticket?.status ?? '—'}
           </span>
+          {ticket?.customer_id && (
+            <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700">
+              会员单 · {memberSummary ? `${memberSummary.member_tier_label} · 积分 ${memberSummary.points_balance} 分` : `顾客 ${ticket.customer_id.slice(0, 8)}`}
+            </span>
+          )}
           <span className="ml-auto text-lg font-bold">合计 {fmt(ticket?.total_cents)}</span>
           <button
             type="button"
@@ -431,6 +592,11 @@ export default function CounterPage() {
               <span className="text-gray-500">
                 {line.weight_grams}g × {fmt(line.unit_price_cents)}/{line.price_basis_grams ? basisLabel(line.price_basis_grams) : '—'}
               </span>
+              {line.night_clearance && line.night_price_cents != null && (
+                <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-700">
+                  夜市价 {fmt(line.night_price_cents)}
+                </span>
+              )}
               <span className="ml-auto font-semibold">{fmt(line.amount_cents)}</span>
               <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500">
                 {sourceBadge(line.source)}
@@ -441,29 +607,109 @@ export default function CounterPage() {
         </div>
       </div>
 
-      {/* 现金结算（只收现金） */}
+      {/* 会员单据：储值结算必须挂顾客；现金散客单据不计分 */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm">
+        <p className="text-sm font-semibold">会员单据</p>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <input
+            value={memberInput}
+            onChange={(e) => setMemberInput(e.target.value)}
+            placeholder="顾客编号（UUID）"
+            className="w-80 rounded-lg border px-3 py-1.5 text-sm"
+          />
+          <button
+            type="button"
+            onClick={() => void handleOpenMemberTicket()}
+            disabled={busy || !ticketOpen}
+            className="rounded-full bg-violet-600 px-4 py-1.5 text-sm text-white disabled:opacity-50"
+          >
+            验证并开会员单据
+          </button>
+          {memberSummary && ticket?.customer_id && (
+            <span className="text-sm text-gray-600">
+              {memberSummary.member_tier_label} · 积分 {memberSummary.points_balance} 分 ·
+              储值 {fmt(memberSummary.stored_value_balance_cents)}
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-gray-400">
+          顾客编号在管理后台顾客列表里复制；会员单据结算后自动计积分（1 元 1 分），储值结算只认会员单据。
+        </p>
+      </div>
+
+      {/* 结算：现金或储值；结算即建单并扣库存 */}
       {(ticket?.status === 'open' || ticket?.status === 'pending_settlement') && (
         <div className="rounded-2xl border bg-white p-4 shadow-sm">
-          <p className="text-sm font-semibold">现金结算（只收现金）</p>
+          <p className="text-sm font-semibold">结算</p>
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <span className="text-sm text-gray-600">应收 {fmt(ticket?.total_cents)}</span>
-            <input
-              value={settleReceived}
-              onChange={(e) => setSettleReceived(e.target.value)}
-              inputMode="decimal"
-              placeholder="实收（元）"
-              className="w-36 rounded-lg border px-3 py-1.5 text-sm"
-            />
-            <span className="text-sm text-gray-600">找零 {settleChangePreview}</span>
+            <span className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setSettleMethod('cash')}
+                className={`rounded-full px-3 py-1 text-sm ${settleMethod === 'cash' ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+              >
+                现金
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettleMethod('stored_value')}
+                className={`rounded-full px-3 py-1 text-sm ${settleMethod === 'stored_value' ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+              >
+                储值
+              </button>
+            </span>
+            {settleMethod === 'cash' ? (
+              <>
+                <input
+                  value={settleReceived}
+                  onChange={(e) => setSettleReceived(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="实收（元）"
+                  className="w-36 rounded-lg border px-3 py-1.5 text-sm"
+                />
+                <span className="text-sm text-gray-600">找零 {settleChangePreview}</span>
+              </>
+            ) : (
+              <span className="text-sm text-gray-600">
+                {ticket?.customer_id
+                  ? `从会员储值扣款，实收即应收，找零 0${memberSummary ? `（余额 ${fmt(memberSummary.stored_value_balance_cents)}）` : ''}`
+                  : '须先开会员单据才能用储值结算'}
+              </span>
+            )}
             <button
               type="button"
-              onClick={handleCashSettle}
-              disabled={busy}
+              onClick={() => void handleSettleTicket()}
+              disabled={busy || (settleMethod === 'stored_value' && !ticket?.customer_id)}
               className="rounded-full bg-emerald-600 px-5 py-1.5 text-sm text-white disabled:opacity-50"
             >
-              现金结算
+              {settleMethod === 'cash' ? '现金结算' : '储值结算'}
             </button>
-            <span className="text-xs text-gray-400">结算只记结算事实，不建订单、不扣库存。</span>
+            <span className="text-xs text-gray-400">结算即建单并扣库存（渠道 counter）；余额不足时服务端拒绝，不建单不扣库存。</span>
+          </div>
+        </div>
+      )}
+
+      {/* 结算结果：单据 settled 后才显示（结算区本身只在 open/待结算时出现） */}
+      {settleResult && ticket?.status === 'settled' && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+          <p className="text-sm font-semibold">结算完成</p>
+          <div className="mt-2 space-y-1 text-sm">
+            {settleResult.orderId && <p>订单 {settleResult.orderId.slice(0, 8)} 已建（渠道 counter）</p>}
+            {settleResult.points?.accrued ? (
+              <p>
+                已积 {settleResult.points.points} 分，积分余额 {settleResult.points.points_balance} 分
+                {settleResult.points.member_tier ? ` · 等级 ${settleResult.points.member_tier}` : ''}
+              </p>
+            ) : (
+              <p className="text-gray-500">本次无合资格金额，未积积分</p>
+            )}
+            {settleResult.method === 'stored_value' && settleResult.storedValue?.spent && (
+              <p>
+                储值已扣 {fmt(settleResult.storedValue.amount_cents)}，余额{' '}
+                {fmt(settleResult.storedValue.stored_value_balance_cents)}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -476,6 +722,11 @@ export default function CounterPage() {
             <span className="text-sm text-gray-600">
               {fmt(selected.unit_price_cents)} / {basisLabel(selected.price_basis_grams)}
             </span>
+            {selected.night_clearance && selected.night_price_cents != null && (
+              <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-700">
+                夜市价 {fmt(selected.night_price_cents)}（原价 {fmt(selected.unit_price_cents)}，实收以服务端计价为准）
+              </span>
+            )}
             <span className="text-sm">
               秤读数：
               {latest && latest.weight_grams != null
@@ -511,6 +762,58 @@ export default function CounterPage() {
           </div>
         </div>
       )}
+
+      {/* 拍照识别：未配模型时返回空候选，老实退回照片格点选 */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm">
+        <p className="text-sm font-semibold">拍照识别</p>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <label className="cursor-pointer rounded-full bg-gray-800 px-4 py-1.5 text-sm text-white">
+            选择照片识别
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              disabled={recogBusy || !ticketOpen}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (file) void handleRecognize(file);
+              }}
+            />
+          </label>
+          <span className="text-xs text-gray-400">
+            用当前秤读数（无读数时用下方手工重量）识别；每次识别会留存一帧到评估账本。
+          </span>
+        </div>
+        {recogNote && <p className="mt-2 text-sm text-amber-600">{recogNote}</p>}
+        {recogCandidates && recogCandidates.candidates.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {recogCandidates.candidates.map((c) => {
+              const product = products.find((p) => p.variant_id === c.variant_id);
+              return (
+                <div key={c.variant_id} className="flex flex-wrap items-center gap-3 text-sm">
+                  <span className="font-medium">{product?.title ?? `未知商品 ${c.variant_id.slice(0, 8)}`}</span>
+                  <span className="text-gray-500">得分 {c.score}</span>
+                  {product && (
+                    <span className="text-gray-500">
+                      {fmt(product.unit_price_cents)} / {basisLabel(product.price_basis_grams)}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handlePickCandidate(c.variant_id)}
+                    disabled={!product || busy || !ticketOpen}
+                    className="rounded-full bg-emerald-600 px-4 py-1 text-sm text-white disabled:opacity-50"
+                  >
+                    {product ? '选用' : '不在可售列表'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* 模拟器 */}
       <div className="rounded-2xl border border-dashed bg-white p-4">
@@ -691,9 +994,17 @@ export default function CounterPage() {
                   </div>
                   <div className="p-2">
                     <p className="truncate text-sm font-medium">{p.title}</p>
-                    <p className="text-sm text-emerald-700">
-                      {fmt(p.unit_price_cents)} / {basisLabel(p.price_basis_grams)}
-                    </p>
+                    {p.night_clearance && p.night_price_cents != null ? (
+                      <p className="text-sm text-orange-700">
+                        夜市 {fmt(p.night_price_cents)}{' '}
+                        <span className="text-gray-400 line-through">{fmt(p.unit_price_cents)}</span>
+                        {' / '}{basisLabel(p.price_basis_grams)}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-emerald-700">
+                        {fmt(p.unit_price_cents)} / {basisLabel(p.price_basis_grams)}
+                      </p>
+                    )}
                   </div>
                 </button>
               );
