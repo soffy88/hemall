@@ -226,12 +226,13 @@ async def _seed_batch(
     return str(batch_id), str(var_id)
 
 
-async def _ticket_with_line(pool, state, merchant_id, batch_id, weight_grams=350):
+async def _ticket_with_line(pool, state, merchant_id, batch_id, weight_grams=350, customer_id=None):
     import app.storefront as sf
 
     req = _fake_request(pool)
     principal = {"customer_id": merchant_id}
-    created = await sf.counter_create_ticket(req, {}, principal)
+    body = {"customer_id": customer_id} if customer_id is not None else {}
+    created = await sf.counter_create_ticket(req, body, principal)
     ticket_id = created["ticket_id"]
     state["tickets"].append(ticket_id)
     added = await sf.counter_add_line(
@@ -390,6 +391,51 @@ class TestShiftDb:
         assert closed["shift"]["variance_cents"] == 0
         with pytest.raises(Exception, match="not open"):
             await sf.counter_close_shift(req, shift_id, {"counted_cash_cents": 1}, principal)
+
+    async def test_shift_close_excludes_stored_value(self, closeout_pool):
+        """交班应有现金只算现金结算，储值不进现金（Codex 分流 #3）。
+
+        2026-11-28 代码实证：交班 SUM 没按 method 过滤，储值结算会把
+        应有现金抬高、盘点报假短款。本单：现金 293 + 储值 293，备用金
+        50000，实盘 50293 时差异须为 0。
+        """
+        import app.storefront as sf
+        from app.membership import topup_stored_value
+
+        pool, state = closeout_pool
+        batch_id, _ = await _seed_batch(pool, state, "h2", price=419, spec="500g/份", cost=500)
+        merchant_id = await _seed_merchant(pool, state, "h2")
+        req = _fake_request(pool)
+        principal = {"customer_id": merchant_id}
+        await topup_stored_value(
+            pool,
+            customer_id=merchant_id,
+            amount_cents=10000,
+            external_payment_ref="closeout-sv-h2",
+        )
+
+        opened = await sf.counter_open_shift(
+            req, {"opening_float_cents": 50000, "note": "储值班"}, principal
+        )
+        shift_id = opened["shift"]["shift_id"]
+
+        cash_ticket, cash_total = await _ticket_with_line(pool, state, merchant_id, batch_id)
+        assert cash_total == 293
+        await sf.counter_settle_ticket(
+            req, cash_ticket, {"method": "cash", "amount_received_cents": 300}, principal
+        )
+        sv_ticket, sv_total = await _ticket_with_line(
+            pool, state, merchant_id, batch_id, customer_id=merchant_id
+        )
+        assert sv_total == 293
+        await sf.counter_settle_ticket(req, sv_ticket, {"method": "stored_value"}, principal)
+
+        closed = await sf.counter_close_shift(
+            req, shift_id, {"counted_cash_cents": 50293, "handover_to": "next"}, principal
+        )
+        assert closed["shift"]["status"] == "closed"
+        assert closed["shift"]["expected_cash_cents"] == 50293
+        assert closed["shift"]["variance_cents"] == 0
 
     async def test_shift_variance_negative_recorded(self, closeout_pool):
         import app.storefront as sf

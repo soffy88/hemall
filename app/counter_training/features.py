@@ -15,6 +15,10 @@ from PIL import Image
 #: 特征总维数：8x8 灰度（64）+ 3 通道 x 8 档直方图（24）。
 FEATURE_DIM = 88
 
+#: 特征提取算法版本：算法一变就 +1；训练缓存认这个版本，旧缓存自动作废。
+#: 只看维数不够——同维数改算法，旧向量悄悄复用等于用错特征训练。
+FEATURES_VERSION = 1
+
 GRAY_SIZE = 8
 HIST_BINS = 8
 HIST_SIZE = 64

@@ -14,7 +14,7 @@ from .counter_settlement_order import COUNTER_SETTLEMENT_ORDER_DDL
 from .counter_vision import COUNTER_VISION_DDL
 from .ext.spider_hygiene import OCR_GATE_DDL
 from .meal_package import MEAL_PACKAGE_DDL
-from .membership import MEMBERSHIP_DDL, MEMBERSHIP_FEE_DDL
+from .membership import MEMBERSHIP_DDL, MEMBERSHIP_FEE_DDL, STORED_VALUE_SPEND_DDL
 from .night_pintuan import NIGHT_PINTUAN_DDL
 from .scale import SCALE_DDL
 from .sorting import SORTING_DDL
@@ -301,6 +301,10 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(MEMBERSHIP_DDL)
         # 会费账本（199 元/人，Soffy 2026-11-21 拍板新增；只记账，不设门禁）。
         await conn.execute(MEMBERSHIP_FEE_DDL)
+        # 储值结算扣款：stored_value_ledger kind 从 topup 拓到 topup/spend
+        # （既有库幂等迁移；Codex 分流 2026-11-28：此前只在
+        # ensure_membership_schema 里跑、启动路径没接，老库储值结算 500）。
+        await conn.execute(STORED_VALUE_SPEND_DDL)
         # 缺口 6（夜市+拼单）：清货标记 + 拼单表（幂等，见 app/night_pintuan.py）。
         await conn.execute(NIGHT_PINTUAN_DDL)
         # OCR 品牌门: inventory_batch.inspection_note 留痕列 (幂等, 见 spider_hygiene.py)。

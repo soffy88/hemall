@@ -311,6 +311,8 @@ class TestPointsHook:
         )
         assert settled["status"] == "settled"
         assert settled["order"] is not None
+        assert settled["order"]["lines"][0]["product_title"] == "补链测试品p1"
+        assert settled["order"]["lines"][0]["weight_grams"] == 350
         assert settled["points_accrual"]["accrued"] is True
         assert settled["points_accrual"]["points"] == 2
         assert settled["points_accrual"]["base_cents"] == 293
@@ -384,6 +386,32 @@ class TestPointsHook:
             )
         assert int(count) == 1
         assert int(balance) == 2
+
+    async def test_settle_survives_points_failure(self, links_pool, monkeypatch):
+        """积分累积报错只记日志，不拖垮整单（Codex 分流 #2，已修，锁死）。"""
+        import app.membership as mb
+        import app.storefront as sf
+
+        async def _boom(conn, order_id):
+            raise RuntimeError("points boom")
+
+        monkeypatch.setattr(mb, "accrue_points_conn", _boom)
+        pool, state = links_pool
+        batch_id, _ = await _seed_batch(pool, state, "p9", price=419, spec="500g/份")
+        merchant_id = await _seed_merchant(pool, state, "pm9")
+        buyer_id = await _seed_customer(pool, state, "pb9")
+        req = _fake_request(pool)
+        principal = {"customer_id": merchant_id}
+        ticket_id, total = await _ticket_with_line(
+            pool, state, merchant_id, batch_id, customer_id=buyer_id
+        )
+        assert total == 293
+        settled = await sf.counter_settle_ticket(
+            req, ticket_id, {"method": "cash", "amount_received_cents": 300}, principal
+        )
+        assert settled["status"] == "settled"
+        assert settled["order"] is not None
+        assert settled["points_accrual"] is None
 
     async def test_failed_settle_accrues_nothing(self, links_pool):
         import app.storefront as sf
