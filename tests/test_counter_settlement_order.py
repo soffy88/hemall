@@ -366,6 +366,49 @@ class TestSettleCreatesOrderDb:
             )
             assert int(voucher_rows) == 0
 
+    async def test_settle_assigns_sequential_unique_order_no(self, settlement_pool):
+        import re
+
+        import app.storefront as sf
+
+        pool, state = settlement_pool
+        batch_id, _variant_id = await _seed_batch(
+            pool, state, "ordno", price=419, spec="500g/份", cost=500
+        )
+        merchant_id = await _seed_merchant(pool, state, "ordno")
+        req = _fake_request(pool)
+        principal = {"customer_id": merchant_id}
+        ticket1, total1 = await _ticket_with_line(pool, state, merchant_id, batch_id)
+        settled1 = await sf.counter_settle_ticket(
+            req, ticket1, {"method": "cash", "amount_received_cents": total1}, principal
+        )
+        order1 = settled1["order"]
+        assert order1 is not None
+        no1 = order1["order_no"]
+        assert re.fullmatch(r"\d{8}-\d{4}", no1 or "")
+        ticket2, total2 = await _ticket_with_line(pool, state, merchant_id, batch_id)
+        settled2 = await sf.counter_settle_ticket(
+            req, ticket2, {"method": "cash", "amount_received_cents": total2}, principal
+        )
+        order2 = settled2["order"]
+        assert order2 is not None
+        no2 = order2["order_no"]
+        assert re.fullmatch(r"\d{8}-\d{4}", no2 or "")
+        assert no2 != no1
+        assert no1[:8] == no2[:8]
+        assert int(no2[9:]) == int(no1[9:]) + 1
+        async with pool.acquire() as conn:
+            db_no1 = await conn.fetchval(
+                'SELECT order_no FROM "customer_order" WHERE id = $1',
+                order1["order_id"],
+            )
+            assert db_no1 == no1
+            db_no2 = await conn.fetchval(
+                'SELECT order_no FROM "customer_order" WHERE id = $1',
+                order2["order_id"],
+            )
+            assert db_no2 == no2
+
     async def test_resettle_conflicts_and_keeps_single_order(self, settlement_pool):
         import app.storefront as sf
 

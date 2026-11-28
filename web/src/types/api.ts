@@ -475,6 +475,7 @@ export interface CounterStoredValueSpend {
 /** 柜台结算建的订单（只取前端展示用的字段） */
 export interface CounterOrder {
   order_id: string;
+  order_no: string | null;
   status: string;
   grand_total_cents: number;
   points_accrual?: CounterPointsAccrual | null;

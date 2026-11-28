@@ -82,6 +82,7 @@ export default function CounterPage() {
   const [settleMethod, setSettleMethod] = useState<'cash' | 'stored_value'>('cash');
   const [settleResult, setSettleResult] = useState<{
     orderId: string | null;
+    orderNo: string | null;
     points: CounterPointsAccrual | null;
     storedValue: CounterStoredValueSpend | null;
     method: string;
@@ -380,6 +381,7 @@ export default function CounterPage() {
         const points = updated.points_accrual ?? null;
         setSettleResult({
           orderId: updated.order?.order_id ?? null,
+          orderNo: updated.order?.order_no ?? null,
           points,
           storedValue: null,
           method: 'cash',
@@ -411,6 +413,7 @@ export default function CounterPage() {
       const spend = updated.stored_value ?? null;
       setSettleResult({
         orderId: updated.order?.order_id ?? null,
+        orderNo: updated.order?.order_no ?? null,
         points,
         storedValue: spend,
         method: 'stored_value',
@@ -695,7 +698,10 @@ export default function CounterPage() {
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
           <p className="text-sm font-semibold">结算完成</p>
           <div className="mt-2 space-y-1 text-sm">
-            {settleResult.orderId && <p>订单 {settleResult.orderId.slice(0, 8)} 已建（渠道 counter）</p>}
+            {settleResult.orderNo && <p>订单号 {settleResult.orderNo} 已建（渠道 counter）</p>}
+            {settleResult.orderId && (
+              <p className="text-gray-500">订单 {settleResult.orderId.slice(0, 8)}</p>
+            )}
             {settleResult.points?.accrued ? (
               <p>
                 已积 {settleResult.points.points} 分，积分余额 {settleResult.points.points_balance} 分

@@ -16,6 +16,7 @@ from .ext.spider_hygiene import OCR_GATE_DDL
 from .meal_package import MEAL_PACKAGE_DDL
 from .membership import MEMBERSHIP_DDL, MEMBERSHIP_FEE_DDL, STORED_VALUE_SPEND_DDL
 from .night_pintuan import NIGHT_PINTUAN_DDL
+from .order_number import ORDER_NUMBER_DDL
 from .scale import SCALE_DDL
 from .sorting import SORTING_DDL
 from .supplier import SUPPLIER_DDL
@@ -323,6 +324,8 @@ async def ensure_p0_schema(pool: PgPool) -> None:
         await conn.execute(COUNTER_VISION_DDL)
         # counter-settlement-order: 柜台结算建单（渠道列 + 单据↔订单链 + 行项重量列）。
         await conn.execute(COUNTER_SETTLEMENT_ORDER_DDL)
+        # order-number: 柜台订单号（每天序号表 + 订单号列 + 部分唯一索引）。
+        await conn.execute(ORDER_NUMBER_DDL)
         # 秤设备/读数/稳定事件（幂等，见 app/scale.py SCALE_DDL；供 /admin/scale/devices 落库）。
         await conn.execute(SCALE_DDL)
         # 供应商管理（B 部分）：供应商/报价/周评分
