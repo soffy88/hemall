@@ -6658,6 +6658,7 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
         require_weigh_line_pricing,
         weigh_stock_units,
     )
+    from app.order_number import next_order_no
 
     lines = await conn.fetch(
         "SELECT he.*, pv.product_id, ib.variant_id AS batch_variant_id, "
@@ -6684,21 +6685,25 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
             f"counter order subtotal {subtotal} does not match ticket total {due_cents}"
         )
     order_id = uuid7()
+    # 订单号：同一结算事务内行锁递增，绝不重号（其它渠道的单留空）。
+    order_no = await next_order_no(conn)
     customer_id = str(ticket["customer_id"]) if ticket["customer_id"] else None
     await conn.execute(
         'INSERT INTO "customer_order" '
         "(id, cart_id, customer_id, region_code, currency, status, "
         "subtotal_cents, discount_cents, tax_cents, shipping_cents, "
         "grand_total_cents, billing_address, shipping_address, "
-        "discount_kind, voucher_redeemed_cents, channel, counter_ticket_id) "
+        "discount_kind, voucher_redeemed_cents, channel, counter_ticket_id, "
+        "order_no) "
         "VALUES ($1, NULL, $2, NULL, 'CNY', $3, $4, 0, 0, 0, $4, "
-        "'{}'::jsonb, '{}'::jsonb, 'none', 0, $5, $6)",
+        "'{}'::jsonb, '{}'::jsonb, 'none', 0, $5, $6, $7)",
         order_id,
         customer_id,
         COUNTER_ORDER_STATUS,
         subtotal,
         ORDER_CHANNEL_COUNTER,
         ticket["id"],
+        order_no,
     )
     lines_out: list[dict] = []
     for line in lines:
@@ -6816,6 +6821,7 @@ async def _create_counter_order(conn: Any, *, ticket: Any, due_cents: int) -> di
             logger.warning("counter points accrual failed for order %s: %s", order_id, exc)
     return {
         "order_id": str(order_id),
+        "order_no": order_no,
         "status": COUNTER_ORDER_STATUS,
         "channel": ORDER_CHANNEL_COUNTER,
         "customer_id": customer_id,
